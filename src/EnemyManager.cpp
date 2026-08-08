@@ -179,6 +179,11 @@ Enemy *EnemyManager::SpawnEnemy(i32 eclSubId, ZunVec3 *pos, i32 life, i32 itemDr
 #endif
 
         *enemy = this->enemyTemplate;
+#if defined(TH07_PSP)
+        // RunEcl may synchronously spawn another enemy. Reserve this slot
+        // before entering ECL so a nested spawn cannot overwrite its parent.
+        this->PspTrackEnemySlot(i);
+#endif
         enemy->mirror = mirror;
         if (life >= 0)
         {
@@ -189,12 +194,12 @@ Enemy *EnemyManager::SpawnEnemy(i32 eclSubId, ZunVec3 *pos, i32 life, i32 itemDr
         if (g_EclManager.RunEcl(enemy) == ZUN_ERROR)
         {
             enemy->active = 0;
+#if defined(TH07_PSP)
+            this->PspForgetEnemySlot(i);
+#endif
         }
         else
         {
-#if defined(TH07_PSP)
-            this->PspTrackEnemySlot(i);
-#endif
             enemy->color.color = enemy->primaryVm.color.color;
             enemy->itemDrop = (i8)itemDrop;
             if (score >= 0)
@@ -234,6 +239,11 @@ Enemy *EnemyManager::SpawnEnemyEx(i32 eclSubId, ZunVec3 *pos, i32 life, i32 item
 #endif
 
         *enemy = this->enemyTemplate;
+#if defined(TH07_PSP)
+        // Spawn opcodes are legal during the first ECL tick. Mark the parent
+        // occupied first so recursive SpawnEnemyEx calls choose another slot.
+        this->PspTrackEnemySlot(i);
+#endif
         if (life >= 0)
         {
             enemy->life = life;
@@ -244,12 +254,12 @@ Enemy *EnemyManager::SpawnEnemyEx(i32 eclSubId, ZunVec3 *pos, i32 life, i32 item
         if (g_EclManager.RunEcl(enemy) == ZUN_ERROR)
         {
             enemy->active = 0;
+#if defined(TH07_PSP)
+            this->PspForgetEnemySlot(i);
+#endif
         }
         else
         {
-#if defined(TH07_PSP)
-            this->PspTrackEnemySlot(i);
-#endif
             enemy->color.color = enemy->primaryVm.color.color;
             enemy->itemDrop = (i8)itemDrop;
             if (life >= 0)
