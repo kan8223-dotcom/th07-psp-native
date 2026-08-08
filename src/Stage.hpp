@@ -177,11 +177,6 @@ struct Stage
     i32 pspInstanceCounts[4];
     f32 *pspObjectCullRadii;
     i32 pspInstanceBucketsReady;
-    i32 pspCameraMatrixFrame;
-    ZunMatrix pspCameraViewMatrix;
-    ZunMatrix pspCameraProjectionMatrix;
-    // Shared by all four background Z passes in one frame.
-    ZunVec3 pspBillboardViewDir;
 #endif
 };
 

@@ -2,7 +2,7 @@ export PATH := /usr/local/pspdev/bin:$(PATH)
 export PSPDEV := /usr/local/pspdev
 
 TARGET := TH07PSP
-PSP_RELEASE_VERSION := v0.1.2-beta
+PSP_RELEASE_VERSION := v0.1.3-beta
 MECC_DIR := psp/third_party/me-custom-core
 MECC_BUILD_DIR := $(MECC_DIR)/build
 MECC_LIB := $(MECC_BUILD_DIR)/libme-core.a

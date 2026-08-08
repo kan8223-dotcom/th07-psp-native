@@ -491,12 +491,7 @@ class PspGuGraphics final : public ZunGraphics
         }
         FlushDeferredSpriteDraw();
         mTransforms[type] = matrix;
-        // Texture coordinates are transformed while packing CPU vertices.
-        // Only model/view/projection correspond to GE matrix state.
-        if (type <= MATRIX_PROJECTION)
-        {
-            mMatrixDirtyMask |= 1u << static_cast<unsigned int>(type);
-        }
+        mMatricesDirty = true;
     }
 
     void SetTextureFilter() override
@@ -520,9 +515,7 @@ class PspGuGraphics final : public ZunGraphics
         FlushDeferredSpriteDraw();
         mViewport = viewport;
         ApplyViewport();
-        // The screen-space projection is derived from the logical viewport.
-        mAppliedMatrixMode = -1;
-        mMatrixDirtyMask |= 0x7u;
+        mMatricesDirty = true;
     }
 
     void Enable(Capabilities cap) override
@@ -2157,7 +2150,7 @@ class PspGuGraphics final : public ZunGraphics
     ColorOp mColorOpAlpha = COLOR_OP_MODULATE;
     int mAppliedMatrixMode = -1;
     int mCurrentDrawBuffer = 0;
-    unsigned int mMatrixDirtyMask = 0x7u;
+    bool mMatricesDirty = true;
     bool mDepthWrite = true;
     bool mDepthFuncKnown = false;
     DepthFunc mDepthFunc = DEPTH_FUNC_LEQUAL;
@@ -2330,7 +2323,7 @@ class PspGuGraphics final : public ZunGraphics
         ++mListsThisFrame;
 #endif
         mAppliedMatrixMode = -1;
-        mMatrixDirtyMask |= 0x7u;
+        mMatricesDirty = true;
     }
 
     void SubmitAndRestart()
@@ -2557,12 +2550,7 @@ class PspGuGraphics final : public ZunGraphics
     void ApplyMatrices(bool screenSpace)
     {
         const int mode = screenSpace ? 1 : 0;
-        if (screenSpace && mAppliedMatrixMode == mode)
-        {
-            // Pending 3D transform changes do not affect XYZRHW vertices.
-            return;
-        }
-        if (!screenSpace && mAppliedMatrixMode == mode && mMatrixDirtyMask == 0)
+        if (mAppliedMatrixMode == mode && !mMatricesDirty)
         {
             return;
         }
@@ -2609,27 +2597,22 @@ class PspGuGraphics final : public ZunGraphics
         }
         else
         {
-            if (mAppliedMatrixMode != mode)
-            {
-                // Screen-space rendering installed identity model/view and an
-                // orthographic projection, so all 3D matrices must be restored.
-                mMatrixDirtyMask |= 0x7u;
-            }
             static const int modes[3] = {GU_MODEL, GU_VIEW, GU_PROJECTION};
             for (int i = 0; i < 3; ++i)
             {
-                if ((mMatrixDirtyMask & (1u << i)) != 0)
-                {
-                    const ScePspFMatrix4 matrix = ToGuMatrix(mTransforms[i]);
-                    sceGuSetMatrix(modes[i], &matrix);
+                const ScePspFMatrix4 matrix = ToGuMatrix(mTransforms[i]);
+                sceGuSetMatrix(modes[i], &matrix);
 #if defined(TH07_PSP_PERF_DIAG)
-                    ++mMatrixSubmissions;
+                ++mMatrixSubmissions;
 #endif
-                }
             }
-            mMatrixDirtyMask = 0;
         }
+        sceGuSetMatrix(GU_TEXTURE, &kIdentityMatrix);
+#if defined(TH07_PSP_PERF_DIAG)
+        ++mMatrixSubmissions;
+#endif
         mAppliedMatrixMode = mode;
+        mMatricesDirty = false;
     }
 
     void ApplyTexture(bool textured, bool screenSpace)

@@ -1800,9 +1800,6 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     ZunMatrix world;
     ZunMatrix rot;
     ZunMatrix uv;
-#if defined(TH07_PSP)
-    VertexTex1DiffuseXyz pspWorldQuad[4];
-#endif
 
     if (!vm->visible)
     {
@@ -1875,23 +1872,7 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     SetRenderStateForVm(vm);
     world.m[3][2] = vm->pos.z;
 
-#if defined(TH07_PSP)
-    // Stage backgrounds are made from many independent 3D cards. Sending a
-    // new GE model matrix for every card is disproportionately expensive on
-    // PSP. This is the same approach used by TH06's buffered path: bake the
-    // affine model transform into the four source vertices and keep one
-    // identity model matrix for the whole background pass.
-    static ZunMatrix pspIdentityModel;
-    static bool pspIdentityModelReady;
-    if (!pspIdentityModelReady)
-    {
-        pspIdentityModel.Identity();
-        pspIdentityModelReady = true;
-    }
-    g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_MODEL, pspIdentityModel);
-#else
     g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_MODEL, world);
-#endif
 
     if (this->currentSprite != vm->sprite)
     {
@@ -1916,33 +1897,14 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
         this->currentVertexShader = 2;
     }
 
-#if defined(TH07_PSP)
-    for (i32 i = 0; i < 4; ++i)
-    {
-        pspWorldQuad[i] = g_Quad3DFallback[i];
-        const ZunVec3 &source = g_Quad3DFallback[i].position;
-        pspWorldQuad[i].position.x = source.x * world.m[0][0] + source.y * world.m[1][0] +
-                                     source.z * world.m[2][0] + world.m[3][0];
-        pspWorldQuad[i].position.y = source.x * world.m[0][1] + source.y * world.m[1][1] +
-                                     source.z * world.m[2][1] + world.m[3][1];
-        pspWorldQuad[i].position.z = source.x * world.m[0][2] + source.y * world.m[1][2] +
-                                     source.z * world.m[2][2] + world.m[3][2];
-    }
-#endif
-
     if (!g_Supervisor.cfg.noVertexBuffers)
     {
         g_Supervisor.gfxDevice->DrawPrimitive(PRIM_TRIANGLE_STRIP, 0, 2);
     }
     else
     {
-#if defined(TH07_PSP)
-        g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLE_STRIP, 2, pspWorldQuad,
-                                                sizeof(VertexTex1DiffuseXyz));
-#else
         g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLE_STRIP, 2, g_Quad3DFallback,
                                                 sizeof(VertexTex1DiffuseXyz));
-#endif
     }
     return ZUN_SUCCESS;
 }
