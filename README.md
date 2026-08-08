@@ -136,7 +136,7 @@ make -j"$(nproc)" all
 make release
 ```
 
-`make release`は通常のタイトル起動版をクリーンビルドし、`dist/th07-psp-native-v0.1.0-beta.zip`を作ります。
+`make release`は通常のタイトル起動版をクリーンビルドし、`dist/th07-psp-native-v0.1.1-beta.zip`を作ります。
 原作データ、ユーザーデータ、開発用EBOOTが混入していないことも自動検査します。
 
 開発用の面直行ビルドは明示した場合だけ有効です。配布物には使用しません。

@@ -33,14 +33,16 @@ if [ -d dist ]; then
             echo "$archive_forbidden"
             fail=1
         fi
-        if [ "$(basename "$archive")" = "th07-psp-native-v0.1.0-beta.zip" ]; then
+        case "$(basename "$archive")" in
+        th07-psp-native-v*-beta.zip)
             for required in EBOOT.PBP NotoSansJP-Regular.ttf README.md CREDITS.md CHANGELOG.md LICENSE docs/KNOWN_ISSUES.md; do
                 if ! printf '%s\n' "$archive_entries" | grep -q "^TH07PSP/$required$"; then
                     echo "[FAIL] $archive does not contain TH07PSP/$required"
                     fail=1
                 fi
             done
-        fi
+            ;;
+        esac
         if unzip -p "$archive" '*EBOOT.PBP' 2>/dev/null | strings | grep -Eq "$debug_eboot_pattern"; then
             echo "[FAIL] stage-debug marker entered $archive"
             fail=1

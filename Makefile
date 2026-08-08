@@ -2,6 +2,7 @@ export PATH := /usr/local/pspdev/bin:$(PATH)
 export PSPDEV := /usr/local/pspdev
 
 TARGET := TH07PSP
+PSP_RELEASE_VERSION := v0.1.1-beta
 MECC_DIR := psp/third_party/me-custom-core
 MECC_BUILD_DIR := $(MECC_DIR)/build
 MECC_LIB := $(MECC_BUILD_DIR)/libme-core.a
@@ -142,9 +143,9 @@ release: release-build psp/assets/NotoSansJP-Regular.ttf
 	cp licenses/NotoSansJP/OFL.txt "$$stage/licenses/NotoSansJP/"; \
 	cp psp/third_party/me-custom-core/LICENSE.md "$$stage/licenses/MECC/"; \
 	stage_win=$$(wslpath -w "$$stage"); \
-	zip_win=$$(wslpath -w "$$stage_root/th07-psp-native-v0.1.0-beta.zip"); \
+	zip_win=$$(wslpath -w "$$stage_root/th07-psp-native-$(PSP_RELEASE_VERSION).zip"); \
 	powershell.exe -NoProfile -Command "Compress-Archive -LiteralPath '$$stage_win' -DestinationPath '$$zip_win' -Force"; \
-	mv "$$stage_root/th07-psp-native-v0.1.0-beta.zip" dist/th07-psp-native-v0.1.0-beta.zip
+	mv "$$stage_root/th07-psp-native-$(PSP_RELEASE_VERSION).zip" dist/th07-psp-native-$(PSP_RELEASE_VERSION).zip
 	./tools/release_audit.sh
 
 # build.mak does not otherwise notice title-only changes.  The profile stamp is
