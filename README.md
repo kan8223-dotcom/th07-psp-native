@@ -1,42 +1,147 @@
-# th07
+# th07-psp-native
 
-A cross-platform port of 東方妖々夢　～ Perfect Cherry Blossom 1.00b by Team Shanghai Alice using SDL2 and OpenGL ES.
+東方妖々夢 ～ Perfect Cherry Blossom 1.00bをPSP上でネイティブ動作させる、
+非公式・開発途中の移植です。Windows版をエミュレーションするものではありません。
 
-This is the portable branch of the Touhou 7 decompilation. Unless you're looking specifically for an attempted cross-platform port of th07, you probably want the [main branch](https://github.com/some100/th07/tree/main). 
+> [!WARNING]
+> このリポジトリと配布EBOOTには、東方妖々夢の原作データを一切含みません。
+> 動作には、利用者自身が所有するPC版東方妖々夢 1.00bのインストールフォルダが必要です。
 
-This is a drop-in replacement for the original Touhou 7 binary that plays identically to the original, but is more portable to other platforms outside of Windows. As a result, the actual behavior was kept as unchanged as possible. For an even more portable and featureful port, see the [reallyportable branch](https://github.com/some100/th07/tree/reallyportable).
+## 特徴
 
-There are a few bugs/incompatibilities though, namely:
+- [some100/th07のportable branch](https://github.com/some100/th07/tree/portable)を基にした、
+  PSP向けネイティブ移植です。
+- PSPSDKのlibGU/libGUMからPSPのGraphics Engine（GE）へ描画します。
+- VFPU対応libGUMとPSP向け数値処理を使用します。
+- m-c/dの[Media Engine Custom Core（MECC）](https://github.com/mcidclan/psp-media-engine-custom-core)を使い、
+  実機ではMedia Engine（ME）にPCM音声ミキシングを担当させます。利用できない場合やPPSSPPでは
+  メインCPU（SC）へ安全にフォールバックします。
+- 原作の論理解像度640x480を保ち、PSPの480x272へ4:3表示または全画面引き伸ばしで出力します。
+- 設定、スコア、リプレイは原作フォルダへ書かず、EBOOTと同じ場所へ保存します。
 
-* You cannot load into stages on big endian machines. This is because the way ecl files, stg files, etc. are loaded in the original game is not endian independent, resulting in it breaking on any system not on little endian.
-* Text rendering looks off. To be clear it does "work" but the text looks too big.
-* Some features that the original game had, like 16 bit color mode, midi output, etc. are outright unimplemented. This may or may not be "fixed" later, but the focus currently is to produce a playable game.
+## ベータ版の状態
 
-Work is currently being done to transition the game over to being more platform-independent.
+現在はテスター向けベータ版です。PSP-2000/3000/Goの64MB環境を対象とし、PSP-1000は未対応です。
 
-## Building
+- タイトル、機体選択、通常プレイ、BGM、SE、日本語会話、1～6面の各面単独起動を確認しています。
+- PPSSPPでは強制5面→6面遷移を含む連続ステージ登録を確認しています。
+- 妖夢撃破後にXMBへ戻る実機不具合に対し、面切替時の未使用テクスチャを解放してから6面を登録し、
+  初期化失敗時は一度だけ再試行する修正を入れています。ベータ版で実機再確認が必要です。
+- 立ち絵が画面最上段へ1ピクセルだけはみ出す問題には、立ち絵専用の描画クリップを入れています。
+- 4面以降の3D背景には大きな処理落ちが残っています。詳細は
+  [既知の不具合](docs/KNOWN_ISSUES.md)を参照してください。
 
-### Dependencies
+PPSSPPでの動作だけでは実機互換を保証できません。完成版ではないことを理解したうえで使用してください。
 
-* cmake
-* SDL2 (SDL2, SDL2_ttf, and SDL2_image)
-* OpenGL ES 3.0+
-* A compiler that supports C++17
-* A little endian machine
+## インストール
 
-Run cmake on this repo, then build with whatever generator you chose.
+必要なもの:
 
-You will also need to add a copy of `msgothic.ttc` into your game directory if you are not running this on Windows or otherwise don't have the "ＭＳ ゴシック" font installed.
+- CFWでhomebrewを起動できるPSP-2000/3000/Go
+- Releasesにあるベータ版ZIP
+- 利用者自身が所有するPC版東方妖々夢 1.00bのインストールフォルダ
 
-## Todo
+一番簡単な手順:
 
-* Try to get the text rendering closer to the original
-* Make the game endian independent
+1. 配布ZIPを展開します。
+2. ZIP内の`TH07PSP`フォルダを、メモリースティックの`PSP/GAME/`へコピーします。
+3. PCにある東方妖々夢のインストールフォルダを、フォルダごと`TH07PSP`の中へコピーします。
+4. コピーした原作フォルダの名前を、半角英数字の`th7`へ変更します。
+5. XMBのゲーム一覧から`Touhou 7 PSP Native Beta`を起動します。
 
-## Credits
+最終的な配置は次の形です。原作フォルダの中身を個別に選別したり、DATを展開したりする必要はありません。
 
-* The earlier [decompilation for th06](https://github.com/GensokyoClub/th06), used as a source of shared types, function names, file names, source organization, basically everything. Because EoSD and PCB are so similar architecturally, the pre-existing th06 decompilation could be used as a direct reference for reverse engineering th07.
+```text
+PSP/GAME/TH07PSP/
+├── EBOOT.PBP
+├── NotoSansJP-Regular.ttf
+├── README.md
+├── CREDITS.md
+├── LICENSE
+├── licenses/
+└── th7/                    ← 利用者が自分でコピーした原作フォルダ
+    ├── th07.dat
+    ├── thbgm.dat
+    ├── 東方妖々夢.exe     ← 名前はそのままで構いません
+    └── その他の原作ファイル
+```
 
-* The [decompilation for th08](https://github.com/GensokyoClub/th08) for the complete and actually readable LZSS implementation. Basically nothing changed from th07 to th08 at least in this regard, so it made it much simpler.
+EBOOTは`th07.dat`と`thbgm.dat`のヘッダおよび1.00bのファイルサイズを確認します。
+別バージョンや不足したデータでは起動できません。
 
-* EstexNT for porting the [var_order pragma](https://gist.github.com/EstexNT/e98a1384b906a3eedaaa3eeb7e58cd9d) to MSVC 7, which is used extensively throughout this project.
+### 別のデータ配置
+
+容量や管理上の理由で原作フォルダを`TH07PSP`内へ置きたくない場合は、`ms0:`またはPSP Goの`ef0:`直下へ
+原作フォルダを置くこともできます。直下のフォルダを1階層だけ調べ、正しい`th07.dat`と`thbgm.dat`が
+揃った場所を自動検出します。まずは上記の`TH07PSP/th7`配置を推奨します。
+
+### 起動しない場合
+
+次を順に確認してください。
+
+1. `EBOOT.PBP`が`PSP/GAME/TH07PSP/`にある。
+2. `NotoSansJP-Regular.ttf`を削除していない。
+3. `TH07PSP/th7/th07.dat`と`TH07PSP/th7/thbgm.dat`がある。
+4. 原作が東方妖々夢 1.00bである。
+
+起動・面移動の記録はメモリースティック直下の`TH07PSP_BOOT.LOG`へ出ます。不具合報告時は、
+このログ、PSPの型番、CFW、問題が起きた場面を添えてください。原作データそのものは添付しないでください。
+
+## 操作
+
+- 方向キー / アナログパッド: 移動、項目選択
+- ×: ショット、決定、会話送り
+- ○: ボム、キャンセル
+- □ または L/R: 低速移動
+- △: 会話スキップ
+- START: ポーズ
+- HOME/PSボタン: PSPの終了・中断メニュー
+
+原作のウィンドウ表示設定は`4:3 FIT`（362x272）、フルスクリーン設定は
+`FULL STRETCH`（480x272）として扱います。
+
+## 含まれないもの
+
+- 東方妖々夢のEXE、DAT、画像、音楽、SE、その他の原作データ
+- 原作または開発中に作成したリプレイ（`.rpy`）
+- 設定、スコア、ログなどのユーザーデータ
+- Microsoftのフォント
+- 自動プレイ、無限残機、MAXパワーなどを有効にした開発用EBOOT
+
+## 非公式プロジェクトについて
+
+本プロジェクトは上海アリス幻樂団およびZUN氏による公式製品ではなく、承認・支援・保証を受けたものでも
+ありません。本プロジェクトについて、上海アリス幻樂団、ZUN氏、some100、GensokyoClub、m-c/d、
+PSPDEV、PPSSPP、または参照先の作者・保守担当者へ問い合わせないでください。
+
+質問や不具合報告の窓口は、このリポジトリ自身のIssuesです。原作製品やCFWの入手方法、
+原作データの共有に関する質問は扱いません。
+
+## ビルド
+
+PSPDEV/PSPSDKが`/usr/local/pspdev`に導入済みで、CMakeが使える環境で実行します。
+同梱したMECCも初回の`make`でソースからビルドします。
+
+```sh
+make -j"$(nproc)" all
+make release
+```
+
+`make release`は通常のタイトル起動版をクリーンビルドし、`dist/th07-psp-native-v0.1.0-beta.zip`を作ります。
+原作データ、ユーザーデータ、開発用EBOOTが混入していないことも自動検査します。
+
+開発用の面直行ビルドは明示した場合だけ有効です。配布物には使用しません。
+
+```sh
+make PSP_DIRECT_GAME=1 PSP_DIRECT_STAGE=5 -j"$(nproc)"
+```
+
+## 参照・謝辞
+
+参考元のデコンパイル、TH06 PSP移植、MECCを含む実装出所は
+[CREDITS.md](CREDITS.md)へURLと用途を記載しています。
+
+## ライセンス
+
+本体はベースのsome100/th07と同じくCC0 1.0 Universalです。全文は[LICENSE](LICENSE)を参照してください。
+同梱third-partyとフォントは各ライセンスに従います。原作データの権利は本ライセンスの対象外です。

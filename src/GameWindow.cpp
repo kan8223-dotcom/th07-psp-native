@@ -15,8 +15,15 @@
 #include "SoundPlayer.hpp"
 #include "Stage.hpp"
 #include "Supervisor.hpp"
+#if !defined(TH07_PSP)
 #include "graphics/Gles.hpp"
+#else
+#include "graphics/PspGuGraphics.hpp"
+#include "fileio.hpp"
+#endif
+#if !defined(TH07_PSP)
 #include "graphics/Software.hpp"
+#endif
 #include "graphics/ZunGraphics.hpp"
 
 GameWindow g_GameWindow;
@@ -25,8 +32,12 @@ f64 g_LastFrameTime;
 u64 g_LastPerfCounter;
 
 static GfxInit g_RenderingBackends[] = {
+#if !defined(TH07_PSP)
     GlesGraphics::Init,
     SoftwareGraphics::Init,
+#else
+    Th07CreatePspGuBackend,
+#endif
 };
 
 void GameWindow::Present()
@@ -61,6 +72,83 @@ void GameWindow::Present()
 
 RenderResult GameWindow::Render()
 {
+#if defined(TH07_PSP)
+    if (!this->isAppActive)
+    {
+        return RENDER_RESULT_KEEP_RUNNING;
+    }
+
+    // GU presentation already blocks on vblank.  SDL's PSP performance
+    // counter does not share the desktop backend's timing characteristics,
+    // so the original accumulator can throttle updates to roughly 1 fps.
+    // Keep the game's 30 update-only warm-up frames, then run exactly one
+    // draw/update/present cycle per vblank.
+    if (this->curFrame < 0)
+    {
+        const i32 warmupResult = g_Chain.RunCalcChain();
+        g_SoundPlayer.ProcessQueues();
+        if (!warmupResult)
+        {
+            return RENDER_RESULT_EXIT_SUCCESS;
+        }
+        if (warmupResult == -1)
+        {
+            return RENDER_RESULT_EXIT_ERROR;
+        }
+        this->curFrame++;
+        return RENDER_RESULT_KEEP_RUNNING;
+    }
+
+    g_AnmManager->ResetVertexBuffer();
+    g_Supervisor.fogEnabled = 255;
+    g_Supervisor.DisableFog();
+
+    // The original renderer preserves the playfield between frames for
+    // several stage/screen effects.  Preserve that behavior, but initialize
+    // the four HUD-frame bands in both PSP backbuffers before their
+    // translucent tiles are redrawn.  Clearing the whole screen fixes the
+    // frame flicker too, but destroys those playfield effects.
+    const ZunViewport frameBands[] = {
+        {0, 0, 640, 16, 0.0f, 1.0f},
+        {0, 464, 640, 16, 0.0f, 1.0f},
+        {0, 16, 32, 448, 0.0f, 1.0f},
+        {416, 16, 224, 448, 0.0f, 1.0f},
+    };
+    const ZunViewport savedViewport = g_Supervisor.viewport;
+    g_Supervisor.gfxDevice->SetClearColor({0xff000000});
+    for (const ZunViewport &band : frameBands)
+    {
+        g_Supervisor.gfxDevice->SetViewport(band);
+        g_Supervisor.gfxDevice->Clear(CLEAR_COLOR_BUFFER | CLEAR_DEPTH_BUFFER);
+    }
+    g_Supervisor.gfxDevice->SetViewport(savedViewport);
+    g_Chain.RunDrawChain();
+    g_AnmManager->Flush();
+    g_Supervisor.gfxDevice->BindTexture({0});
+
+    g_Supervisor.viewport.x = 0;
+    g_Supervisor.viewport.y = 0;
+    g_Supervisor.viewport.width = 640;
+    g_Supervisor.viewport.height = 480;
+    g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
+
+    const i32 chainResult = g_Chain.RunCalcChain();
+    g_SoundPlayer.ProcessQueues();
+    if (!chainResult)
+    {
+        th07_psp_boot_note("calc chain exit success");
+        return RENDER_RESULT_EXIT_SUCCESS;
+    }
+    if (chainResult == -1)
+    {
+        th07_psp_boot_note("calc chain exit error");
+        return RENDER_RESULT_EXIT_ERROR;
+    }
+
+    Present();
+    g_FrameCount++;
+    return RENDER_RESULT_KEEP_RUNNING;
+#else
     f64 perfDiff;
     u64 perfCounter;
     i32 chainRes;
@@ -152,6 +240,7 @@ RenderResult GameWindow::Render()
     }
 
     return RENDER_RESULT_KEEP_RUNNING;
+#endif
 }
 
 ZunResult GameWindow::InitInterface()
@@ -173,13 +262,28 @@ ZunResult GameWindow::InitInterface()
 
 ZunResult GameWindow::CreateGameWindow()
 {
+#if defined(TH07_PSP)
+    if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) < 0)
+    {
+        g_GameErrorContext.Fatal("SDL の初期化が失敗しました\n");
+        return ZUN_ERROR;
+    }
+    g_GameWindow.window = nullptr;
+    g_GameWindow.isAppActive = 1;
+    g_GameWindow.isAppInactive = 0;
+    g_LastPerfCounter = SDL_GetPerformanceCounter();
+    return ZUN_SUCCESS;
+#else
     if (SDL_Init(SDL_INIT_VIDEO) < 0)
     {
         g_GameErrorContext.Fatal("Direct3D オブジェクトは何故か作成出来なかった\n");
         return ZUN_ERROR;
     }
 
-    u32 flags = SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL;
+    u32 flags = SDL_WINDOW_SHOWN;
+#if !defined(TH07_PSP)
+    flags |= SDL_WINDOW_OPENGL;
+#endif
     if (!g_Supervisor.cfg.windowed)
     {
         flags |= SDL_WINDOW_FULLSCREEN;
@@ -189,13 +293,20 @@ ZunResult GameWindow::CreateGameWindow()
     g_GameWindow.isAppInactive = 0;
     g_LastPerfCounter = SDL_GetPerformanceCounter();
 
+#if !defined(TH07_PSP)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
 
     g_GameWindow.window =
         SDL_CreateWindow("東方妖々夢　〜 Perfect Cherry Blossom. ver 1.00b",
-                         SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, flags);
+                         SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+#if defined(TH07_PSP)
+                         480, 272, flags);
+#else
+                         640, 480, flags);
+#endif
     if (!g_GameWindow.window)
     {
         Supervisor::DebugPrint("sdl window create failed: %s\n", SDL_GetError());
@@ -204,6 +315,7 @@ ZunResult GameWindow::CreateGameWindow()
 
     SDL_RaiseWindow(g_GameWindow.window);
     return ZUN_SUCCESS;
+#endif
 }
 
 ZunResult GameWindow::InitRendering()

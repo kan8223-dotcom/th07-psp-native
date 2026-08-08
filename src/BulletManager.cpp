@@ -13,6 +13,23 @@
 #include "ZunMath.hpp"
 #include "utils.hpp"
 
+#if defined(TH07_PSP)
+#include <pspmath.h>
+
+namespace
+{
+inline void PspBulletRenderSinCos(float angle, float *outSin, float *outCos)
+{
+    if (std::isfinite(angle) && angle >= -16.0f * ZUN_PI && angle <= 16.0f * ZUN_PI)
+    {
+        vfpu_sincos(angle, outSin, outCos);
+        return;
+    }
+    sincosf(outSin, outCos, angle);
+}
+} // namespace
+#endif
+
 const BulletTypeInfo g_BulletTypeInfos[11] = {
     {0x200, 0x212, 0x213, 0x214, 0x20f}, {0x201, 0x215, 0x216, 0x217, 0x210},
     {0x202, 0x215, 0x216, 0x217, 0x210}, {0x203, 0x215, 0x216, 0x217, 0x210},
@@ -184,6 +201,9 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
     bullet->exFlags = (i16)bulletProps->flags;
     bullet->spriteOffset = bulletProps->spriteOffset;
     bullet->state2 = 0;
+#if defined(TH07_PSP)
+    bullet->pspRenderRotationValid = 0;
+#endif
     AnmVm::AssignVm(&bullet->sprites.spriteBullet, &bulletProps->sprites->spriteBullet);
     AnmVm::AssignVm(&bullet->sprites.spriteSpawnEffectDonut,
                     &bulletProps->sprites->spriteSpawnEffectDonut);
@@ -465,6 +485,25 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
 
     local_c = 0;
     local_8 = 2000;
+#if defined(TH07_PSP)
+    // A dense cancel can otherwise leave hundreds of multi-digit labels alive
+    // for a full second.  Score, point items and bullet state are independent;
+    // cap only these redundant labels, matching the proven TH06 PSP policy.
+    unsigned int activeBullets = 0;
+    for (unsigned int bulletIdx = 0; bulletIdx < 1024; ++bulletIdx)
+    {
+        if (g_BulletManager.bullets[bulletIdx].state != BULLET_INACTIVE)
+        {
+            ++activeBullets;
+        }
+    }
+    constexpr unsigned int kMassPopupLimit = 48;
+    const unsigned int popupStride =
+        activeBullets > kMassPopupLimit
+            ? (activeBullets + kMassPopupLimit - 1u) / kMassPopupLimit
+            : 1u;
+    unsigned int popupIndex = 0;
+#endif
     bullet = g_BulletManager.bullets;
     for (i = 0; i < 1024; i++, bullet++)
     {
@@ -474,8 +513,13 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
         }
 
         g_ItemManager.SpawnItem(&bullet->pos, this->itemType, 1);
-        g_AsciiManager.CreatePopup1(&bullet->pos, local_8,
-                                    local_8 >= param_1 ? 0xFFFFFF00 : 0xFFFFFFFF);
+#if defined(TH07_PSP)
+        if ((popupIndex++ % popupStride) == 0u)
+#endif
+        {
+            g_AsciiManager.CreatePopup1(&bullet->pos, local_8,
+                                        local_8 >= param_1 ? 0xFFFFFF00 : 0xFFFFFFFF);
+        }
         local_c += local_8;
         local_8 += 20;
         if (local_8 > param_1)
@@ -1181,12 +1225,32 @@ void Bullet::Draw()
     vm->pos.y = g_GameManager.arcadeRegionTopLeftPos.y + this->pos.y;
     vm->pos.z = 0.05f;
     vm->color.color = (vm->color.color & 0xff000000) | 0xffffff;
+#if defined(TH07_PSP)
+    if (vm->autoRotate)
+    {
+        const f32 renderAngle = utils::AddNormalizeAngle(1.5707964f + this->angle, 0.0f);
+        vm->SetRotationZ(renderAngle);
+        vm->updateRotation = 1;
+        if (!this->pspRenderRotationValid || this->pspRenderAngle != renderAngle)
+        {
+            PspBulletRenderSinCos(renderAngle, &this->pspRenderSin, &this->pspRenderCos);
+            this->pspRenderAngle = renderAngle;
+            this->pspRenderRotationValid = 1;
+        }
+        g_AnmManager->DrawPspBullet(vm, &this->pspRenderSin, &this->pspRenderCos);
+    }
+    else
+    {
+        g_AnmManager->DrawPspBullet(vm);
+    }
+#else
     if (vm->autoRotate)
     {
         vm->SetRotationZ(utils::AddNormalizeAngle(1.5707964f + this->angle, 0.0f));
         vm->updateRotation = 1;
     }
     g_AnmManager->Draw(vm);
+#endif
 }
 
 u32 BulletManager::OnDraw(BulletManager *arg)
@@ -1205,7 +1269,11 @@ u32 BulletManager::OnDraw(BulletManager *arg)
         {
             continue;
         }
+#if defined(TH07_PSP)
+        PspBulletRenderSinCos(laser->angle, &local_c, &local_18);
+#else
         sincosf(&local_c, &local_18, laser->angle);
+#endif
         local_14 = (laser->endOffset - laser->startOffset) / 2.0f + laser->startOffset;
         laser->vm0.pos.x = local_18 * local_14 + laser->pos.x;
         laser->vm0.pos.y = local_c * local_14 + laser->pos.y;

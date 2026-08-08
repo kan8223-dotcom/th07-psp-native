@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "AnmVm.hpp"
+#include "AnmIdx.hpp"
 #include "FileSystem.hpp"
 #include "GameErrorContext.hpp"
 #include "Rng.hpp"
@@ -15,6 +16,12 @@
 #include "TextHelper.hpp"
 #include "ZunMath.hpp"
 #include "graphics/ZunGraphics.hpp"
+#if defined(TH07_PSP)
+#include <pspmath.h>
+
+#include "fileio.hpp"
+#include "graphics/PspGuGraphics.hpp"
+#endif
 #include "utils.hpp"
 
 AnmManager *g_AnmManager;
@@ -24,6 +31,47 @@ VertexTex1DiffuseXyzrhw g_QuadVertices[4];
 VertexTex1Xyzrhw g_QuadTemplate[4];
 
 VertexTex1DiffuseXyz g_Quad3DFallback[4];
+
+#if defined(TH07_PSP)
+namespace
+{
+inline float PspRenderFloor(float value)
+{
+    if (!std::isfinite(value) || value < -2147483520.0f || value > 2147483520.0f)
+    {
+        return floorf(value);
+    }
+    float result;
+    asm volatile("floor.w.s %0, %1\n\t"
+                 "cvt.s.w %0, %0"
+                 : "=&f"(result)
+                 : "f"(value));
+    return result;
+}
+
+inline void PspRenderSinCos(float angle, float *outSin, float *outCos)
+{
+    if (std::isfinite(angle) && angle >= -16.0f * ZUN_PI && angle <= 16.0f * ZUN_PI)
+    {
+        vfpu_sincos(angle, outSin, outCos);
+        return;
+    }
+    sincosf(outSin, outCos, angle);
+}
+
+inline void WritePspSpriteVertex(VertexTex1DiffuseXyzrhw &out, float x, float y, float z,
+                                 float u, float v, ZunColor color)
+{
+    out.pos.x = x;
+    out.pos.y = y;
+    out.pos.z = z;
+    out.w = 1.0f;
+    out.color = color;
+    out.textureUV.x = u;
+    out.textureUV.y = v;
+}
+} // namespace
+#endif
 
 AnmManager::AnmManager()
 {
@@ -139,8 +187,23 @@ ZunResult AnmManager::LoadTexture(i32 textureIdx, const char *texturePath, u32 c
     g_Supervisor.gfxDevice->SetTextureImage(converted->w, converted->h, PIXEL_RGBA,
                                             PIXEL_UNSIGNED_BYTE, converted->pixels);
 
+#if defined(TH07_PSP)
+    // Embedded ANM textures are immutable after upload.  Keeping an additional
+    // RGBA8888 copy of every one exhausted the PSP heap on stage 4, whose five
+    // background atlases alone duplicated about 2.5 MiB before stg4enm.anm was
+    // opened.  The CPU copies are only consumed by CopyTexture/alpha merging;
+    // both operate on the separately loaded/empty GUI atlases, never embedded
+    // stage or enemy images.
+    this->imageDataArray[textureIdx] = nullptr;
+#else
     this->imageDataArray[textureIdx] = malloc(converted->pitch * converted->h);
+    if (!this->imageDataArray[textureIdx])
+    {
+        SDL_FreeSurface(converted);
+        return ZUN_ERROR;
+    }
     memcpy(this->imageDataArray[textureIdx], converted->pixels, converted->pitch * converted->h);
+#endif
 
     textureWidths[textureIdx] = converted->w;
     textureHeights[textureIdx] = converted->h;
@@ -155,6 +218,31 @@ ZunResult AnmManager::LoadTextureEmbedded(u32 textureIdx, ZunImageInfoEmbedded *
     SDL_Surface *surface;
 
     ReleaseTexture(textureIdx);
+
+#if defined(TH07_PSP)
+    // front.anm textures 21 and 22 are the only embedded images read back by
+    // Gui::CopyTemplateSpriteToSprite().  Every other embedded bitmap becomes
+    // immutable after its GE upload, so retaining a second 32-bit CPU copy
+    // wastes up to 1 MiB per 512x512 atlas and fragments title -> demo loads.
+    const bool keepCpuCopy = textureIdx == ANM_FILE_FRONT ||
+                             textureIdx == ANM_FILE_FRONT + 1;
+    if (!keepCpuCopy && (imageInfo->format == 3 || imageInfo->format == 5))
+    {
+        this->textures[textureIdx] = g_Supervisor.gfxDevice->CreateTexture();
+        g_Supervisor.gfxDevice->BindTexture(this->textures[textureIdx]);
+        g_Supervisor.gfxDevice->SetTextureImage(
+            imageInfo->width, imageInfo->height,
+            imageInfo->format == 3 ? PIXEL_RGB : PIXEL_RGBA,
+            imageInfo->format == 3 ? PIXEL_UNSIGNED_SHORT_5_6_5
+                                   : PIXEL_UNSIGNED_SHORT_4_4_4_4,
+            imageInfo->data);
+        this->imageDataArray[textureIdx] = nullptr;
+        textureWidths[textureIdx] = imageInfo->width;
+        textureHeights[textureIdx] = imageInfo->height;
+        texturePitches[textureIdx] = imageInfo->width * 4;
+        return ZUN_SUCCESS;
+    }
+#endif
 
     u32 bpp = g_TextureBytesPerPixel[imageInfo->format];
     u32 depth = bpp * 8;
@@ -199,11 +287,51 @@ ZunResult AnmManager::LoadTextureEmbedded(u32 textureIdx, ZunImageInfoEmbedded *
 
     this->textures[textureIdx] = g_Supervisor.gfxDevice->CreateTexture();
     g_Supervisor.gfxDevice->BindTexture(this->textures[textureIdx]);
-    g_Supervisor.gfxDevice->SetTextureImage(converted->w, converted->h, PIXEL_RGBA,
-                                            PIXEL_UNSIGNED_BYTE, converted->pixels);
+#if defined(TH07_PSP)
+    if (imageInfo->format == 3)
+    {
+        g_Supervisor.gfxDevice->SetTextureImage(converted->w, converted->h, PIXEL_RGB,
+                                                PIXEL_UNSIGNED_SHORT_5_6_5, imageInfo->data);
+    }
+    else if (imageInfo->format == 5)
+    {
+        g_Supervisor.gfxDevice->SetTextureImage(converted->w, converted->h, PIXEL_RGBA,
+                                                PIXEL_UNSIGNED_SHORT_4_4_4_4, imageInfo->data);
+    }
+    else
+#endif
+    {
+        g_Supervisor.gfxDevice->SetTextureImage(converted->w, converted->h, PIXEL_RGBA,
+                                                PIXEL_UNSIGNED_BYTE, converted->pixels);
+    }
 
+#if defined(TH07_PSP)
+    if (keepCpuCopy)
+    {
+        this->imageDataArray[textureIdx] = malloc(converted->pitch * converted->h);
+        if (!this->imageDataArray[textureIdx])
+        {
+            SDL_FreeSurface(converted);
+            ReleaseTexture(textureIdx);
+            return ZUN_ERROR;
+        }
+        memcpy(this->imageDataArray[textureIdx], converted->pixels,
+               converted->pitch * converted->h);
+    }
+    else
+    {
+        this->imageDataArray[textureIdx] = nullptr;
+    }
+#else
     this->imageDataArray[textureIdx] = malloc(converted->pitch * converted->h);
+    if (!this->imageDataArray[textureIdx])
+    {
+        SDL_FreeSurface(converted);
+        ReleaseTexture(textureIdx);
+        return ZUN_ERROR;
+    }
     memcpy(this->imageDataArray[textureIdx], converted->pixels, converted->pitch * converted->h);
+#endif
 
     textureWidths[textureIdx] = converted->w;
     textureHeights[textureIdx] = converted->h;
@@ -274,15 +402,33 @@ ZunResult AnmManager::LoadTextureAlphaChannel(i32 textureIdx, const char *textur
     return ZUN_SUCCESS;
 }
 
-ZunResult AnmManager::CreateEmptyTexture(i32 textureIdx, u32 width, u32 height)
+ZunResult AnmManager::CreateEmptyTexture(i32 textureIdx, u32 width, u32 height,
+                                         i32 textureFormat)
 {
     ReleaseTexture(textureIdx);
     this->textures[textureIdx] = g_Supervisor.gfxDevice->CreateTexture();
 
     void *emptyData = calloc(width * height, 4);
     g_Supervisor.gfxDevice->BindTexture(this->textures[textureIdx]);
+#if defined(TH07_PSP)
+    // Keep an empty ANM atlas in its declared format during registration.
+    // TextHelper prewarms FreeType first; the PSP backend then promotes only
+    // atlases which actually receive dynamic glyphs to RGBA8888 immediately
+    // before their first sub-image upload.
+    PixelDataType uploadType = PIXEL_UNSIGNED_BYTE;
+    if (textureFormat == 3)
+    {
+        uploadType = PIXEL_UNSIGNED_SHORT_5_6_5;
+    }
+    else if (textureFormat == 5)
+    {
+        uploadType = PIXEL_UNSIGNED_SHORT_4_4_4_4;
+    }
+    g_Supervisor.gfxDevice->SetTextureImage(width, height, PIXEL_RGBA, uploadType, nullptr);
+#else
     g_Supervisor.gfxDevice->SetTextureImage(width, height, PIXEL_RGBA, PIXEL_UNSIGNED_BYTE,
                                             emptyData);
+#endif
 
     this->imageDataArray[textureIdx] = emptyData;
 
@@ -304,9 +450,127 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     i32 startIdx = anmIdx;
     if (!entry)
     {
+#if defined(TH07_PSP_PERF_DIAG)
+        th07_psp_boot_notef("ANM OPEN NG %s", path ? path : "?");
+#endif
         g_GameErrorContext.Fatal("アニメが読み込めません。データが失われてるか壊れています\n");
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_boot_notef("ANM BEGIN %s %uK", path ? path : "?", g_LastFileSize / 1024u);
+#endif
+#if defined(TH07_PSP)
+    // Embedded ANMs keep their scripts before textureOffset and the complete
+    // bitmap after it.  Once a bitmap has been uploaded, retaining that tail
+    // duplicates hundreds of KiB (several MiB for stage portraits) in the
+    // PSP heap.  Build a compact script/header copy, point textureOffset at
+    // the original bitmap only for LoadAnm(), then release the source file.
+    // Every stored script/name pointer consequently targets the compact copy.
+    {
+        AnmRawEntry *sourceBase = entry;
+        const u32 sourceSize = g_LastFileSize;
+        u32 sourceOffset = 0;
+        u32 compactSize = 0;
+        u32 entryCount = 0;
+        bool canCompact = true;
+
+        while (canCompact)
+        {
+            if (sourceOffset > sourceSize || sourceSize - sourceOffset < sizeof(AnmRawEntry))
+            {
+                canCompact = false;
+                break;
+            }
+            AnmRawEntry *sourceEntry =
+                reinterpret_cast<AnmRawEntry *>(reinterpret_cast<u8 *>(sourceBase) + sourceOffset);
+            const u32 entrySpan =
+                sourceEntry->nextOffset ? static_cast<u32>(sourceEntry->nextOffset)
+                                        : sourceSize - sourceOffset;
+            if (!sourceEntry->hasData || sourceEntry->textureOffset < (i32)sizeof(AnmRawEntry) ||
+                static_cast<u32>(sourceEntry->textureOffset) > entrySpan ||
+                entrySpan > sourceSize - sourceOffset)
+            {
+                canCompact = false;
+                break;
+            }
+            compactSize += (static_cast<u32>(sourceEntry->textureOffset) + 3u) & ~3u;
+            ++entryCount;
+            if (!sourceEntry->nextOffset)
+            {
+                break;
+            }
+            sourceOffset += static_cast<u32>(sourceEntry->nextOffset);
+        }
+
+        u8 *compactBase = canCompact ? static_cast<u8 *>(malloc(compactSize)) : nullptr;
+        if (compactBase)
+        {
+            sourceOffset = 0;
+            u32 compactOffset = 0;
+            i32 currentAnmIdx = anmIdx;
+            i32 currentSpriteOffset = spriteIdxOffset;
+            i32 loadedCount = 0;
+            for (u32 compactEntryIdx = 0; compactEntryIdx < entryCount; ++compactEntryIdx)
+            {
+                AnmRawEntry *sourceEntry = reinterpret_cast<AnmRawEntry *>(
+                    reinterpret_cast<u8 *>(sourceBase) + sourceOffset);
+                const u32 metadataSize = static_cast<u32>(sourceEntry->textureOffset);
+                const u32 compactSpan = (metadataSize + 3u) & ~3u;
+                AnmRawEntry *compactEntry =
+                    reinterpret_cast<AnmRawEntry *>(compactBase + compactOffset);
+                memcpy(compactEntry, sourceEntry, metadataSize);
+                if (compactSpan > metadataSize)
+                {
+                    memset(compactBase + compactOffset + metadataSize, 0,
+                           compactSpan - metadataSize);
+                }
+                compactEntry->nextOffset =
+                    compactEntryIdx + 1 < entryCount ? static_cast<i32>(compactSpan) : 0;
+
+                const i32 storedTextureOffset = compactEntry->textureOffset;
+                compactEntry->textureOffset = static_cast<i32>(
+                    reinterpret_cast<u8 *>(sourceEntry) + storedTextureOffset -
+                    reinterpret_cast<u8 *>(compactEntry));
+                res = LoadAnm(currentAnmIdx, compactEntry, currentSpriteOffset,
+                              compactEntryIdx == 0 ? 1 : 0);
+                compactEntry->textureOffset = storedTextureOffset;
+                if (res < 0)
+                {
+                    this->anmFiles[anmIdx].childCount = loadedCount;
+                    if (loadedCount > 0)
+                    {
+                        ReleaseAnm(anmIdx);
+                    }
+                    else
+                    {
+                        free(compactBase);
+                    }
+                    free(sourceBase);
+                    return res;
+                }
+                ++loadedCount;
+                ++currentAnmIdx;
+                currentSpriteOffset += res;
+                compactOffset += compactSpan;
+                if (sourceEntry->nextOffset)
+                {
+                    sourceOffset += static_cast<u32>(sourceEntry->nextOffset);
+                }
+            }
+            this->anmFiles[anmIdx].childCount = loadedCount;
+            free(sourceBase);
+#if defined(TH07_PSP_PERF_DIAG)
+            th07_psp_boot_notef("ANM OK %s SRC%uK META%uK N%u", path ? path : "?",
+                                sourceSize / 1024u, compactSize / 1024u, entryCount);
+#endif
+            return ZUN_SUCCESS;
+        }
+#if defined(TH07_PSP_PERF_DIAG)
+        th07_psp_boot_notef("ANM COMPACT SKIP %s SRC%uK META%uK VALID%u", path ? path : "?",
+                            sourceSize / 1024u, compactSize / 1024u, canCompact ? 1u : 0u);
+#endif
+    }
+#endif
     while (true)
     {
         res = LoadAnm(anmIdx, entry, spriteIdxOffset, ownsMemory);
@@ -362,7 +626,7 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
         name = (char *)((u8 *)data + data->nameOffset);
         if (*name == '@')
         {
-            CreateEmptyTexture(data->textureIdx, data->width, data->height);
+            CreateEmptyTexture(data->textureIdx, data->width, data->height, data->format);
         }
         else
         {
@@ -519,14 +783,22 @@ void AnmManager::LoadSprite(u32 spriteIdx, AnmLoadedSprite *sprite)
     this->sprites[spriteIdx] = *sprite;
     this->sprites[spriteIdx].spriteId = this->loadedSpriteCount++;
 
+    // Same texel-centre correction as the final TH06 port.  With linear
+    // filtering, sampling an integer atlas edge blends the requested cell
+    // with its neighbour; this caused the PSP HUD grid and softened the edge
+    // of dynamic text glyphs.
     this->sprites[spriteIdx].uvStart.x =
-        this->sprites[spriteIdx].startPixelInclusive.x / (this->sprites[spriteIdx].textureWidth);
+        (this->sprites[spriteIdx].startPixelInclusive.x + 0.5f) /
+        this->sprites[spriteIdx].textureWidth;
     this->sprites[spriteIdx].uvEnd.x =
-        this->sprites[spriteIdx].endPixelInclusive.x / (this->sprites[spriteIdx].textureWidth);
+        (this->sprites[spriteIdx].endPixelInclusive.x - 0.5f) /
+        this->sprites[spriteIdx].textureWidth;
     this->sprites[spriteIdx].uvStart.y =
-        this->sprites[spriteIdx].startPixelInclusive.y / (this->sprites[spriteIdx].textureHeight);
+        (this->sprites[spriteIdx].startPixelInclusive.y + 0.5f) /
+        this->sprites[spriteIdx].textureHeight;
     this->sprites[spriteIdx].uvEnd.y =
-        this->sprites[spriteIdx].endPixelInclusive.y / (this->sprites[spriteIdx].textureHeight);
+        (this->sprites[spriteIdx].endPixelInclusive.y - 0.5f) /
+        this->sprites[spriteIdx].textureHeight;
     this->sprites[spriteIdx].widthPx = (this->sprites[spriteIdx].endPixelInclusive.x -
                                         this->sprites[spriteIdx].startPixelInclusive.x) /
                                        sprite->cols;
@@ -579,6 +851,12 @@ void AnmManager::SetRenderStateForVm(AnmVm *vm)
 
     if ((u32)this->currentBlendMode != vm->blendMode)
     {
+        // Sprites are batched until Flush().  Changing the GU blend function
+        // first makes every queued sprite use the new VM's mode.  Player-shot
+        // impact sprites share the player atlas, so their additive mode was
+        // consequently applied to the already queued player sprite and made
+        // it flash white while shots were hitting an enemy.
+        this->Flush();
         this->currentBlendMode = vm->blendMode;
         if (!this->currentBlendMode)
         {
@@ -625,6 +903,7 @@ void AnmManager::SetRenderStateForVm(AnmVm *vm)
     }
     if (!g_Supervisor.cfg.disableZBuffer && (u32)this->currentZWriteDisable != vm->zWriteDisable)
     {
+        this->Flush();
         this->currentZWriteDisable = vm->zWriteDisable;
         g_Supervisor.gfxDevice->SetDepthMask(this->currentZWriteDisable == 0);
     }
@@ -650,6 +929,7 @@ void AnmManager::SyncRenderState(AnmVm *vm)
 {
     if ((u32)this->currentBlendMode != vm->blendMode)
     {
+        this->Flush();
         this->currentBlendMode = vm->blendMode;
         if (!this->currentBlendMode)
         {
@@ -662,13 +942,14 @@ void AnmManager::SyncRenderState(AnmVm *vm)
     }
     if (!g_Supervisor.cfg.disableZBuffer && (u32)this->currentZWriteDisable != vm->zWriteDisable)
     {
+        this->Flush();
         this->currentZWriteDisable = vm->zWriteDisable;
         g_Supervisor.gfxDevice->SetDepthMask(this->currentZWriteDisable == 0);
     }
     this->renderStateChangesThisFrame++;
 }
 
-ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags)
+ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipTop)
 {
     ZunColor color;
     f32 triangleX1, triangleX2, triangleY1, triangleY2;
@@ -684,10 +965,17 @@ ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags)
 
     if ((drawFlags & 1) != 0)
     {
+#if defined(TH07_PSP)
+        g_QuadVertices[0].pos.x = PspRenderFloor(g_QuadVertices[0].pos.x + 0.5f);
+        g_QuadVertices[1].pos.x = PspRenderFloor(g_QuadVertices[1].pos.x + 0.5f);
+        g_QuadVertices[0].pos.y = PspRenderFloor(g_QuadVertices[0].pos.y + 0.5f);
+        g_QuadVertices[2].pos.y = PspRenderFloor(g_QuadVertices[2].pos.y + 0.5f);
+#else
         g_QuadVertices[0].pos.x = floorf(g_QuadVertices[0].pos.x + 0.5f);
         g_QuadVertices[1].pos.x = floorf(g_QuadVertices[1].pos.x + 0.5f);
         g_QuadVertices[0].pos.y = floorf(g_QuadVertices[0].pos.y + 0.5f);
         g_QuadVertices[2].pos.y = floorf(g_QuadVertices[2].pos.y + 0.5f);
+#endif
         g_QuadVertices[1].pos.y = g_QuadVertices[0].pos.y;
         g_QuadVertices[2].pos.x = g_QuadVertices[0].pos.x;
         g_QuadVertices[3].pos.x = g_QuadVertices[1].pos.x;
@@ -702,6 +990,30 @@ ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags)
         vm->sprite->uvStart.y + vm->uvScrollPos.y;
     g_QuadVertices[2].textureUV.y = g_QuadVertices[3].textureUV.y =
         vm->sprite->uvEnd.y + vm->uvScrollPos.y;
+
+#if defined(TH07_PSP)
+    // Dialogue portraits can extend a fraction above the logical screen.  On
+    // the 480x272 output the clipped, linearly filtered edge then becomes a
+    // one-pixel-wide fragment across the physical top row.  Callers opt into
+    // this small geometry/UV clip; ordinary sprites retain original behavior.
+    const f32 top = g_QuadVertices[0].pos.y;
+    const f32 bottom = g_QuadVertices[2].pos.y;
+    if (pspClipTop > -999999.0f && top < pspClipTop && bottom > top)
+    {
+        if (bottom <= pspClipTop)
+        {
+            return ZUN_SUCCESS;
+        }
+        const f32 ratio = (pspClipTop - top) / (bottom - top);
+        const f32 clippedV = g_QuadVertices[0].textureUV.y +
+                             (g_QuadVertices[2].textureUV.y -
+                              g_QuadVertices[0].textureUV.y) * ratio;
+        g_QuadVertices[0].pos.y = g_QuadVertices[1].pos.y = pspClipTop;
+        g_QuadVertices[0].textureUV.y = g_QuadVertices[1].textureUV.y = clippedV;
+    }
+#else
+    (void)pspClipTop;
+#endif
 
     triangleX1 = std::max(g_QuadVertices[0].pos.x, g_QuadVertices[1].pos.x);
     triangleX1 = std::max(g_QuadVertices[2].pos.x, triangleX1);
@@ -775,9 +1087,15 @@ void AnmManager::Flush()
     g_Supervisor.gfxDevice->SetColorOp(COMPONENT_ALPHA, COLOR_OP_MODULATE);
     g_Supervisor.gfxDevice->SetColorOp(COMPONENT_RGB, COLOR_OP_MODULATE);
 
+#if defined(TH07_PSP)
+    g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_QUADS, this->spritesToDraw,
+                                            this->vertexBufferStartPtr,
+                                            sizeof(VertexTex1DiffuseXyzrhw));
+#else
     g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLES, this->spritesToDraw << 1,
                                             this->vertexBufferStartPtr,
                                             sizeof(VertexTex1DiffuseXyzrhw));
+#endif
     this->vertexBufferStartPtr = this->vertexBufferCurPtr;
     this->spritesToDraw = 0;
     this->flushesThisFrame++;
@@ -785,19 +1103,26 @@ void AnmManager::Flush()
 
 ZunResult AnmManager::PushSprite(VertexTex1DiffuseXyzrhw *spriteVertex)
 {
+#if defined(TH07_PSP)
+    this->vertexBufferCurPtr[0] = spriteVertex[0];
+    this->vertexBufferCurPtr[1] = spriteVertex[1];
+    this->vertexBufferCurPtr[2] = spriteVertex[2];
+    this->vertexBufferCurPtr[3] = spriteVertex[3];
+    this->vertexBufferCurPtr += 4;
+#else
     this->vertexBufferCurPtr[0] = spriteVertex[0];
     this->vertexBufferCurPtr[1] = spriteVertex[1];
     this->vertexBufferCurPtr[2] = spriteVertex[2];
     this->vertexBufferCurPtr[3] = spriteVertex[1];
     this->vertexBufferCurPtr[4] = spriteVertex[2];
     this->vertexBufferCurPtr[5] = spriteVertex[3];
-
-    this->vertexBufferCurPtr = this->vertexBufferCurPtr + 6;
+    this->vertexBufferCurPtr += 6;
+#endif
     this->spritesToDraw++;
     return ZUN_SUCCESS;
 }
 
-ZunResult AnmManager::DrawNoRotation(AnmVm *vm)
+ZunResult AnmManager::DrawNoRotation(AnmVm *vm, f32 pspClipTop)
 {
     f32 centerY;
     f32 centerX;
@@ -845,7 +1170,7 @@ ZunResult AnmManager::DrawNoRotation(AnmVm *vm)
     g_QuadVertices[0].pos.z = g_QuadVertices[1].pos.z = g_QuadVertices[2].pos.z =
         g_QuadVertices[3].pos.z = vm->pos.z;
 
-    return DrawInner(vm, 1);
+    return DrawInner(vm, 1, pspClipTop);
 }
 
 void AnmManager::TranslateRotation(VertexTex1DiffuseXyzrhw *vertex, f32 width, f32 height, f32 sine,
@@ -883,7 +1208,11 @@ ZunResult AnmManager::Draw(AnmVm *vm)
     }
 
     z = vm->rotation.z;
+#if defined(TH07_PSP)
+    PspRenderSinCos(z, &sinZ, &cosZ);
+#else
     sincosf(&sinZ, &cosZ, z);
+#endif
     xOffset = vm->pos.x;
     yOffset = vm->pos.y;
     width = vm->sprite->widthPx * vm->scale.x / 2.0f;
@@ -913,6 +1242,126 @@ ZunResult AnmManager::Draw(AnmVm *vm)
 
     return DrawInner(vm, 0);
 }
+
+#if defined(TH07_PSP)
+ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *cachedCos)
+{
+    // TH06's largest SC-side win was avoiding the generic four-vertex
+    // temporary plus a second six-vertex copy for every bullet.  TH07's
+    // bullet VMs use the same simple screen-space sprite contract, so emit
+    // their final triangle stream directly into the existing Anm batch.
+    if (!vm || !vm->sprite || !vm->visible || !vm->active || !vm->color.bytes.a)
+    {
+        return ZUN_ERROR;
+    }
+
+    const float halfWidth = vm->sprite->widthPx * vm->scale.x * 0.5f;
+    const float halfHeight = vm->sprite->heightPx * vm->scale.y * 0.5f;
+    float x[4];
+    float y[4];
+    if (vm->rotation.z == 0.0f)
+    {
+        const float rawLeft = (vm->anchor & 1) ? vm->pos.x : vm->pos.x - halfWidth;
+        const float rawRight = (vm->anchor & 1) ? vm->pos.x + halfWidth * 2.0f
+                                                : vm->pos.x + halfWidth;
+        const float rawTop = (vm->anchor & 2) ? vm->pos.y : vm->pos.y - halfHeight;
+        const float rawBottom = (vm->anchor & 2) ? vm->pos.y + halfHeight * 2.0f
+                                                 : vm->pos.y + halfHeight;
+        const float left = PspRenderFloor(rawLeft + this->offset.x + 0.5f);
+        const float right = PspRenderFloor(rawRight + this->offset.x + 0.5f);
+        const float top = PspRenderFloor(rawTop + this->offset.y + 0.5f);
+        const float bottom = PspRenderFloor(rawBottom + this->offset.y + 0.5f);
+        x[0] = x[2] = left;
+        x[1] = x[3] = right;
+        y[0] = y[1] = top;
+        y[2] = y[3] = bottom;
+    }
+    else
+    {
+        float sine;
+        float cosine;
+        if (cachedSin && cachedCos)
+        {
+            sine = *cachedSin;
+            cosine = *cachedCos;
+        }
+        else
+        {
+            PspRenderSinCos(vm->rotation.z, &sine, &cosine);
+        }
+        const float localX[4] = {-halfWidth, halfWidth, -halfWidth, halfWidth};
+        const float localY[4] = {-halfHeight, -halfHeight, halfHeight, halfHeight};
+        for (int i = 0; i < 4; ++i)
+        {
+            x[i] = localX[i] * cosine - localY[i] * sine + vm->pos.x + this->offset.x;
+            y[i] = localX[i] * sine + localY[i] * cosine + vm->pos.y + this->offset.y;
+            if (vm->anchor & 1)
+            {
+                x[i] += halfWidth;
+            }
+            if (vm->anchor & 2)
+            {
+                y[i] += halfHeight;
+            }
+        }
+    }
+
+    float minX = x[0];
+    float maxX = x[0];
+    float minY = y[0];
+    float maxY = y[0];
+    for (int i = 1; i < 4; ++i)
+    {
+        minX = std::min(minX, x[i]);
+        maxX = std::max(maxX, x[i]);
+        minY = std::min(minY, y[i]);
+        maxY = std::max(maxY, y[i]);
+    }
+    if (maxX < g_Supervisor.viewport.x || maxY < g_Supervisor.viewport.y ||
+        minX > g_Supervisor.viewport.x + g_Supervisor.viewport.width ||
+        minY > g_Supervisor.viewport.y + g_Supervisor.viewport.height)
+    {
+        return ZUN_SUCCESS;
+    }
+
+    const GfxTextureHandle texture = this->textures[vm->sprite->sourceFileIndex];
+    if (this->currentTexture != texture)
+    {
+        this->currentTexture = texture;
+        this->Flush();
+        g_Supervisor.gfxDevice->BindTexture(this->currentTexture);
+    }
+    if (this->currentVertexShader != 1)
+    {
+        this->Flush();
+        this->currentVertexShader = 1;
+    }
+
+    ZunColor color = vm->useColor2 ? vm->color2 : vm->color;
+    if (this->colorMulEnabled)
+    {
+        color.bytes.r = ZunColor::Multiply(color.bytes.r, this->color.bytes.r);
+        color.bytes.g = ZunColor::Multiply(color.bytes.g, this->color.bytes.g);
+        color.bytes.b = ZunColor::Multiply(color.bytes.b, this->color.bytes.b);
+        color.bytes.a = ZunColor::Multiply(color.bytes.a, this->color.bytes.a);
+    }
+    SyncRenderState(vm);
+
+    const float u0 = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+    const float u1 = vm->sprite->uvEnd.x + vm->uvScrollPos.x;
+    const float v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
+    const float v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
+    const float z = vm->pos.z;
+    VertexTex1DiffuseXyzrhw *out = this->vertexBufferCurPtr;
+    WritePspSpriteVertex(out[0], x[0], y[0], z, u0, v0, color);
+    WritePspSpriteVertex(out[1], x[1], y[1], z, u1, v0, color);
+    WritePspSpriteVertex(out[2], x[2], y[2], z, u0, v1, color);
+    WritePspSpriteVertex(out[3], x[3], y[3], z, u1, v1, color);
+    this->vertexBufferCurPtr += 4;
+    ++this->spritesToDraw;
+    return ZUN_SUCCESS;
+}
+#endif
 
 ZunResult AnmManager::DrawFacingCamera(AnmVm *vm)
 {
@@ -977,7 +1426,11 @@ ZunResult AnmManager::CalcBillboardTransform(AnmVm *vm)
     ZunVec3 projectRightOffset;
     f32 cosZ;
 
+#if defined(TH07_PSP)
+    PspRenderSinCos(z, &sinZ, &cosZ);
+#else
     sincosf(&sinZ, &cosZ, z);
+#endif
 
     ZunVec3 origin(0.0f, 0.0f, 0.0f);
 
@@ -2100,7 +2553,7 @@ void AnmManager::DrawStringFormat2(AnmVm *vm, u32 textColor, u32 outlineType, co
 
 ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
 {
-    if (this->surfaces[surfaceIdx])
+    if (this->surfaces[surfaceIdx] || this->surfacesBis[surfaceIdx])
     {
         ReleaseSurface(surfaceIdx);
     }
@@ -2120,14 +2573,35 @@ ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
         return ZUN_ERROR;
     }
 
-    this->surfaces[surfaceIdx] = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_Surface *converted = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
     SDL_FreeSurface(surf);
+    if (!converted)
+    {
+        return ZUN_ERROR;
+    }
 
-    this->surfaceSourceInfo[surfaceIdx].width = this->surfaces[surfaceIdx]->w;
-    this->surfaceSourceInfo[surfaceIdx].height = this->surfaces[surfaceIdx]->h;
+    this->surfaceSourceInfo[surfaceIdx].width = converted->w;
+    this->surfaceSourceInfo[surfaceIdx].height = converted->h;
 
+#if defined(TH07_PSP)
+    // The portable reconstruction keeps two identical RGBA copies of every
+    // JPEG surface.  A 640x480 image costs about 1.2 MiB per copy; after the
+    // title ANM is resident, the second allocation can fail and the draw path
+    // silently returns because it only checks surfacesBis.  PSP never mutates
+    // either copy, so keep the single converted surface in the slot consumed
+    // by CopySurfaceToBackBuffer/DrawEndingRect.
+    this->surfaces[surfaceIdx] = nullptr;
+    this->surfacesBis[surfaceIdx] = converted;
+#else
+    this->surfaces[surfaceIdx] = converted;
     this->surfacesBis[surfaceIdx] =
         SDL_ConvertSurfaceFormat(this->surfaces[surfaceIdx], SDL_PIXELFORMAT_RGBA32, 0);
+    if (!this->surfacesBis[surfaceIdx])
+    {
+        ReleaseSurface(surfaceIdx);
+        return ZUN_ERROR;
+    }
+#endif
 
     return ZUN_SUCCESS;
 }
@@ -2136,11 +2610,17 @@ void AnmManager::ReleaseSurface(i32 surfaceIdx)
 {
     if (this->surfaces[surfaceIdx])
     {
+#if defined(TH07_PSP)
+        Th07PspForgetSurface(this->surfaces[surfaceIdx]->pixels);
+#endif
         SDL_FreeSurface(this->surfaces[surfaceIdx]);
         this->surfaces[surfaceIdx] = nullptr;
     }
     if (this->surfacesBis[surfaceIdx])
     {
+#if defined(TH07_PSP)
+        Th07PspForgetSurface(this->surfacesBis[surfaceIdx]->pixels);
+#endif
         SDL_FreeSurface(this->surfacesBis[surfaceIdx]);
         this->surfacesBis[surfaceIdx] = nullptr;
     }

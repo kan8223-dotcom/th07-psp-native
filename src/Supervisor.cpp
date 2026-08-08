@@ -26,6 +26,10 @@
 #include "dxutil.hpp"
 #include "graphics/ZunGraphics.hpp"
 #include "pbg4/Pbg4Archive.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#include "graphics/PspGuGraphics.hpp"
+#endif
 
 ControllerMapping g_ControllerMapping = {0, 1, 2, 4, -1, -1, -1, -1, 3};
 
@@ -154,6 +158,12 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
     }
     if (arg->wantedState != arg->curState)
     {
+#if defined(TH07_PSP)
+        char message[64];
+        std::snprintf(message, sizeof(message), "scene wanted %d current %d", arg->wantedState,
+                      arg->curState);
+        th07_psp_boot_note(message);
+#endif
         arg->prevState = arg->wantedState;
         Supervisor::DebugPrint("scene %d -> %d\n", arg->wantedState, arg->curState);
         switch (arg->wantedState)
@@ -174,6 +184,21 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
             case 2:
                 if (GameManager::RegisterChain() != ZUN_SUCCESS)
                 {
+#if defined(TH07_PSP)
+                    // A title attract demo is optional.  The inherited path
+                    // treated any partial demo asset failure as a successful
+                    // application exit, which looks like a forced PSP
+                    // shutdown.  Tear the partial game chain down through its
+                    // normal lifecycle and restore the title instead.
+                    if (g_GameManager.demo)
+                    {
+                        th07_psp_boot_note("demo init failed; return title");
+                        GameManager::CutChain();
+                        arg->prevState = 2;
+                        arg->curState = 0;
+                        goto CASE_0;
+                    }
+#endif
                     return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
                 }
                 break;
@@ -265,13 +290,58 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                 arg->curState = 2;
                 break;
             case 3:
+            {
+                const i32 completedStage = g_GameManager.currentStage;
                 GameManager::CutChain();
+#if defined(TH07_PSP)
+                // Do this before registration, not only after an allocation
+                // has already failed: stage 4 and 5 leave several differently
+                // sized atlas blocks behind, while stage 6 immediately needs
+                // another large set.  Returning the unused blocks lets libc
+                // coalesce them before any stage 6 parser/texture allocation.
+                const unsigned int boundaryReleasedBytes = Th07PspTrimTextureCache();
+                char boundaryMessage[96];
+                std::snprintf(boundaryMessage, sizeof(boundaryMessage),
+                              "stage boundary cache trimmed %uK before stage %d",
+                              boundaryReleasedBytes / 1024u, completedStage + 1);
+                th07_psp_boot_note(boundaryMessage);
+#endif
                 if (GameManager::RegisterChain() != ZUN_SUCCESS)
                 {
+#if defined(TH07_PSP)
+                    // A real PSP can reach this boundary with the heap split
+                    // among cached texture blocks after the large stage 4/5
+                    // atlases.  The original control flow reported a normal
+                    // application exit, so clearing stage 5 looked like an
+                    // unexplained return to XMB.  Dispose the partial stage 6
+                    // chain, release only unused backend blocks, then retry
+                    // the exact same stage once from a clean heap.
+                    th07_psp_boot_note("next stage init failed; trim texture cache");
+                    GameManager::CutChain();
+                    g_GameManager.currentStage = completedStage;
+                    const unsigned int releasedBytes = Th07PspTrimTextureCache();
+                    char message[96];
+                    std::snprintf(message, sizeof(message),
+                                  "texture cache trimmed %uK; retry stage %d",
+                                  releasedBytes / 1024u, completedStage + 1);
+                    th07_psp_boot_note(message);
+                    if (GameManager::RegisterChain() != ZUN_SUCCESS)
+                    {
+                        th07_psp_boot_note("next stage retry failed; return title");
+                        GameManager::CutChain();
+                        g_GameManager.currentStage = completedStage;
+                        arg->prevState = 2;
+                        arg->curState = 0;
+                        g_GameManager.demo = 0;
+                        goto CASE_0;
+                    }
+#else
                     return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
+#endif
                 }
                 arg->curState = 2;
                 break;
+            }
             case 7:
                 GameManager::CutChain();
                 arg->curState = 0;
@@ -394,6 +464,18 @@ ZunResult Supervisor::LoadGameData()
 
 i32 Supervisor::CheckVSync()
 {
+#if defined(TH07_PSP)
+    // The PSP backend always presents on vblank.  The PC probe can take the
+    // full 1,800-frame fallback when SDL's millisecond timer and GU vblank do
+    // not line up exactly, so it has no useful result on this platform.
+    for (i32 i = 0; i < 4; ++i)
+    {
+        g_AnmManager->CopySurfaceToBackBuffer(0, 0, 0, 0, 0);
+        g_Supervisor.gfxDevice->SwapBuffers();
+    }
+    g_Supervisor.vsyncEnabled = 1;
+    return 0;
+#else
     f32 fpsSum;
     i32 j;
     f32 fps;
@@ -475,6 +557,7 @@ i32 Supervisor::CheckVSync()
         }
     }
     return 0;
+#endif
 }
 
 ZunResult Supervisor::AddedCallback(Supervisor *arg)
@@ -619,8 +702,35 @@ ZunResult Supervisor::RegisterChain()
     ZunResult res;
 
     Supervisor *mgr = &g_Supervisor;
+#if defined(TH07_PSP_DIRECT_GAME)
+#if !defined(TH07_PSP_DIRECT_STAGE)
+#define TH07_PSP_DIRECT_STAGE 3
+#endif
+    // Gameplay bring-up route: reproduce the normal menu result without
+    // spending each test run traversing the title and selection screens.
+    // AddedCallback still performs the common archive/config initialization;
+    // the first supervisor update then registers GameManager directly.
+    g_GameManager.practice = 0;
+    g_GameManager.demo = 0;
+    g_GameManager.character = CHAR_REIMU;
+    g_GameManager.shotType = 0;
+    static_assert(TH07_PSP_DIRECT_STAGE >= 1 && TH07_PSP_DIRECT_STAGE <= 8,
+                  "TH07_PSP_DIRECT_STAGE must be in the range 1..8");
+    g_GameManager.currentStage = TH07_PSP_DIRECT_STAGE - 1;
+    g_GameManager.difficulty = DIFF_NORMAL;
+    g_GameManager.SetReplay(0);
+    mgr->wantedState = 1;
+    mgr->curState = 2;
+    {
+        char message[64];
+        std::snprintf(message, sizeof(message), "direct game normal reimu-a stage %d",
+                      TH07_PSP_DIRECT_STAGE);
+        th07_psp_boot_note(message);
+    }
+#else
     mgr->wantedState = 0;
     mgr->curState = -1;
+#endif
     mgr->calcCount = 0;
     ChainElem *chain = g_Chain.CreateElem((ChainCallback)OnUpdate);
     chain->arg = mgr;
@@ -862,6 +972,13 @@ ZunResult Supervisor::LoadConfig(const char *configFilename)
     i32 bgm2Data[4];
     FILE *bgm2;
     u32 *configFile;
+#if defined(TH07_PSP)
+    char resolvedBgmPath[768];
+    const char *bgmPath =
+        th07_psp_resolve_path("thbgm.dat", resolvedBgmPath, sizeof(resolvedBgmPath));
+#else
+    const char *bgmPath = "./thbgm.dat";
+#endif
 
     memset(&g_Supervisor.cfg, 0, sizeof(GameConfiguration));
     configFile = (u32 *)FileSystem::OpenFile((char *)configFilename, 1);
@@ -875,7 +992,7 @@ ZunResult Supervisor::LoadConfig(const char *configFilename)
         g_Supervisor.cfg.version = 0x70002;
         g_Supervisor.cfg.padAxisX = 600;
         g_Supervisor.cfg.padAxisY = 600;
-        bgm2 = fopen("./thbgm.dat", "rb");
+        bgm2 = fopen(bgmPath, "rb");
         if (bgm2)
         {
             fread(bgm2Data, 16, 1, bgm2);
@@ -906,7 +1023,7 @@ ZunResult Supervisor::LoadConfig(const char *configFilename)
         g_Supervisor.cfg = *(GameConfiguration *)configFile;
         free(configFile);
 
-        bgm = fopen("./thbgm.dat", "rb");
+        bgm = fopen(bgmPath, "rb");
         if (bgm)
         {
             fread(bgmData, 16, 1, bgm);
@@ -931,6 +1048,14 @@ ZunResult Supervisor::LoadConfig(const char *configFilename)
         g_ControllerMapping = g_Supervisor.cfg.controllerMapping;
     }
     g_Supervisor.cfg.loaded = 1;
+#if defined(TH07_PSP)
+    // PSP has no MIDI synthesizer. Prefer the original PCM archive whenever
+    // it is installed, and always stream it instead of allocating a whole
+    // track in the game's already-tight heap.
+    g_Supervisor.cfg.musicMode =
+        FileSystem::CheckFileExists("thbgm.dat") ? MUSIC_WAV : MUSIC_OFF;
+    g_Supervisor.cfg.preloadBgm = 0;
+#endif
     if (this->cfg.noVertexBuffers)
     {
         g_GameErrorContext.Log("頂点バッファの使用を抑制します\n");

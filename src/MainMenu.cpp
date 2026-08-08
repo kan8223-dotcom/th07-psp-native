@@ -20,6 +20,9 @@
 #include "Supervisor.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -109,6 +112,25 @@ void MainMenu::SetGameState(GameState gameState)
 u32 MainMenu::OnUpdate(MainMenu *arg)
 {
     u32 result;
+#if defined(TH07_PSP_DIRECT_GAME)
+    static u32 updateCount;
+    static i32 lastState = -1;
+    static i32 lastSubState = -1;
+    updateCount++;
+    if (arg->gameState != lastState || arg->menuSubState != lastSubState ||
+        updateCount % 300 == 0)
+    {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "menu tick %u state %d sub %d cursor %d input %04x idle %d",
+                      static_cast<unsigned int>(updateCount), arg->gameState,
+                      arg->menuSubState, arg->cursor,
+                      static_cast<unsigned int>(g_CurFrameRawInput), arg->idleFrames);
+        th07_psp_boot_note(message);
+        lastState = arg->gameState;
+        lastSubState = arg->menuSubState;
+    }
+#endif
 
     switch (arg->gameState)
     {
@@ -2344,10 +2366,29 @@ ZunResult MainMenu::ActualAddedCallback()
     i32 frameCount;
     ScoreDat *local_8;
 
+#if defined(TH07_PSP)
+    th07_psp_boot_note("menu added begin");
+#endif
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu pre cfg delete");
+#endif
+
     SAFE_DELETE(g_GameManager.defaultCfg);
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu post cfg delete");
+#endif
     g_GameManager.defaultCfg = new GameConfiguration;
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu post cfg new");
+#endif
     SAFE_DELETE(g_GameManager.globals);
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu post globals delete");
+#endif
     g_GameManager.globals = new ZunGlobals;
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu post globals new");
+#endif
     g_Supervisor.effectiveFramerateMultiplier = 1.0f;
     if (g_GameManager.replay)
     {
@@ -2359,10 +2400,16 @@ ZunResult MainMenu::ActualAddedCallback()
         g_GameManager.replay = 0;
     }
     local_8 = ResultScreen::OpenScore("score.dat");
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu score open");
+#endif
     ResultScreen::ParseClrd(local_8, g_GameManager.clrd);
     ResultScreen::ParsePscr(local_8, &g_GameManager.pscr[0][0][0]);
     ResultScreen::ParseCatk(local_8, g_GameManager.catk);
     ResultScreen::ReleaseScoreDat(local_8);
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu score parsed");
+#endif
     if (g_GameManager.plst.gameHours < 7)
     {
         g_GameManager.maxRetries = 3;
@@ -2455,10 +2502,16 @@ ZunResult MainMenu::ActualAddedCallback()
     {
         GameManager::DrawLoadingSprite();
     }
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu pre title anm");
+#endif
     if (g_AnmManager->LoadAnms(ANM_FILE_TITLE, "data/title01.anm", ANM_OFFSET_TITLE) != ZUN_SUCCESS)
     {
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("menu post title anm");
+#endif
 
     if (!g_GameManager.demo)
     {
@@ -2483,6 +2536,9 @@ ZunResult MainMenu::ActualAddedCallback()
     this->cursorVm = this->vms;
     g_GameManager.demo = 0;
     g_GameManager.demoFrames = 0;
+#if defined(TH07_PSP)
+    th07_psp_boot_note("menu added ready");
+#endif
     return ZUN_SUCCESS;
 }
 

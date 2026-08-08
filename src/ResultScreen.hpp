@@ -152,6 +152,10 @@ struct ScoreListNode
 
 struct ScoreDat
 {
+    ScoreDat() : raw{}, scores(nullptr), decodedData(nullptr)
+    {
+    }
+
     ScoreDatRaw raw;
     ScoreListNode *scores;
     u8 *decodedData;

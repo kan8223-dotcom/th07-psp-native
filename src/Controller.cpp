@@ -3,6 +3,11 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_events.h>
 #include <SDL2/SDL_keyboard.h>
+#include <cstdio>
+#if defined(TH07_PSP)
+#include <pspctrl.h>
+#include "fileio.hpp"
+#endif
 
 #include "Supervisor.hpp"
 #include "inttypes.hpp"
@@ -158,6 +163,59 @@ u8 *Controller::GetControllerState()
 
 u16 Controller::GetInput()
 {
+#if defined(TH07_PSP)
+    SceCtrlData pad{};
+    const int sampleCount = sceCtrlPeekBufferPositive(&pad, 1);
+    static bool loggedFirstPoll;
+    if (!loggedFirstPoll)
+    {
+        char message[72];
+        std::snprintf(message, sizeof(message), "input poll %d %08x %u,%u", sampleCount,
+                      static_cast<unsigned int>(pad.Buttons), pad.Lx, pad.Ly);
+        th07_psp_boot_note(message);
+        loggedFirstPoll = true;
+    }
+    if (sampleCount <= 0)
+    {
+        return 0;
+    }
+
+    static bool loggedFirstInput;
+    if (!loggedFirstInput && (pad.Buttons != 0 || pad.Lx < 64 || pad.Lx > 192 || pad.Ly < 64 ||
+                              pad.Ly > 192))
+    {
+        char message[64];
+        std::snprintf(message, sizeof(message), "input first %08x %u,%u",
+                      static_cast<unsigned int>(pad.Buttons), pad.Lx, pad.Ly);
+        th07_psp_boot_note(message);
+        loggedFirstInput = true;
+    }
+
+    u16 buttons = 0;
+    if (pad.Buttons & PSP_CTRL_UP) buttons |= TH_BUTTON_UP;
+    if (pad.Buttons & PSP_CTRL_DOWN) buttons |= TH_BUTTON_DOWN;
+    if (pad.Buttons & PSP_CTRL_LEFT) buttons |= TH_BUTTON_LEFT;
+    if (pad.Buttons & PSP_CTRL_RIGHT) buttons |= TH_BUTTON_RIGHT;
+    if (pad.Lx < 64) buttons |= TH_BUTTON_LEFT;
+    if (pad.Lx > 192) buttons |= TH_BUTTON_RIGHT;
+    if (pad.Ly < 64) buttons |= TH_BUTTON_UP;
+    if (pad.Ly > 192) buttons |= TH_BUTTON_DOWN;
+
+    // Match the proven TH6 PSP layout: Cross=shot/confirm,
+    // Circle=bomb/cancel, Square/L/R=focus, Triangle=skip, Start=pause.
+    if (pad.Buttons & PSP_CTRL_CROSS) buttons |= TH_BUTTON_SHOOT | TH_BUTTON_ENTER;
+    if (pad.Buttons & PSP_CTRL_CIRCLE) buttons |= TH_BUTTON_BOMB;
+    if (pad.Buttons & (PSP_CTRL_SQUARE | PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER))
+        buttons |= TH_BUTTON_FOCUS;
+    if (pad.Buttons & PSP_CTRL_TRIANGLE) buttons |= TH_BUTTON_SKIP;
+    if (pad.Buttons & PSP_CTRL_START) buttons |= TH_BUTTON_MENU;
+#if defined(TH07_PSP_DIRECT_GAME)
+    // Gameplay bring-up helper: keep firing while still allowing every
+    // physical PSP control to be tested normally.
+    buttons |= TH_BUTTON_SHOOT;
+#endif
+    return buttons;
+#else
     u16 buttons = 0;
 
     const u8 *keys = SDL_GetKeyboardState(NULL);
@@ -189,9 +247,12 @@ u16 Controller::GetInput()
     buttons |= KEY_PRESSED(SDL_SCANCODE_RETURN, TH_BUTTON_ENTER);
 
     return GetControllerInput(buttons);
+#endif
 }
 
 void Controller::ResetKeyboard()
 {
+#if !defined(TH07_PSP)
     SDL_ResetKeyboard();
+#endif
 }

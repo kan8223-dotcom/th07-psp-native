@@ -78,7 +78,10 @@ enum PrimitiveType
 {
     PRIM_TRIANGLE_STRIP,
     PRIM_TRIANGLES,
-    PRIM_TRIANGLE_FAN
+    PRIM_TRIANGLE_FAN,
+    // PSP AnmManager keeps four unique quad corners and lets its backend pick
+    // either GU_SPRITES or indexed triangles. Other renderers never receive it.
+    PRIM_QUADS
 };
 
 enum ClearBits

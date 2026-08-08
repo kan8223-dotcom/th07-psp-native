@@ -5,6 +5,9 @@
 #include "GameErrorContext.hpp"
 #include "Supervisor.hpp"
 #include "pbg4/Pbg4Archive.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#endif
 
 u32 g_LastFileSize;
 
@@ -52,11 +55,22 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
                 return NULL;
             }
 
-            g_Pbg4Archive.ReadDecompressEntry(filename, buf);
+            if (!g_Pbg4Archive.ReadDecompressEntry(filename, buf))
+            {
+#if defined(TH07_PSP)
+                th07_psp_boot_notef("ARC DECODE NG %s %uK", filename, fsize / 1024u);
+#endif
+                free(buf);
+                return NULL;
+            }
             return buf;
         }
     }
     Supervisor::DebugPrint("%s Load ... \n", filepath);
+#if defined(TH07_PSP)
+    char resolvedPath[768];
+    filepath = th07_psp_resolve_path(filepath, resolvedPath, sizeof(resolvedPath));
+#endif
     file = fopen(filepath, "rb");
     if (!file)
     {
@@ -77,6 +91,7 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
     if (fread(buf, 1, fsize, file) != fsize)
     {
         fclose(file);
+        free(buf);
         return NULL;
     }
     g_LastFileSize = fsize;
@@ -88,6 +103,10 @@ i32 FileSystem::CheckFileExists(const char *file)
 {
     FILE *fp;
 
+#if defined(TH07_PSP)
+    char resolvedPath[768];
+    file = th07_psp_resolve_path(file, resolvedPath, sizeof(resolvedPath));
+#endif
     fp = fopen(file, "rb");
     if (fp)
     {
@@ -102,6 +121,10 @@ i32 FileSystem::WriteDataToFile(const char *filename, const void *out, u32 bytes
     FILE *file;
     u32 bytesWritten;
 
+#if defined(TH07_PSP)
+    char resolvedPath[768];
+    filename = th07_psp_resolve_path(filename, resolvedPath, sizeof(resolvedPath));
+#endif
     file = fopen(filename, "wb");
     if (!file)
     {

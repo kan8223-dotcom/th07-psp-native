@@ -227,6 +227,16 @@ struct Bullet
     i32 curCmdIdx;
     BulletCommand commands[5];
     BulletCommandState commandStates[5];
+#if defined(TH07_PSP)
+    // Auto-rotating bullets normally keep the same heading for many frames.
+    // Cache the render sin/cos so the PSP does not run one VFPU trig pair per
+    // visible bullet on every draw.  Gameplay continues to use angle exactly
+    // as before; these values are render-only and are refreshed on a change.
+    f32 pspRenderAngle;
+    f32 pspRenderSin;
+    f32 pspRenderCos;
+    u32 pspRenderRotationValid;
+#endif
 };
 
 struct BulletManager

@@ -110,6 +110,9 @@ struct SoundPlayer
     ZunResult LoadFmt(const char *path);
     ZunResult LoadSound(i32 idx, const char *path);
     void PlaySoundByIdx(i32 idx, u32 param_2);
+#if defined(TH07_PSP)
+    void StopSoundByIdx(i32 idx);
+#endif
     ZunResult PreloadBGM(i32 idx, const char *path);
     i32 ProcessQueues();
     void PushCommand(AudioOpcode opcode, i32 arg1, const char *arg2);
@@ -120,6 +123,9 @@ struct SoundPlayer
 
     void FadeOut(f32 duration)
     {
+#if defined(TH07_PSP)
+        (void)duration;
+#else
         g_GameErrorContext.Log("%f\n", duration);
         if (this->backgroundMusic)
         {
@@ -127,6 +133,7 @@ struct SoundPlayer
                 this->backgroundMusic, -1, 0, duration * 1000.0f,
                 ma_engine_get_time_in_milliseconds(this->engine));
         }
+#endif
     }
 
     ma_engine *engine;

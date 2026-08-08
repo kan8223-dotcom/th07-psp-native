@@ -6,6 +6,9 @@
 #include <cstring>
 
 #include "inttypes.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#endif
 
 const u32 g_SeekModes[3] = {0, 1, 2};
 
@@ -199,6 +202,10 @@ void *Pbg4File::ReadRemaining(u32 max)
 
 void Pbg4File::GetFullPath(char *out, const char *filename)
 {
+#if defined(TH07_PSP)
+    th07_psp_resolve_path(filename, out, 260);
+    return;
+#endif
 #ifdef _WIN32
     if (strchr(filename, ':') != nullptr)
     {

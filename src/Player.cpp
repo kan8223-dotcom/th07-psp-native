@@ -17,6 +17,9 @@
 #include "ZunMath.hpp"
 #include "dxutil.hpp"
 #include "utils.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#endif
 
 ShtFunc1 g_ShtFireFuncs[6] = {
     NULL,
@@ -1729,6 +1732,13 @@ i32 Player::UpdateDeath()
                 g_Gui.showPower = 2;
             }
             g_GameManager.DecreaseSubrank(1600);
+#if defined(TH07_PSP_DIRECT_GAME)
+            // Preserve the normal death/respawn timing and item behavior, but
+            // keep the debug run at maximum firepower after every hit.
+            g_GameManager.SetCurrentPower(128);
+            g_GameManager.RegenerateGameIntegrityCsum();
+            g_Gui.showPower = 2;
+#endif
         }
     }
     else
@@ -1751,6 +1761,22 @@ i32 Player::UpdateDeath()
             this->playerSprite.scale.x = 3.0f;
             this->playerSprite.scale.y = 3.0f;
             g_AnmManager->SetAnmIdxAndExecuteScript(&this->playerSprite, 1024);
+#if defined(TH07_PSP_DIRECT_GAME)
+            // Exercise the normal death, power-loss and respawn path without
+            // consuming a life or entering the retry menu during soak runs.
+            if ((i32)g_GameManager.globals->livesRemaining <= 0)
+            {
+                g_GameManager.SetLivesRemaining(1);
+                g_GameManager.RegenerateGameIntegrityCsum();
+            }
+            g_Gui.showLives = 2;
+            g_GameManager.SetBombsRemainingAndComputeCsum(g_Player.shooterData->initialBombs);
+            g_Gui.showBombs = 2;
+            g_GameManager.SetCurrentPower(128);
+            g_GameManager.RegenerateGameIntegrityCsum();
+            g_Gui.showPower = 2;
+            return 1;
+#else
             if ((i32)g_GameManager.globals->livesRemaining <= 0)
             {
                 g_GameManager.isInRetryMenu = 1;
@@ -1763,6 +1789,7 @@ i32 Player::UpdateDeath()
                 g_Gui.showBombs = 2;
                 return 1;
             }
+#endif
         }
     }
     return 0;
@@ -1888,6 +1915,10 @@ void Player::BreakBorderNaturally()
 {
     i32 cherryDiff;
 
+#if defined(TH07_PSP)
+    g_SoundPlayer.StopSoundByIdx(SOUND_BORDER_ACTIVATE);
+    g_SoundPlayer.StopSoundByIdx(SOUND_BORDER_ACTIVATE2);
+#endif
     g_GameManager.IncreaseCherryMax(10000);
     g_GameManager.IncreaseCherry(10000);
     cherryDiff = g_GameManager.cherry - g_GameManager.globals->cherryStart;
@@ -2025,6 +2056,10 @@ void Player::BreakBorder()
     i32 i;
     Effect *effect;
 
+#if defined(TH07_PSP)
+    g_SoundPlayer.StopSoundByIdx(SOUND_BORDER_ACTIVATE);
+    g_SoundPlayer.StopSoundByIdx(SOUND_BORDER_ACTIVATE2);
+#endif
     if (this->borderEffect)
     {
         this->borderEffect->inUseFlag = 0;
@@ -2230,11 +2265,18 @@ ZunResult Player::AddedCallback(Player *arg)
     PlayerBullet *bullet;
     i32 i;
 
+#if defined(TH07_PSP)
+    th07_psp_boot_note("player added begin");
+#endif
+
     if (ShtData::LoadShtData(&arg->shooterData,
                              g_ShooterTable[g_GameManager.shotTypeAndCharacter]) != ZUN_SUCCESS)
     {
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("player shot normal ready");
+#endif
 
     if (ShtData::LoadShtData(&arg->shooterDataFocus,
                              g_ShooterTableFocus[g_GameManager.shotTypeAndCharacter]) !=
@@ -2242,6 +2284,9 @@ ZunResult Player::AddedCallback(Player *arg)
     {
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("player shot focus ready");
+#endif
 
     if ((u32)(g_Supervisor.curState != 3 && g_Supervisor.curState != 11 &&
               g_Supervisor.curState != 12))
@@ -2270,6 +2315,9 @@ ZunResult Player::AddedCallback(Player *arg)
             }
         }
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("player anm ready");
+#endif
     g_AnmManager->SetAnmIdxAndExecuteScript(&arg->playerSprite, 1024);
     arg->positionCenter.x = g_GameManager.arcadeRegionSize.x / 2.0f;
     arg->positionCenter.y = g_GameManager.arcadeRegionSize.y - 64.0f;
@@ -2329,6 +2377,9 @@ ZunResult Player::AddedCallback(Player *arg)
         g_GameManager.cherryPlus = g_GameManager.globals->cherryStart + 50000;
         g_Player.ActivateBorder();
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("player added ready");
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -2391,6 +2442,13 @@ void Player::CutChain()
 
 ZunResult ShtData::LoadShtData(ShtData **data, const char *shtPath)
 {
+#if defined(TH07_PSP)
+    {
+        char message[128];
+        std::snprintf(message, sizeof(message), "shot load begin %s", shtPath);
+        th07_psp_boot_note(message);
+    }
+#endif
     u8 *rawFile = FileSystem::OpenFile(shtPath, 0);
     if (!rawFile)
     {
@@ -2398,6 +2456,15 @@ ZunResult ShtData::LoadShtData(ShtData **data, const char *shtPath)
     }
 
     ShtRawData *rawData = (ShtRawData *)rawFile;
+
+#if defined(TH07_PSP)
+    {
+        char message[96];
+        std::snprintf(message, sizeof(message), "shot raw bytes %u levels %d",
+                      static_cast<unsigned int>(g_LastFileSize), rawData->entryCount);
+        th07_psp_boot_note(message);
+    }
+#endif
 
     ShtData *parsed = new ShtData;
     memcpy(parsed, rawData, offsetof(ShtRawData, levels));

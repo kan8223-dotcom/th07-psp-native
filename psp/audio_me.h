@@ -1,0 +1,68 @@
+#pragma once
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+enum
+{
+    TH07_PSP_ME_MAX_MIX_INPUTS = 64,
+    TH07_PSP_ME_MAX_MIX_FRAMES = 1024
+};
+
+typedef struct Th07PspMixInput
+{
+    const short *samples;
+    // Total source frames.  TH07 keeps its short 11/22/44.1 kHz effects in
+    // their native rate, so ME performs the same 16.16 nearest-neighbour
+    // stepping as the old SC output thread.
+    unsigned int frames;
+    unsigned int destinationFrame;
+    unsigned int channels;
+    unsigned int sourceFrame;
+    unsigned int sourceFraction;
+    unsigned int stepFixed;
+    unsigned int gainQ16;
+    // Set only for mutable input (the freshly assembled BGM block).  Loaded
+    // SFX are immutable and are written back once by LoadSound().
+    unsigned int needsWriteback;
+} Th07PspMixInput;
+
+typedef struct Th07PspMixJob
+{
+    unsigned int frames;
+    unsigned int inputCount;
+    unsigned int mixDivisor;
+    Th07PspMixInput inputs[TH07_PSP_ME_MAX_MIX_INPUTS];
+} Th07PspMixJob;
+
+// Returns 1 when ME produced this block, 0 when the identical SC fallback did.
+// Either return value leaves `output` ready for the existing software ring.
+int th07_psp_me_audio_mix(const Th07PspMixJob *job, short *output);
+int th07_psp_me_audio_init(void);
+void th07_psp_me_audio_shutdown(void);
+void th07_psp_me_audio_diag_window(unsigned int *jobs, unsigned int *fallbacks,
+                                    unsigned int *timeouts, unsigned int *maxWaitUs);
+
+// Pack one engine vertex stream into the native interleaved GE layout on ME.
+// A successful output remains valid until th07_psp_me_vertex_frame_begin(),
+// which the renderer calls only after the previous GE list has completed.
+typedef struct Th07PspMeVertexPack
+{
+    const void *position;
+    const void *texcoord;
+    const void *diffuse;
+    unsigned int positionStride;
+    unsigned int texcoordStride;
+    unsigned int diffuseStride;
+    unsigned int count;
+    unsigned int textured;
+    unsigned int colored;
+} Th07PspMeVertexPack;
+
+void th07_psp_me_vertex_frame_begin(void);
+int th07_psp_me_vertex_pack(const Th07PspMeVertexPack *job, const void **output);
+
+#ifdef __cplusplus
+}
+#endif

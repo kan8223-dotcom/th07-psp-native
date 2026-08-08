@@ -16,6 +16,9 @@
 #include "Stage.hpp"
 #include "Supervisor.hpp"
 #include "ZunMath.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#endif
 
 #define GET_INT_PTR(enemy, argIdx) GetVar(enemy, &instr->args[argIdx].i, instr->paramMask, argIdx)
 
@@ -1565,8 +1568,26 @@ restart:
                 enemy->isHittable = instr->args[0].b[0];
                 break;
             case 105:
-                g_SoundPlayer.PlaySoundByIdx(GET_INT_VALUE(enemy, 0), 0);
+            {
+                const i32 soundIdx = GET_INT_VALUE(enemy, 0);
+#if defined(TH07_PSP_DIRECT_GAME)
+                if (soundIdx == 5)
+                {
+                    char message[144];
+                    std::snprintf(
+                        message, sizeof(message),
+                        "se_power0 ecl sub %d time %lu off %lx boss %d life %d",
+                        static_cast<int>(enemy->currentContext.subId),
+                        static_cast<unsigned long>(instr->time),
+                        static_cast<unsigned long>(reinterpret_cast<u8 *>(instr) -
+                                                   reinterpret_cast<u8 *>(g_EclManager.eclFile)),
+                        enemy->isBoss ? 1 : 0, enemy->life);
+                    th07_psp_boot_note(message);
+                }
+#endif
+                g_SoundPlayer.PlaySoundByIdx(soundIdx, 0);
                 break;
+            }
             case 106:
                 enemy->deathType = instr->args[0].b[0];
                 break;

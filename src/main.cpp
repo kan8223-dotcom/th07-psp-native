@@ -15,6 +15,12 @@
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
 
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+extern "C" void th07_psp_platform_init();
+extern "C" int th07_psp_platform_running();
+#endif
+
 void AnmManager::TakeScreenshotIfRequested()
 {
     if (this->screenshotTextureId >= 0)
@@ -28,10 +34,19 @@ void AnmManager::TakeScreenshotIfRequested()
 
 int main(int argc, char *argv[])
 {
+#if defined(TH07_PSP)
+    th07_psp_fileio_set_launch_path(argc > 0 ? argv[0] : nullptr);
+    th07_psp_fileio_init();
+    th07_psp_platform_init();
+    th07_psp_boot_note("platform initialized");
+#endif
     (void)argc;
     (void)argv;
 
     i32 res;
+#if defined(TH07_PSP)
+    bool firstRender = true;
+#endif
 
     res = RENDER_RESULT_KEEP_RUNNING;
 
@@ -39,6 +54,9 @@ int main(int argc, char *argv[])
     {
         goto stop;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("config loaded");
+#endif
 
     GameWindow::ChecksumExecutable();
     g_GameWindow.frequency = SDL_GetPerformanceFrequency();
@@ -48,16 +66,25 @@ start:
     {
         goto stop;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("window initialized");
+#endif
 
     if (GameWindow::InitInterface())
     {
         goto stop;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("interface initialized");
+#endif
 
     if (GameWindow::InitRendering())
     {
         goto stop;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("rendering initialized");
+#endif
 
     g_SoundPlayer.InitializeSound();
     Controller::ResetKeyboard();
@@ -76,9 +103,19 @@ start:
         res = RENDER_RESULT_EXIT_ERROR;
         goto cleanup;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game chain registered");
+#endif
     res = RENDER_RESULT_KEEP_RUNNING;
     g_GameWindow.curFrame = -30;
-    while (!g_GameWindow.isAppClosing)
+#if defined(TH07_PSP)
+    th07_psp_boot_note("main loop entered");
+#endif
+    while (!g_GameWindow.isAppClosing
+#if defined(TH07_PSP)
+           && th07_psp_platform_running()
+#endif
+    )
     {
         SDL_Event e;
 
@@ -129,6 +166,13 @@ start:
         }
 
         res = g_GameWindow.Render();
+#if defined(TH07_PSP)
+        if (firstRender)
+        {
+            th07_psp_boot_note("first render complete");
+            firstRender = false;
+        }
+#endif
         if (res != RENDER_RESULT_KEEP_RUNNING)
         {
             break;
@@ -166,5 +210,8 @@ stop:
     }
     FileSystem::WriteDataToFile("th07.cfg", &g_Supervisor.cfg, sizeof(GameConfiguration));
     g_GameErrorContext.Flush();
+#if defined(TH07_PSP)
+    th07_psp_boot_note("main exited");
+#endif
     return 0;
 }

@@ -19,6 +19,9 @@
 #include "Supervisor.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#endif
 
 u32 g_SpellcardTimeColors[4] = {
     0xa0d0ff,
@@ -421,6 +424,13 @@ ZunResult Gui::ActualAddedCallback()
     else
     {
         ClearActiveSprites();
+#if defined(TH07_PSP)
+        // The 168-VM checkerboard transition currently trips PPSSPP's JIT on
+        // the first update of the next stage (Gui::UpdateGui, 0x08836eac).
+        // It is cosmetic, so keep stage reinitialization deterministic while
+        // gameplay bring-up is the priority.  The next stage renders directly.
+        this->impl->activeTransitionQuads = 0;
+#else
         g_AnmManager->SetAnmIdxAndExecuteScript(&this->impl->stageTransitionSnapshotVm, 1829);
         this->impl->stageTransitionSnapshotVm.pendingInterrupt = 1;
         g_AnmManager->CreateScreenshotTexture(
@@ -443,6 +453,7 @@ ZunResult Gui::ActualAddedCallback()
             }
         }
         this->impl->activeTransitionQuads = 168;
+#endif
     }
     switch (g_GameManager.currentStage)
     {
@@ -796,6 +807,31 @@ ZunResult GuiImpl::RunMsg()
             break;
         case MSG_DIALOGUE:
             args = &this->msg.curInstr->args;
+#if defined(TH07_PSP)
+            // A dialogue freezes combat, but already playing PSP mixer voices
+            // otherwise continue.  Stop the three high-rate combat effects;
+            // music and one-shot dialogue/transition sounds are untouched.
+            g_SoundPlayer.StopSoundByIdx(SOUND_BOMB_MARISA_A_FOCUS);
+            g_SoundPlayer.StopSoundByIdx(SOUND_20);
+            g_SoundPlayer.StopSoundByIdx(SOUND_25);
+#endif
+#if defined(TH07_PSP_DIRECT_GAME)
+            {
+                static unsigned int dialogueLogCount;
+                if (dialogueLogCount < 64)
+                {
+                    const unsigned char *bytes =
+                        reinterpret_cast<const unsigned char *>(args->dialogue.text);
+                    char message[160];
+                    std::snprintf(message, sizeof(message),
+                                  "dialogue %u line %d sjis %02x %02x %02x %02x %02x %02x",
+                                  dialogueLogCount, args->dialogue.textLine, bytes[0], bytes[1],
+                                  bytes[2], bytes[3], bytes[4], bytes[5]);
+                    th07_psp_boot_note(message);
+                    ++dialogueLogCount;
+                }
+            }
+#endif
             if (args->dialogue.textLine == 0 && this->msg.dialogueLines[1].anmFileIdx >= 0)
             {
                 AnmManager::DrawVmTextFmt(g_AnmManager, this->msg.dialogueLines + 1,
@@ -814,6 +850,17 @@ ZunResult GuiImpl::RunMsg()
             this->msg.framesElapsedDuringPause = 0;
             break;
         case MSG_PAUSE:
+#if defined(TH07_PSP_DIRECT_GAME)
+            // Debug/soak mode must not depend on synthesizing an input edge:
+            // the gameplay controller deliberately holds SHOOT every frame.
+            // Leave each line visible long enough to inspect, then advance
+            // the message instruction directly as if confirm had been tapped.
+            if (this->msg.framesElapsedDuringPause < 45)
+            {
+                this->msg.framesElapsedDuringPause++;
+                goto SKIP_TIME_INCREMENT;
+            }
+#else
             if (this->msg.dialogueSkippable == 0 || !IS_PRESSED_GAME(TH_BUTTON_SKIP))
             {
                 if (!WAS_PRESSED_GAME(TH_BUTTON_SHOOT) || this->msg.framesElapsedDuringPause < 12)
@@ -827,6 +874,7 @@ ZunResult GuiImpl::RunMsg()
                     goto SKIP_TIME_INCREMENT;
                 }
             }
+#endif
             break;
         case MSG_SWITCH:
             args = &this->msg.curInstr->args;
@@ -880,6 +928,17 @@ ZunResult GuiImpl::RunMsg()
             this->finishedStage = 1;
             if (g_GameManager.currentStage < 6)
             {
+#if defined(TH07_PSP)
+                // The desktop transition captures the 384x448 playfield into
+                // texture 4.  PSP stage reinitialization already skips the
+                // matching checkerboard effect; attempting the orphaned
+                // framebuffer readback here exits the guest before stage 2.
+                // The normal Stage Clear text, score calculation and next-
+                // level state change remain active.
+                this->stageClearTextVm.activeSpriteIdx = -1;
+                this->stageTransitionSnapshotVm.activeSpriteIdx = -1;
+                th07_psp_boot_note("stage results PSP transition capture skipped");
+#else
                 g_AnmManager->SetAnmIdxAndExecuteScript(&this->stageClearTextVm, 1566);
                 g_AnmManager->SetAnmIdxAndExecuteScript(&this->stageTransitionSnapshotVm, 1829);
                 g_AnmManager->CreateScreenshotTexture(
@@ -887,6 +946,7 @@ ZunResult GuiImpl::RunMsg()
                     this->stageTransitionSnapshotVm.sprite->startPixelInclusive.y,
                     this->stageTransitionSnapshotVm.sprite->widthPx,
                     this->stageTransitionSnapshotVm.sprite->heightPx);
+#endif
             }
             else
             {
@@ -903,6 +963,14 @@ ZunResult GuiImpl::RunMsg()
             g_Supervisor.renderSkipFrames = 0x192;
             break;
         case MSG_NEXT_LEVEL:
+#if defined(TH07_PSP)
+            {
+                char message[64];
+                std::snprintf(message, sizeof(message), "next level from stage %d",
+                              g_GameManager.currentStage);
+                th07_psp_boot_note(message);
+            }
+#endif
             g_Supervisor.checkTiming = 0;
             g_GameManager.globals->guiScore = g_GameManager.globals->score;
             if (g_GameManager.practice)
@@ -1021,10 +1089,21 @@ ZunResult GuiImpl::DrawDialogue()
     dialogueBg[0].diffuse.color = dialogueBg[1].diffuse.color = 0xd0000000;
     dialogueBg[2].diffuse.color = dialogueBg[3].diffuse.color = 0x90000000;
     dialogueBg[0].w = dialogueBg[1].w = dialogueBg[2].w = dialogueBg[3].w = 1.0f;
+#if defined(TH07_PSP)
+    // Keep dialogue artwork off the physical display's topmost row.  The
+    // logical 640x480 canvas maps 1.765 pixels to one PSP output pixel.
+    constexpr f32 kPortraitClipTop = 2.0f;
+    g_AnmManager->DrawNoRotation(&this->msg.portraits[0], kPortraitClipTop);
+#else
     g_AnmManager->DrawNoRotation(&this->msg.portraits[0]);
+#endif
     oldPos = this->msg.portraits[1].pos;
     this->msg.portraits[1].pos += this->msg.portraits[1].offset;
+#if defined(TH07_PSP)
+    g_AnmManager->DrawNoRotation(&this->msg.portraits[1], kPortraitClipTop);
+#else
     g_AnmManager->DrawNoRotation(&this->msg.portraits[1]);
+#endif
     this->msg.portraits[1].pos = oldPos;
     g_AnmManager->Flush();
     g_Supervisor.gfxDevice->SetColorOp(COMPONENT_RGB, COLOR_OP_DISABLE);

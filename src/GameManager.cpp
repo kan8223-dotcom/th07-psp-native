@@ -18,6 +18,9 @@
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
 #include "graphics/ZunGraphics.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#endif
 
 i32 g_RankArray[6][3] = {
     {16, 12, 20}, {16, 10, 32}, {16, 10, 32}, {16, 10, 32}, {16, 15, 16}, {16, 15, 16},
@@ -328,6 +331,17 @@ u32 GameManager::OnUpdate(GameManager *arg)
         }
     }
     arg->framesThisStage = arg->framesThisStage + 1;
+#if defined(TH07_PSP_DIRECT_TRANSITION_TEST)
+    // Exercise the real between-stage CutChain/RegisterChain path without a
+    // full boss clear.  This is compiled only into an explicit diagnostic
+    // build and lets PPSSPP catch stage-specific resource lifetime failures.
+    if (arg->framesThisStage == 180)
+    {
+        th07_psp_boot_note("direct transition test request next stage");
+        g_Supervisor.curState = 3;
+        return CHAIN_CALLBACK_RESULT_BREAK;
+    }
+#endif
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -477,6 +491,10 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     i32 shotTypeAndChar;
     u32 size;
 
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added begin");
+#endif
+
     g_Supervisor.checkTiming = 0;
     arg->difficultyMask = 1 << arg->difficulty;
     arg->shotTypeAndCharacter = arg->character * 2 + arg->shotType;
@@ -485,6 +503,9 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     if (g_Supervisor.curState != 3)
     {
         DrawLoadingSprite();
+#if defined(TH07_PSP)
+        th07_psp_boot_note("game added loading drawn");
+#endif
         SAFE_DELETE(arg->defaultCfg);
         SAFE_DELETE(arg->globals);
 
@@ -493,6 +514,9 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         arg->defaultCfg = new GameConfiguration;
         arg->globals = new ZunGlobals;
         InitializeRngAndCsum();
+#if defined(TH07_PSP)
+        th07_psp_boot_note("game added globals ready");
+#endif
         *arg->defaultCfg = g_Supervisor.cfg;
         free(arg->tmpBuffer);
         arg->powerItemCountForScore = 0;
@@ -506,11 +530,17 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         {
             arg->defaultCfg->lifeCount = 8;
         }
+#if defined(TH07_PSP)
+        th07_psp_boot_note("game added player begin");
+#endif
         if (Player::RegisterChain(0) != ZUN_SUCCESS)
         {
             g_GameErrorContext.Log("error : プレイヤーの初期化に失敗しました\n");
             return ZUN_ERROR;
         }
+#if defined(TH07_PSP)
+        th07_psp_boot_note("game added player ready");
+#endif
         if (!g_GameManager.replay)
         {
             g_GameManager.SetLivesRemaining(arg->defaultCfg->lifeCount);
@@ -518,7 +548,11 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
             g_GameManager.SetBombsRemainingAndComputeCsum(g_Player.shooterData->initialBombs);
         }
         arg->ResetRegionsPos();
+#if defined(TH07_PSP_DIRECT_GAME)
+        arg->globals->currentPower = 128.0f;
+#else
         arg->globals->currentPower = 0.0f;
+#endif
         arg->RegenerateGameIntegrityCsum();
         arg->playTimeAll = 0;
         arg->globals->guiScore = 0;
@@ -538,10 +572,16 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
             arg->defaultCfg->slowMode = 0;
         }
         arg->globals->extendsFromPointItems = 0;
+#if defined(TH07_PSP)
+        th07_psp_boot_note("game added scores begin");
+#endif
         if (ResultScreen::ParseScores() != ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
+#if defined(TH07_PSP)
+        th07_psp_boot_note("game added scores ready");
+#endif
         arg->InitializeRank();
         arg->globals->deaths = 0.0f;
         arg->RegenerateGameIntegrityCsum();
@@ -670,6 +710,12 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     arg->globals->grazeInStage = 0;
     arg->isInPauseMenu = 0;
     arg->currentStage = arg->currentStage + 1;
+#if defined(TH07_PSP_DIRECT_GAME)
+    // Soak/debug route: every stage starts at full shot power, including a
+    // reinitialized stage after a death or transition.
+    arg->SetCurrentPower(128);
+    arg->RegenerateGameIntegrityCsum();
+#endif
     if (!g_GameManager.replay)
     {
         shotTypeAndChar = g_GameManager.shotTypeAndCharacter;
@@ -708,18 +754,33 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         g_Rng.seed = oldSeed;
     }
     arg->stageRngSeed = g_Rng.seed;
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added stage begin");
+#endif
     if (Stage::RegisterChain(arg->currentStage) != ZUN_SUCCESS)
     {
         g_GameErrorContext.Log("error : 背景データの初期化に失敗しました\n");
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added stage ready");
+#endif
 
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added bullets begin");
+#endif
     if (BulletManager::RegisterChain("data/etama.anm") != ZUN_SUCCESS)
     {
         g_GameErrorContext.Log("error : 敵弾の初期化に失敗しました\n");
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added bullets ready");
+#endif
 
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added enemies begin");
+#endif
     if (EnemyManager::RegisterChain(g_EnemyAnmStageFiles[arg->currentStage].anmPath1,
                                     g_EnemyAnmStageFiles[arg->currentStage].anmPath2) !=
         ZUN_SUCCESS)
@@ -727,29 +788,53 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         g_GameErrorContext.Log("error : 敵の初期化に失敗しました\n");
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added enemies ready");
+    th07_psp_boot_note("game added ecl begin");
+#endif
 
     if (g_EclManager.Load(g_EclPaths[arg->currentStage]) != ZUN_SUCCESS)
     {
         g_GameErrorContext.Log("error : 敵頭脳の初期化に失敗しました\n");
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added ecl ready");
+    th07_psp_boot_note("game added effects begin");
+#endif
 
     if (EffectManager::RegisterChain() != ZUN_SUCCESS)
     {
         g_GameErrorContext.Log("error : エフェクトの初期化に失敗しました\n");
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added effects ready");
+    th07_psp_boot_note("game added gui begin");
+#endif
 
     if (Gui::RegisterChain() != ZUN_SUCCESS)
     {
         g_GameErrorContext.Log("error : 2D表示の初期化に失敗しました\n");
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added gui ready");
+#endif
 
     if (!g_GameManager.replay)
     {
+#if defined(TH07_PSP)
+        th07_psp_boot_note("game added replay begin");
+#endif
         ReplayManager::RegisterChain(0, "replay/th7_00.rpy");
+#if defined(TH07_PSP)
+        th07_psp_boot_note("game added replay ready");
+#endif
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added audio begin");
+#endif
     g_Supervisor.LoadAudio(0, g_Stage.stdData->bgmPaths[0]);
     g_Supervisor.LoadAudio(1, g_Stage.stdData->bgmPaths[1]);
     if (arg->currentStage != 6)
@@ -761,8 +846,15 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         g_Supervisor.StopAudio();
         g_Supervisor.LoadAudio(2, "bgm/th07_13b.mid");
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added audio ready");
+    th07_psp_boot_note("game added queues begin");
+#endif
     while (g_SoundPlayer.ProcessQueues())
         ;
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added queues ready");
+#endif
     arg->isInRetryMenu = 0;
     arg->notInMenu = 1;
     if (g_Supervisor.curState != 3)
@@ -777,11 +869,17 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     g_GameManager.slowModeSlowActive = 0;
     Supervisor::DrawFpsCounter(0);
     Supervisor::DebugPrint("random seed %d %d\n", (u32)g_Rng.seed, g_Rng.GetGenCount());
+#if defined(TH07_PSP)
+    th07_psp_boot_note("game added ready");
+#endif
     return ZUN_SUCCESS;
 }
 
 ZunResult GameManager::DeletedCallback(GameManager *arg)
 {
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete begin");
+#endif
     g_Supervisor.StopAudio();
     if (g_Supervisor.cfg.musicMode == MUSIC_MIDI && g_Supervisor.midiOutput)
     {
@@ -789,14 +887,41 @@ ZunResult GameManager::DeletedCallback(GameManager *arg)
     }
     while (g_SoundPlayer.ProcessQueues())
         ;
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete audio");
+#endif
     Stage::CutChain();
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete stage");
+#endif
     BulletManager::CutChain();
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete bullets");
+#endif
     Player::CutChain();
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete player");
+#endif
     EnemyManager::CutChain();
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete enemies");
+#endif
     g_EclManager.Unload();
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete ecl");
+#endif
     EffectManager::CutChain();
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete effects");
+#endif
     Gui::CutChain();
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete gui");
+#endif
     ReplayManager::StopRecording();
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete replay");
+#endif
     if (!g_GameManager.replay)
     {
         g_Supervisor.UpdateTime();
@@ -807,6 +932,9 @@ ZunResult GameManager::DeletedCallback(GameManager *arg)
     g_AsciiManager.InitializeVms();
     g_GameManager.slowModeSlowActive = 0;
     g_GameManager.framesThisStage = 0;
+#if defined(TH07_PSP_PERF_DIAG)
+    th07_psp_heap_note("game delete ready");
+#endif
     return ZUN_SUCCESS;
 }
 

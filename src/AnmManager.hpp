@@ -125,15 +125,19 @@ struct AnmManager
     void CalcProjectedTransform(AnmVm *vm);
     void CopySurfaceToBackBuffer(i32 surfaceIdx, i32 left, i32 top, i32 x, i32 y);
     void CopyTexture(i32 dstIdx, i32 srcIdx, SDL_Rect *dstRect, SDL_Rect *srcRect);
-    ZunResult CreateEmptyTexture(i32 textureIdx, u32 width, u32 height);
+    ZunResult CreateEmptyTexture(i32 textureIdx, u32 width, u32 height, i32 textureFormat);
     ZunResult Draw(AnmVm *vm);
+#if defined(TH07_PSP)
+    ZunResult DrawPspBullet(AnmVm *vm, const f32 *cachedSin = nullptr,
+                            const f32 *cachedCos = nullptr);
+#endif
     ZunResult DrawBillboard(AnmVm *vm);
     ZunResult Draw3(AnmVm *vm);
     void DrawEndingRect(i32 surfaceIdx, i32 rectX, i32 rectY, i32 rectLeft, i32 rectTop, i32 width,
                         i32 height);
     ZunResult DrawFacingCamera(AnmVm *vm);
-    ZunResult DrawInner(AnmVm *vm, u32 drawFlags);
-    ZunResult DrawNoRotation(AnmVm *vm);
+    ZunResult DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipTop = -1000000.0f);
+    ZunResult DrawNoRotation(AnmVm *vm, f32 pspClipTop = -1000000.0f);
     ZunResult DrawProjected(AnmVm *vm);
     void DrawStringFormat(AnmVm *vm, u32 textColor, u32 outlineType, const char *text, ...);
     void DrawStringFormat2(AnmVm *vm, u32 textColor, u32 outlineType, const char *text, ...);

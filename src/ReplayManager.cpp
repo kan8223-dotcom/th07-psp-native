@@ -11,7 +11,12 @@
 #include "Supervisor.hpp"
 #include "dxutil.hpp"
 #include "pbg4/Lzss.hpp"
+#include <cstddef>
+#include <cstdlib>
 #include <cstdio>
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#endif
 
 ReplayManager *g_ReplayManager;
 
@@ -142,11 +147,18 @@ ZunResult ReplayManager::AddedCallback(ReplayManager *arg)
     i32 i;
     StageReplayData *replayData;
 
+#if defined(TH07_PSP)
+    th07_psp_boot_note("replay added begin");
+#endif
+
     arg->frameId = 0;
     arg->unused_40 = NULL;
     if (!arg->data)
     {
         arg->data = new ReplayFile;
+#if defined(TH07_PSP)
+        th07_psp_boot_note("replay file allocated");
+#endif
         memset(arg->data, 0, sizeof(ReplayFile));
         memcpy(&arg->data->head.magic, "T7RP", 4);
         arg->data->data.shotType = g_GameManager.shotTypeAndCharacter;
@@ -181,8 +193,47 @@ ZunResult ReplayManager::AddedCallback(ReplayManager *arg)
     }
     SAFE_FREE(arg->data->stageReplayData[i]);
     SAFE_FREE(arg->data->stageEndData[i]);
-    arg->data->stageReplayData[i] = (StageReplayData *)malloc(sizeof(StageReplayData));
-    arg->data->stageEndData[i] = (StageReplayData *)malloc(sizeof(StageReplayData));
+#if defined(TH07_PSP_DIRECT_GAME)
+    // The automated PSP bring-up never saves replays.  Two full StageReplayData
+    // objects cost about 900 KiB, most of it unused input capacity, and can
+    // exhaust the small heap after the SFX bank is loaded.  Ten minutes of
+    // input plus a compact FPS/end-data area is ample for a debug stage run.
+    constexpr size_t kDebugReplayFrames = 60u * 60u * 10u;
+    constexpr size_t kDebugReplayBytes =
+        offsetof(StageReplayData, replayInputs) + kDebugReplayFrames * sizeof(ReplayDataInput);
+    constexpr size_t kDebugEndDataBytes = 4096u;
+    const size_t replayBytes = kDebugReplayBytes;
+    const size_t endBytes = kDebugEndDataBytes;
+#else
+    const size_t replayBytes = sizeof(StageReplayData);
+    const size_t endBytes = sizeof(StageReplayData);
+#endif
+    arg->data->stageReplayData[i] =
+        static_cast<StageReplayData *>(std::malloc(replayBytes));
+    arg->data->stageEndData[i] =
+        static_cast<StageReplayData *>(std::malloc(endBytes));
+
+    if (!arg->data->stageReplayData[i] || !arg->data->stageEndData[i])
+    {
+        SAFE_FREE(arg->data->stageReplayData[i]);
+        SAFE_FREE(arg->data->stageEndData[i]);
+#if defined(TH07_PSP)
+        th07_psp_boot_note("replay stage buffer allocation failed");
+#endif
+        return ZUN_ERROR;
+    }
+    std::memset(arg->data->stageReplayData[i], 0, replayBytes);
+    std::memset(arg->data->stageEndData[i], 0, endBytes);
+
+#if defined(TH07_PSP)
+    {
+        char message[96];
+        std::snprintf(message, sizeof(message), "replay stage buffers %p %p",
+                      static_cast<void *>(arg->data->stageReplayData[i]),
+                      static_cast<void *>(arg->data->stageEndData[i]));
+        th07_psp_boot_note(message);
+    }
+#endif
 
     replayData = arg->data->stageReplayData[i];
     endData = arg->data->stageEndData[i];
@@ -208,6 +259,9 @@ ZunResult ReplayManager::AddedCallback(ReplayManager *arg)
     arg->fpsCursor = (u8 *)&endData->score;
     arg->replayInputs->frameNum = 0;
     arg->unused_82 = 0;
+#if defined(TH07_PSP)
+    th07_psp_boot_note("replay added ready");
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -323,16 +377,29 @@ ZunResult ReplayManager::AddedCallbackDemo(ReplayManager *arg)
     i32 i;
     StageReplayData *replayData;
 
+#if defined(TH07_PSP)
+    th07_psp_boot_note("demo replay added begin");
+#endif
+
     arg->frameId = 0;
     if (!arg->data)
     {
         arg->data =
             (ReplayFile *)FileSystem::OpenFile(arg->replayFilename, !g_GameManager.demo);
+#if defined(TH07_PSP)
+        th07_psp_boot_note(arg->data ? "demo replay raw loaded" : "demo replay raw missing");
+#endif
         arg->data = ValidateReplayData(arg->data, g_LastFileSize);
         if (!arg->data)
         {
+#if defined(TH07_PSP)
+            th07_psp_boot_note("demo replay validation failed");
+#endif
             return ZUN_ERROR;
         }
+#if defined(TH07_PSP)
+        th07_psp_boot_note("demo replay validation ready");
+#endif
         arg->unused_40 = NULL;
         for (i = 0; i < 7; i++)
         {
@@ -384,6 +451,9 @@ ZunResult ReplayManager::AddedCallbackDemo(ReplayManager *arg)
     }
     if (!arg->data->stageReplayData[i])
     {
+#if defined(TH07_PSP)
+        th07_psp_boot_note("demo replay stage missing");
+#endif
         return ZUN_ERROR;
     }
 
@@ -426,6 +496,9 @@ ZunResult ReplayManager::AddedCallbackDemo(ReplayManager *arg)
         g_GameManager.globals->guiScore = g_GameManager.globals->score =
             arg->data->stageReplayData[g_GameManager.currentStage - 2]->score;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("demo replay added ready");
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -472,11 +545,17 @@ ZunResult ReplayManager::DeletedCallback(ReplayManager *arg)
 
 ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
 {
+#if defined(TH07_PSP)
+    th07_psp_boot_note("replay register begin");
+#endif
     g_LastFrameGameInput = 0;
     g_CurFrameGameInput = 0;
     if (!g_ReplayManager)
     {
         ReplayManager *mgr = new ReplayManager();
+#if defined(TH07_PSP)
+        th07_psp_boot_note("replay manager allocated");
+#endif
         g_ReplayManager = mgr;
         mgr->data = NULL;
         mgr->isDemo = isDemo;
@@ -494,11 +573,17 @@ ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
             {
                 return ZUN_ERROR;
             }
+#if defined(TH07_PSP)
+            th07_psp_boot_note("replay calc added");
+#endif
 
             mgr->demoCalcChain = NULL;
             mgr->rngCalcChain = g_Chain.CreateElem((ChainCallback)OnUpdateRng);
             mgr->rngCalcChain->arg = mgr;
             g_Chain.AddToCalcChain(mgr->rngCalcChain, 6);
+#if defined(TH07_PSP)
+            th07_psp_boot_note("replay rng added");
+#endif
             break;
         case 1:
             mgr->calcChain = g_Chain.CreateElem((ChainCallback)OnUpdateDemoHighPrio);
@@ -519,6 +604,9 @@ ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
         }
         mgr->drawChain->arg = mgr;
         g_Chain.AddToDrawChain(mgr->drawChain, 14);
+#if defined(TH07_PSP)
+        th07_psp_boot_note("replay draw added");
+#endif
     }
     else
     {
@@ -532,6 +620,9 @@ ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
             break;
         }
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("replay register ready");
+#endif
     return ZUN_SUCCESS;
 }
 
