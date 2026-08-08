@@ -63,6 +63,26 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
     {
         this->nextIndex++;
 
+#if defined(TH07_PSP)
+        const i32 itemIndex = static_cast<i32>(item - this->items);
+        if (this->PspIsItemSlotTracked(itemIndex))
+        {
+            if (item->isInUse)
+            {
+                if (this->nextIndex >= 1100)
+                {
+                    this->nextIndex = 0;
+                    item = this->items;
+                }
+                else
+                {
+                    item++;
+                }
+                continue;
+            }
+            this->PspForgetItemSlot(itemIndex);
+        }
+#else
         if (item->isInUse)
         {
             if (this->nextIndex >= 1100)
@@ -76,11 +96,15 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
             }
             continue;
         }
+#endif
         if (this->nextIndex >= 1100)
         {
             this->nextIndex = 0;
         }
         item->isInUse = 1;
+#if defined(TH07_PSP)
+        this->PspTrackItemSlot(static_cast<i32>(item - this->items));
+#endif
         item->currentPosition = *heading;
         item->startPosition.x = 0.0f;
         item->startPosition.y = -2.2f;
@@ -137,8 +161,17 @@ void ItemManager::OnUpdate()
 
     for (i = 0; i < 1100; i++, item++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsItemSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (!item->isInUse)
         {
+#if defined(TH07_PSP)
+            this->PspForgetItemSlot(i);
+#endif
             continue;
         }
 
@@ -197,6 +230,9 @@ void ItemManager::OnUpdate()
         if (g_GameManager.arcadeRegionSize.y + 16.0f <= item->currentPosition.y)
         {
             item->isInUse = 0;
+#if defined(TH07_PSP)
+            this->PspForgetItemSlot(i);
+#endif
             g_GameManager.DecreaseSubrank(3);
             continue;
         }
@@ -491,6 +527,9 @@ void ItemManager::OnUpdate()
                 break;
             }
             item->isInUse = 0;
+#if defined(TH07_PSP)
+            this->PspForgetItemSlot(i);
+#endif
             itemAcquired = 1;
             continue;
         }
@@ -520,6 +559,12 @@ void ItemManager::RemoveAllItems()
     item = this->items;
     for (i = 0; i < 1100; i++, item++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsItemSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (!item->isInUse)
         {
             continue;
@@ -538,6 +583,12 @@ void ItemManager::DespawnAllItems(i32 param_1)
     item = this->items;
     for (i = 0; i < 1100; i++, item++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsItemSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (item->isInUse == 0 || i == param_1)
         {
             continue;
@@ -566,6 +617,12 @@ void ItemManager::ActivateAllItems()
     item = this->items;
     for (i = 0; i < 1100; i++, item++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsItemSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (item->isInUse != 1)
         {
             continue;

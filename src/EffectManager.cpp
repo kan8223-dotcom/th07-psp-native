@@ -459,7 +459,12 @@ Effect *EffectManager::SpawnParticles(i32 effectId, ZunVec3 *pos, i32 numParticl
         {
             this->nextIndex = 0;
         }
+#if defined(TH07_PSP)
+        const i32 effectIndex = static_cast<i32>(effect - this->effects);
+        if (this->PspIsEffectSlotTracked(effectIndex) && effect->inUseFlag)
+#else
         if (effect->inUseFlag)
+#endif
         {
             if (this->nextIndex == 0)
             {
@@ -471,9 +476,15 @@ Effect *EffectManager::SpawnParticles(i32 effectId, ZunVec3 *pos, i32 numParticl
             }
             continue;
         }
+#if defined(TH07_PSP)
+        this->PspForgetEffectSlot(effectIndex);
+#endif
 
         effect->is2D = 0;
         effect->inUseFlag = 1;
+#if defined(TH07_PSP)
+        this->PspTrackEffectSlot(effectIndex);
+#endif
         effect->effectId = (u8)effectId;
         effect->pos1 = *pos;
         g_AnmManager->SetAnmIdxAndExecuteScript(&effect->vm, g_EffectMapping[effectId].anmId);
@@ -488,6 +499,9 @@ Effect *EffectManager::SpawnParticles(i32 effectId, ZunVec3 *pos, i32 numParticl
             g_EffectMapping[effectId].initCallback(effect))
         {
             effect->inUseFlag = 0;
+#if defined(TH07_PSP)
+            this->PspForgetEffectSlot(effectIndex);
+#endif
         }
         numParticles--;
         if (numParticles == 0)
@@ -522,7 +536,12 @@ Effect *EffectManager::SpawnMovingParticles(i32 effectId, ZunVec3 *pos, ZunVec3 
         {
             this->nextIndex = 0;
         }
+#if defined(TH07_PSP)
+        const i32 effectIndex = static_cast<i32>(effect - this->effects);
+        if (this->PspIsEffectSlotTracked(effectIndex) && effect->inUseFlag)
+#else
         if (effect->inUseFlag)
+#endif
         {
             if (this->nextIndex == 0)
             {
@@ -534,9 +553,15 @@ Effect *EffectManager::SpawnMovingParticles(i32 effectId, ZunVec3 *pos, ZunVec3 
             }
             continue;
         }
+#if defined(TH07_PSP)
+        this->PspForgetEffectSlot(effectIndex);
+#endif
 
         effect->is2D = 0;
         effect->inUseFlag = 1;
+#if defined(TH07_PSP)
+        this->PspTrackEffectSlot(effectIndex);
+#endif
         effect->effectId = effectId;
         effect->pos1 = *pos;
         g_AnmManager->SetAnmIdxAndExecuteScript(&effect->vm, g_EffectMapping[effectId].anmId);
@@ -550,6 +575,9 @@ Effect *EffectManager::SpawnMovingParticles(i32 effectId, ZunVec3 *pos, ZunVec3 
             g_EffectMapping[effectId].initCallback(effect))
         {
             effect->inUseFlag = 0;
+#if defined(TH07_PSP)
+            this->PspForgetEffectSlot(effectIndex);
+#endif
         }
         numParticles--;
         if (numParticles == 0)
@@ -577,8 +605,14 @@ Effect *EffectManager::SpawnEffect(i32 effectId, ZunVec3 *pos, i32 param_3, i32 
     Effect *effect;
 
     effect = &this->effects[param_3 + 400];
+#if defined(TH07_PSP)
+    const i32 effectIndex = param_3 + 400;
+#endif
     effect->is2D = 0;
     effect->inUseFlag = 1;
+#if defined(TH07_PSP)
+    this->PspTrackEffectSlot(effectIndex);
+#endif
     effect->effectId = effectId;
     effect->pos1 = *pos;
     g_AnmManager->SetAnmIdxAndExecuteScript(&effect->vm, g_EffectMapping[effectId].anmId);
@@ -594,6 +628,9 @@ Effect *EffectManager::SpawnEffect(i32 effectId, ZunVec3 *pos, i32 param_3, i32 
         if (g_EffectMapping[effectId].initCallback(effect))
         {
             effect->inUseFlag = 0;
+#if defined(TH07_PSP)
+            this->PspForgetEffectSlot(effectIndex);
+#endif
         }
     }
     return effect;
@@ -616,8 +653,17 @@ u32 EffectManager::OnUpdate(EffectManager *arg)
     arg->layer3.next = NULL;
     for (i = 0; i < 408; i++, effect++)
     {
+#if defined(TH07_PSP)
+        if (!arg->PspIsEffectSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (!effect->inUseFlag)
         {
+#if defined(TH07_PSP)
+            arg->PspForgetEffectSlot(i);
+#endif
             continue;
         }
 
@@ -625,12 +671,18 @@ u32 EffectManager::OnUpdate(EffectManager *arg)
         if (effect->callback && effect->callback(effect) != 1)
         {
             effect->inUseFlag = 0;
+#if defined(TH07_PSP)
+            arg->PspForgetEffectSlot(i);
+#endif
             continue;
         }
 
         if (g_AnmManager->ExecuteScript(&effect->vm))
         {
             effect->inUseFlag = 0;
+#if defined(TH07_PSP)
+            arg->PspForgetEffectSlot(i);
+#endif
             continue;
         }
 
@@ -681,7 +733,11 @@ u32 EffectManager::OnDraw(EffectManager *arg)
         effect->vm.pos = effect->pos1;
         effect->vm.pos.x += g_GameManager.arcadeRegionTopLeftPos.x;
         effect->vm.pos.y += g_GameManager.arcadeRegionTopLeftPos.y;
+#if defined(TH07_PSP)
+        g_AnmManager->DrawPspFastSprite(&effect->vm);
+#else
         g_AnmManager->Draw(&effect->vm);
+#endif
         effect = effect->next;
     }
     effect = arg->layer2.next;
@@ -697,7 +753,11 @@ u32 EffectManager::OnDraw(EffectManager *arg)
         effect->vm.pos = effect->pos1;
         effect->vm.pos.x += g_GameManager.arcadeRegionTopLeftPos.x;
         effect->vm.pos.y += g_GameManager.arcadeRegionTopLeftPos.y;
+#if defined(TH07_PSP)
+        g_AnmManager->DrawPspFastSprite(&effect->vm);
+#else
         g_AnmManager->Draw(&effect->vm);
+#endif
         effect = effect->next;
     }
     return CHAIN_CALLBACK_RESULT_CONTINUE;

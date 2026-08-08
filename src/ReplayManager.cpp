@@ -1,6 +1,7 @@
 #include "ReplayManager.hpp"
 
 #include "Chain.hpp"
+#include "Controller.hpp"
 #include "EffectManager.hpp"
 #include "EnemyManager.hpp"
 #include "FileSystem.hpp"
@@ -19,6 +20,15 @@
 #endif
 
 ReplayManager *g_ReplayManager;
+
+#if defined(TH07_PSP)
+namespace
+{
+// Stage-end timing stores one byte per 30 frames (and one overlapping byte).
+// 4096 bytes covers the full 115189-input stage capacity.
+constexpr size_t kPspReplayEndBytes = 4096u;
+}
+#endif
 
 u32 ReplayManager::OnUpdateRng(ReplayManager *arg)
 {
@@ -44,7 +54,8 @@ u32 ReplayManager::OnUpdate(ReplayManager *arg)
     }
 
     g_LastFrameGameInput = g_CurFrameGameInput;
-    g_CurFrameGameInput = g_CurFrameRawInput;
+    g_CurFrameGameInput =
+        g_CurFrameRawInput & static_cast<u16>(~TH_BUTTON_FPS_TOGGLE);
     if (g_GameManager.defaultCfg->slowMode)
     {
         return CHAIN_CALLBACK_RESULT_CONTINUE;
@@ -54,12 +65,17 @@ u32 ReplayManager::OnUpdate(ReplayManager *arg)
         return CHAIN_CALLBACK_RESULT_CONTINUE;
     }
 
-    stage = g_GameManager.currentStage - 1;
+    stage = arg->recordingStage;
+    if (stage < 0 || stage >= 7)
+    {
+        stage = g_GameManager.currentStage - 1;
+    }
     if (stage >= 7)
     {
         stage = 6;
     }
-    g_CurFrameGameInput = curInput = g_CurFrameRawInput;
+    g_CurFrameGameInput = curInput =
+        g_CurFrameRawInput & static_cast<u16>(~TH_BUTTON_FPS_TOGGLE);
     arg->replayInputs++;
     arg->replayInputsByStage[stage] = arg->replayInputs + 1;
     arg->replayInputs->frameNum = curInput;
@@ -176,6 +192,10 @@ ZunResult ReplayManager::AddedCallback(ReplayManager *arg)
         {
             arg->data->stageReplayData[i] = NULL;
             arg->data->stageEndData[i] = NULL;
+            arg->stageReplayDataSize[i] = 0;
+            arg->stageEndDataSize[i] = 0;
+            arg->replayInputsByStage[i] = NULL;
+            arg->replayDataEndPointers[i] = 0;
         }
     }
     else if (g_GameManager.currentStage - 2 >= 0)
@@ -193,17 +213,11 @@ ZunResult ReplayManager::AddedCallback(ReplayManager *arg)
     }
     SAFE_FREE(arg->data->stageReplayData[i]);
     SAFE_FREE(arg->data->stageEndData[i]);
-#if defined(TH07_PSP_DIRECT_GAME)
-    // The automated PSP bring-up never saves replays.  Two full StageReplayData
-    // objects cost about 900 KiB, most of it unused input capacity, and can
-    // exhaust the small heap after the SFX bank is loaded.  Ten minutes of
-    // input plus a compact FPS/end-data area is ample for a debug stage run.
-    constexpr size_t kDebugReplayFrames = 60u * 60u * 10u;
-    constexpr size_t kDebugReplayBytes =
-        offsetof(StageReplayData, replayInputs) + kDebugReplayFrames * sizeof(ReplayDataInput);
-    constexpr size_t kDebugEndDataBytes = 4096u;
-    const size_t replayBytes = kDebugReplayBytes;
-    const size_t endBytes = kDebugEndDataBytes;
+#if defined(TH07_PSP)
+    // Preserve the original input capacity.  The separate stage-end timing
+    // stream is tiny and does not need another full StageReplayData object.
+    const size_t replayBytes = sizeof(StageReplayData);
+    const size_t endBytes = kPspReplayEndBytes;
 #else
     const size_t replayBytes = sizeof(StageReplayData);
     const size_t endBytes = sizeof(StageReplayData);
@@ -222,6 +236,8 @@ ZunResult ReplayManager::AddedCallback(ReplayManager *arg)
 #endif
         return ZUN_ERROR;
     }
+    arg->stageReplayDataSize[i] = static_cast<i32>(replayBytes);
+    arg->stageEndDataSize[i] = static_cast<i32>(endBytes);
     std::memset(arg->data->stageReplayData[i], 0, replayBytes);
     std::memset(arg->data->stageEndData[i], 0, endBytes);
 
@@ -259,6 +275,7 @@ ZunResult ReplayManager::AddedCallback(ReplayManager *arg)
     arg->fpsCursor = (u8 *)&endData->score;
     arg->replayInputs->frameNum = 0;
     arg->unused_82 = 0;
+    arg->recordingStage = i;
 #if defined(TH07_PSP)
     th07_psp_boot_note("replay added ready");
 #endif
@@ -490,6 +507,7 @@ ZunResult ReplayManager::AddedCallbackDemo(ReplayManager *arg)
         replayData->nextNeededPointItemsForExtend;
     arg->stageReplayData = endData;
     arg->fpsCursor = (u8 *)&endData->score;
+    arg->recordingStage = i;
     if (g_GameManager.currentStage >= 2 && g_GameManager.currentStage <= 6 &&
         arg->data->stageReplayData[g_GameManager.currentStage - 2])
     {
@@ -557,6 +575,7 @@ ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
         th07_psp_boot_note("replay manager allocated");
 #endif
         g_ReplayManager = mgr;
+        mgr->recordingStage = -1;
         mgr->data = NULL;
         mgr->isDemo = isDemo;
         mgr->replayFilename = replayFilename;
@@ -630,17 +649,84 @@ void ReplayManager::StopRecording()
 {
     ReplayManager *mgr = g_ReplayManager;
 
-    if (mgr)
+    if (mgr && mgr->recordingStage >= 0 && mgr->recordingStage < 7)
     {
         mgr->replayInputs++;
         mgr->replayInputs->frameNum = 0;
-        i32 stage = g_GameManager.currentStage - 1;
-        if (stage >= 7)
-        {
-            stage = 6;
-        }
+        const i32 stage = mgr->recordingStage;
         mgr->replayInputsByStage[stage] = mgr->replayInputs + 1;
+        mgr->recordingStage = -1;
     }
+}
+
+void ReplayManager::CompactRecordedStage(i32 stage)
+{
+#if defined(TH07_PSP)
+    ReplayManager *mgr = g_ReplayManager;
+    if (!mgr || !mgr->data || mgr->isDemo || stage < 0 || stage >= 7)
+    {
+        return;
+    }
+
+    size_t inputBefore = static_cast<size_t>(mgr->stageReplayDataSize[stage]);
+    size_t inputUsed = inputBefore;
+    StageReplayData *inputBase = mgr->data->stageReplayData[stage];
+    if (inputBase && mgr->replayInputsByStage[stage])
+    {
+        const uintptr_t base = reinterpret_cast<uintptr_t>(inputBase);
+        const uintptr_t end = reinterpret_cast<uintptr_t>(mgr->replayInputsByStage[stage]);
+        if (end >= base && end - base >= offsetof(StageReplayData, replayInputs) &&
+            end - base <= inputBefore)
+        {
+            inputUsed = static_cast<size_t>(end - base);
+            void *shrunk = std::realloc(inputBase, inputUsed);
+            if (shrunk)
+            {
+                mgr->data->stageReplayData[stage] = static_cast<StageReplayData *>(shrunk);
+                mgr->replayInputsByStage[stage] = reinterpret_cast<ReplayDataInput *>(
+                    static_cast<u8 *>(shrunk) + inputUsed);
+                mgr->stageReplayDataSize[stage] = static_cast<i32>(inputUsed);
+            }
+            else
+            {
+                inputUsed = inputBefore;
+            }
+        }
+    }
+
+    size_t endBefore = static_cast<size_t>(mgr->stageEndDataSize[stage]);
+    size_t endUsed = endBefore;
+    StageReplayData *endBase = mgr->data->stageEndData[stage];
+    if (endBase && mgr->replayDataEndPointers[stage])
+    {
+        const uintptr_t base = reinterpret_cast<uintptr_t>(endBase);
+        const uintptr_t end = mgr->replayDataEndPointers[stage];
+        if (end >= base && end - base >= sizeof(i32) && end - base <= endBefore)
+        {
+            endUsed = static_cast<size_t>(end - base);
+            void *shrunk = std::realloc(endBase, endUsed);
+            if (shrunk)
+            {
+                mgr->data->stageEndData[stage] = static_cast<StageReplayData *>(shrunk);
+                mgr->replayDataEndPointers[stage] =
+                    reinterpret_cast<uintptr_t>(static_cast<u8 *>(shrunk) + endUsed);
+                mgr->stageEndDataSize[stage] = static_cast<i32>(endUsed);
+            }
+            else
+            {
+                endUsed = endBefore;
+            }
+        }
+    }
+
+    th07_psp_boot_notef("replay compact stage %d input %uK->%uK end %uK->%uK", stage + 1,
+                        static_cast<unsigned int>(inputBefore / 1024u),
+                        static_cast<unsigned int>(inputUsed / 1024u),
+                        static_cast<unsigned int>(endBefore / 1024u),
+                        static_cast<unsigned int>(endUsed / 1024u));
+#else
+    (void)stage;
+#endif
 }
 
 void ReplayManager::SaveReplay(const char *filename, char *replayName)

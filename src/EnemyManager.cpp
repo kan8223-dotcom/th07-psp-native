@@ -12,6 +12,24 @@
 #include "ZunResult.hpp"
 #include "utils.hpp"
 
+#if defined(TH07_PSP)
+#include <cmath>
+#include <pspmath.h>
+
+namespace
+{
+inline void PspEnemyRenderSinCos(f32 angle, f32 *outSin, f32 *outCos)
+{
+    if (std::isfinite(angle) && angle >= -16.0f * ZUN_PI && angle <= 16.0f * ZUN_PI)
+    {
+        vfpu_sincos(angle, outSin, outCos);
+        return;
+    }
+    sincosf(outSin, outCos, angle);
+}
+} // namespace
+#endif
+
 u32 g_SpellcardScore[141] = {
     0x1E8480, 0x1E8480, 0x2191C0, 0x2191C0, 0x249F00, 0x249F00, 0x249F00, 0x249F00, 0x249F00,
     0x249F00, 0x27AC40, 0x27AC40, 0x27AC40, 0x27AC40, 0x27AC40, 0x27AC40, 0x27AC40, 0x27AC40,
@@ -144,10 +162,21 @@ Enemy *EnemyManager::SpawnEnemy(i32 eclSubId, ZunVec3 *pos, i32 life, i32 itemDr
     enemy = this->enemies;
     for (i = 0; i < 480; i++, enemy++)
     {
+#if defined(TH07_PSP)
+        if (this->PspIsEnemySlotTracked(i))
+        {
+            if (enemy->active)
+            {
+                continue;
+            }
+            this->PspForgetEnemySlot(i);
+        }
+#else
         if (enemy->active)
         {
             continue;
         }
+#endif
 
         *enemy = this->enemyTemplate;
         enemy->mirror = mirror;
@@ -163,6 +192,9 @@ Enemy *EnemyManager::SpawnEnemy(i32 eclSubId, ZunVec3 *pos, i32 life, i32 itemDr
         }
         else
         {
+#if defined(TH07_PSP)
+            this->PspTrackEnemySlot(i);
+#endif
             enemy->color.color = enemy->primaryVm.color.color;
             enemy->itemDrop = (i8)itemDrop;
             if (score >= 0)
@@ -185,10 +217,21 @@ Enemy *EnemyManager::SpawnEnemyEx(i32 eclSubId, ZunVec3 *pos, i32 life, i32 item
     enemy = this->enemies;
     for (i = 0; i < 480; i++, enemy++)
     {
+#if defined(TH07_PSP)
+        if (this->PspIsEnemySlotTracked(i))
+        {
+            if (enemy->active)
+            {
+                continue;
+            }
+            this->PspForgetEnemySlot(i);
+        }
+#else
         if (enemy->active)
         {
             continue;
         }
+#endif
 
         *enemy = this->enemyTemplate;
         if (life >= 0)
@@ -204,6 +247,9 @@ Enemy *EnemyManager::SpawnEnemyEx(i32 eclSubId, ZunVec3 *pos, i32 life, i32 item
         }
         else
         {
+#if defined(TH07_PSP)
+            this->PspTrackEnemySlot(i);
+#endif
             enemy->color.color = enemy->primaryVm.color.color;
             enemy->itemDrop = (i8)itemDrop;
             if (life >= 0)
@@ -472,6 +518,12 @@ i32 Enemy::HandleLifeCallback()
             this->shootInterval = 0;
             for (j = 0; j < 480; j++, enemy++)
             {
+#if defined(TH07_PSP)
+                if (!g_EnemyManager.PspIsEnemySlotTracked(j))
+                {
+                    continue;
+                }
+#endif
                 if (!enemy->active)
                 {
                     continue;
@@ -550,6 +602,12 @@ i32 Enemy::HandleTimerCallback()
         enemy = g_EnemyManager.enemies;
         for (j = 0; j < 480; j++, enemy++)
         {
+#if defined(TH07_PSP)
+            if (!g_EnemyManager.PspIsEnemySlotTracked(j))
+            {
+                continue;
+            }
+#endif
             if (!enemy->active)
             {
                 continue;
@@ -701,8 +759,17 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
     arg->enemyCountReal = 0;
     for (i = 0; i < 480; i++, enemy++)
     {
+#if defined(TH07_PSP)
+        if (!arg->PspIsEnemySlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (!enemy->active)
         {
+#if defined(TH07_PSP)
+            arg->PspForgetEnemySlot(i);
+#endif
             continue;
         }
         arg->enemyCountReal++;
@@ -1341,8 +1408,12 @@ u32 EnemyManager::ActualOnDraw(EnemyManager *arg, i32 first, i32 last)
                             }
 
                             prevAngle = angle1;
+#if defined(TH07_PSP)
+                            PspEnemyRenderSinCos(angle1, &sinAngle, &cosAngle);
+#else
                             sinAngle = sinf(angle1);
                             cosAngle = cosf(angle1);
+#endif
                             xOffset = 0.0f;
                             yOffset = scale.y * enemy->primaryVm.sprite->heightPx / 2.0f;
 
@@ -1502,6 +1573,12 @@ i32 EnemyManager::RemoveAllEnemies(i32 scoreMax, i32 scoreMin)
     popupScore = 2000;
     for (i = 0; i < 480; i++, enemy++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsEnemySlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (!enemy->active)
         {
             continue;

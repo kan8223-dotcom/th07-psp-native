@@ -8,15 +8,24 @@ is not a release candidate until every item passes without the debug route.
 - `make` boots the title; it must not jump directly to a stage.
 - No auto-fire, infinite lives or forced MAX power is present.
 - `make PSP_DIRECT_GAME=1` remains a separate diagnostic build.
+- `PSP_PERF_DIAG=1` may expose all six Practice stages for testing, but a
+  release build must retain the original clear-count gate and must not alter
+  `clrd`, `pscr` or `score.dat` to unlock them.
 - The EBOOT and deployed copy have the same SHA-256 hash.
 
 ## Title, text and transitions
 
-- The title background and title logo are visible.
+- The title background, title logo, Reimu, all eight menu items, help text,
+  version and copyright line are visible.  Check this on first boot, after a
+  manual demo abort, and after returning from Music Room; a 60 fps log alone
+  is not a pass.
 - Leave the title untouched until its attract-mode replay starts.  The title
   surface/cache must be released, the demo must load without a crash, and the
   game must eventually return to the title.  This is the same transition class
-  that failed during TH06 PSP bring-up.
+  that failed during TH06 PSP bring-up.  The manual-abort chain break is fixed
+  and passes PPSSPP, but still needs hardware verification.  Test automatic
+  completion and button-triggered abort as two separate paths, twice each; a
+  PPSSPP-only pass is not sufficient.
 - The "白銀の春" stage logo and all title strings are present.
 - Character select reaches gameplay without a long frozen interval.
 - Dialogue is Japanese, is not blank/garbled, and is not replaced by the
@@ -31,10 +40,27 @@ is not a release candidate until every item passes without the debug route.
 - The top edge and game frame do not flicker.
 - Both `4:3 FIT` (362x272) and `FULL STRETCH` (480x272) have clean edges;
   pillarboxes never retain pixels from an earlier frame.
+- On stage 4, measure the first cloud-top 3D section and the Prismriver
+  netherworld gate separately.  The latter previously stayed near 30 fps.
+- On stage 5, measure the 3D stair section even before a dense pattern begins.
+- At spell start, verify that omitting the PSP low-priority 3D overlap layers
+  does not expose black gaps or remove the high-priority base scene.
+- Verify title, Result, Music Room, dialogue, spell cut-ins and all six stages
+  with the RGB565 display buffers; look for banding, wrong alpha, retained
+  pillarbox pixels or a transition-only crash.
 
 ## Timing and sound
 
 - Gameplay, BGM and SE all run at normal speed.
+- Press SELECT during gameplay to enter fixed-30 mode.  Rendering must settle
+  at 30 fps while simulation, timers, BGM and SE retain their normal speed;
+  press SELECT again and verify rendering returns to 60 fps.  Save and play a
+  replay after toggling to ensure the mode-control bit was not recorded as
+  gameplay input.
+- In the stage 1 boss fight, compare the steady section with the few seconds
+  immediately after the boss bomb/spell starts.  Record Effect, Bullet, draw
+  and texture-upload time separately instead of treating it as a general
+  stage slowdown.
 - There is no periodic game/audio hitch from synchronous Memory Stick logging
   or streaming I/O.  Normal builds must not write a diagnostic line every few
   seconds.
@@ -45,11 +71,26 @@ is not a release candidate until every item passes without the debug route.
 - the cherry-border sound stops when the effect ends.
 - Pausing, HOME suspend/resume and returning to the title do not leave a
   looping SE or mute the next scene.
+- Enter Music Room through the normal title menu.  Its background, character,
+  ten visible track titles and initial comment are present; it must not stay
+  near the previously reported 19 fps.
+- A local `music_bg.rgb565` cache generated from the user's own `th07.dat`
+  reaches `music raw cache loaded` and `music added ready` without entering
+  the removed PSP JPEG hardware decoder.  The derived cache must never enter
+  a source commit or redistributable release archive.
+- Select a different track.  BGM startup is dispatched before the progressive
+  eight-line comment redraw, no old/new comment lines are mixed, and stable
+  rendering returns to 60 fps.
+- Return from Music Room.  The process must remain alive, the title must be
+  fully redrawn, and returning to XMB is a failure.
 
 ## Full route
 
 - Start from the title, clear stages 1 through 6, enter the ending and return
   to the title.
+- At the stage 5 -> 6 boundary, the log must contain `replay compact stage 5`
+  followed by stage 6 `game added gui ready` and `game added ready`; returning
+  to XMB is a failure.
 - The staff-roll white hold, fade, background and credits advance at normal
   speed; it must not look permanently white or take minutes per line.
 - `th07.cfg`, `score.dat` and `replay/` are written beside EBOOT, never into

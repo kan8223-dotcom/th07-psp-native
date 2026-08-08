@@ -25,3 +25,5 @@ TH07PSP_BOOT*.LOG
 /*.png
 /*.ps1
 /ppsspp-th07-test.ini
+/.tmp-user-th07.dat
+/music_bg.rgb565

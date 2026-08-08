@@ -169,6 +169,20 @@ struct Stage
     // pad 3
     ZunColor color2;
     i32 isDarkening;
+#if defined(TH07_PSP)
+    // Stage 4/5 contain enough repeated background instances that walking the
+    // full STD instance list once for every Z layer becomes a measurable SC
+    // cost.  These render-only caches preserve source order inside each layer.
+    StdRawInstance *pspInstancesByZ[4];
+    i32 pspInstanceCounts[4];
+    f32 *pspObjectCullRadii;
+    i32 pspInstanceBucketsReady;
+    i32 pspCameraMatrixFrame;
+    ZunMatrix pspCameraViewMatrix;
+    ZunMatrix pspCameraProjectionMatrix;
+    // Shared by all four background Z passes in one frame.
+    ZunVec3 pspBillboardViewDir;
+#endif
 };
 
 extern Stage g_Stage;

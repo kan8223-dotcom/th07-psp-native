@@ -96,6 +96,27 @@ struct EffectManager
     Effect layer3;
     Effect *layerPtrs[4];
     i32 frameCounter;
+#if defined(TH07_PSP)
+    // Avoid touching all 408 AnmVm-heavy effect slots just to read their
+    // in-use byte. External owners may retire an effect directly, so spawn
+    // and update paths also repair stale bits when encountered.
+    u32 pspActiveEffectBits[13];
+
+    bool PspIsEffectSlotTracked(i32 index) const
+    {
+        return (pspActiveEffectBits[index >> 5] & (1u << (index & 31))) != 0;
+    }
+
+    void PspTrackEffectSlot(i32 index)
+    {
+        pspActiveEffectBits[index >> 5] |= 1u << (index & 31);
+    }
+
+    void PspForgetEffectSlot(i32 index)
+    {
+        pspActiveEffectBits[index >> 5] &= ~(1u << (index & 31));
+    }
+#endif
 };
 
 extern EffectManager g_EffectManager;

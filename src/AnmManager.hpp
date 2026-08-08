@@ -9,6 +9,9 @@
 #include "ZunMath.hpp"
 #include "ZunResult.hpp"
 #include "graphics/ZunGraphics.hpp"
+#if defined(TH07_PSP)
+#include "graphics/PspGuGraphics.hpp"
+#endif
 
 struct VertexDiffuseXyzrhw
 {
@@ -130,6 +133,7 @@ struct AnmManager
 #if defined(TH07_PSP)
     ZunResult DrawPspBullet(AnmVm *vm, const f32 *cachedSin = nullptr,
                             const f32 *cachedCos = nullptr);
+    ZunResult DrawPspFastSprite(AnmVm *vm);
 #endif
     ZunResult DrawBillboard(AnmVm *vm);
     ZunResult Draw3(AnmVm *vm);
@@ -192,15 +196,13 @@ struct AnmManager
     {
         for (i32 i = 0; i < 32; i++)
         {
-            if (this->surfaces[i])
+            if (this->surfaces[i] || this->surfacesBis[i]
+#if defined(TH07_PSP)
+                || this->pspSurfaceTextures[i]
+#endif
+            )
             {
-                SDL_FreeSurface(this->surfaces[i]);
-                this->surfaces[i] = nullptr;
-            }
-            if (this->surfacesBis[i])
-            {
-                SDL_FreeSurface(this->surfacesBis[i]);
-                this->surfacesBis[i] = nullptr;
+                ReleaseSurface(i);
             }
         }
     }
@@ -365,6 +367,12 @@ struct AnmManager
     struct AnmEntry anmFiles[50];
     SDL_Surface *surfaces[32];
     SDL_Surface *surfacesBis[32];
+#if defined(TH07_PSP)
+    // Full-screen JPEGs are immutable for their lifetime.  Keep the GE
+    // texture handle instead of rebuilding a temporary handle every frame.
+    GfxTextureHandle pspSurfaceTextures[32];
+    const void *pspSurfaceTextureSources[32];
+#endif
     u32 textureWidths[264];
     u32 textureHeights[264];
     u32 texturePitches[264];
@@ -380,9 +388,17 @@ struct AnmManager
     struct AnmLoadedSprite *currentSprite;
     struct RenderVertexInfo vertexBufferContents[4];
     u32 spritesToDraw;
+#if defined(TH07_PSP)
+    alignas(16) Th07PspSpriteVertex spriteVertexBuffer[49152];
+    Th07PspSpriteVertex *vertexBufferCurPtr;
+    Th07PspSpriteVertex *vertexBufferStartPtr;
+    u8 pspSpriteBatchUsesPairs;
+    u8 pspPreferSpritePairs;
+#else
     struct VertexTex1DiffuseXyzrhw spriteVertexBuffer[49152];
     struct VertexTex1DiffuseXyzrhw *vertexBufferCurPtr;
     struct VertexTex1DiffuseXyzrhw *vertexBufferStartPtr;
+#endif
     i32 screenshotTextureId;
     i32 screenshotSrcLeft;
     i32 screenshotSrcTop;

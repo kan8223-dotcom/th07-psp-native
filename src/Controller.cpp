@@ -209,6 +209,7 @@ u16 Controller::GetInput()
         buttons |= TH_BUTTON_FOCUS;
     if (pad.Buttons & PSP_CTRL_TRIANGLE) buttons |= TH_BUTTON_SKIP;
     if (pad.Buttons & PSP_CTRL_START) buttons |= TH_BUTTON_MENU;
+    if (pad.Buttons & PSP_CTRL_SELECT) buttons |= TH_BUTTON_FPS_TOGGLE;
 #if defined(TH07_PSP_DIRECT_GAME)
     // Gameplay bring-up helper: keep firing while still allowing every
     // physical PSP control to be tested normally.

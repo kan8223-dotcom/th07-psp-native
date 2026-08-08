@@ -194,7 +194,17 @@ u32 GameManager::OnUpdate(GameManager *arg)
     {
         if (WAS_PRESSED_RAW(TH_BUTTON_ANY))
         {
+#if defined(TH07_PSP)
+            th07_psp_boot_note("demo manual abort requested");
+#endif
             g_Supervisor.curState = 1;
+            // Match the automatic demo timeout path below.  Continuing the
+            // calc chain after requesting a scene change lets the replay,
+            // stage, GUI and enemy jobs update once more before Supervisor
+            // tears them down on the next frame.  On real PSP hardware that
+            // leaves the manual-abort cleanup state different from normal
+            // demo completion and can make title01.anm re-registration fail.
+            return CHAIN_CALLBACK_RESULT_BREAK;
         }
         arg->demoFrames = arg->demoFrames + 1;
         if ((arg->demoIdx == 0 && arg->demoFrames == 8100) ||
@@ -919,6 +929,15 @@ ZunResult GameManager::DeletedCallback(GameManager *arg)
     th07_psp_heap_note("game delete gui");
 #endif
     ReplayManager::StopRecording();
+#if defined(TH07_PSP)
+    if (g_Supervisor.curState == 3 && g_ReplayManager && !g_ReplayManager->IsDemo())
+    {
+        // Completed stages retained two maximum-sized replay buffers each.
+        // By stage 6 they consumed several MiB and face_06_00.anm could no
+        // longer obtain its temporary 3 MiB source block on real hardware.
+        ReplayManager::CompactRecordedStage(g_GameManager.currentStage - 1);
+    }
+#endif
 #if defined(TH07_PSP_PERF_DIAG)
     th07_psp_heap_note("game delete replay");
 #endif

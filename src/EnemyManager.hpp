@@ -281,6 +281,28 @@ struct EnemyManager
     EclTimeline timelines[16];
     ZunTimer timelineTime;
     Enemy *enemyHead[4];
+#if defined(TH07_PSP)
+    // Enemy is about 22 KiB because it owns ECL state, history and trail
+    // vertices. A linear active-flag probe over 480 slots therefore has a
+    // disproportionate cache cost. Keep source ordering while avoiding those
+    // cold structure reads for empty slots.
+    u32 pspActiveEnemyBits[15];
+
+    bool PspIsEnemySlotTracked(i32 index) const
+    {
+        return (pspActiveEnemyBits[index >> 5] & (1u << (index & 31))) != 0;
+    }
+
+    void PspTrackEnemySlot(i32 index)
+    {
+        pspActiveEnemyBits[index >> 5] |= 1u << (index & 31);
+    }
+
+    void PspForgetEnemySlot(i32 index)
+    {
+        pspActiveEnemyBits[index >> 5] &= ~(1u << (index & 31));
+    }
+#endif
 };
 
 extern EnemyManager g_EnemyManager;

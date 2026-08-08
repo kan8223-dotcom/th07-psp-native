@@ -190,7 +190,7 @@ struct Player
     void BreakBorderNaturally();
 
     i32 CalcItemBoxCollision(ZunVec3 *center, ZunVec3 *size);
-    i32 CalcKillboxCollision(ZunVec3 *center, ZunVec3 *size);
+    i32 CalcKillboxCollision(ZunVec3 *center, ZunVec3 *size, bool checkBomb = true);
     i32 CalcLaserHitbox(ZunVec3 *center, ZunVec3 *size, ZunVec3 *origin, f32 rotation,
                         i32 canGraze);
     i32 CheckBombGraze(ZunVec3 *center, ZunVec3 *size);
@@ -301,6 +301,32 @@ struct Player
     Effect *borderEffect;
     struct ShtData *shooterData;
     struct ShtData *shooterDataFocus;
+#if defined(TH07_PSP)
+    // Highest potentially active bomb-clear slot plus one.  Dense patterns call
+    // CheckBombGraze for every bullet; scanning all 96 empty slots (often twice)
+    // was a large, completely avoidable SC cost outside bombs/borders.
+    i32 pspBombClearHighWater;
+    // Player-shot collision is evaluated once per hittable enemy. Skip empty
+    // 904-byte shot slots, and avoid scanning 112 empty damage boxes outside
+    // the one laser type that actually populates them.
+    u32 pspActiveShotBits[3];
+    i32 pspBombDamageHighWater;
+
+    bool PspIsShotSlotTracked(i32 index) const
+    {
+        return (pspActiveShotBits[index >> 5] & (1u << (index & 31))) != 0;
+    }
+
+    void PspTrackShotSlot(i32 index)
+    {
+        pspActiveShotBits[index >> 5] |= 1u << (index & 31);
+    }
+
+    void PspForgetShotSlot(i32 index)
+    {
+        pspActiveShotBits[index >> 5] &= ~(1u << (index & 31));
+    }
+#endif
 };
 
 extern Player g_Player;

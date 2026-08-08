@@ -9,6 +9,7 @@
 #include "Chain.hpp"
 #include "Controller.hpp"
 #include "EnemyManager.hpp"
+#include "EffectManager.hpp"
 #include "FileSystem.hpp"
 #include "GameErrorContext.hpp"
 #include "GameManager.hpp"
@@ -313,6 +314,16 @@ u32 Gui::OnDraw(Gui *arg)
 
 void Gui::ShowBombNamePortrait(i32 sprite, const char *name)
 {
+#if defined(TH07_PSP_PERF_DIAG)
+    {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "player bomb start frame %d bullets %d effects %d sprite %d",
+                      g_GameManager.framesThisStage, g_BulletManager.bulletCount,
+                      g_EffectManager.activeEffectsCount, sprite);
+        th07_psp_boot_note(message);
+    }
+#endif
     g_AnmManager->SetAnmIdxAndExecuteScript(&this->impl->bombSpellcardPortrait, 1185);
     g_AnmManager->SetActiveSprite(&this->impl->bombSpellcardPortrait, sprite);
     g_AnmManager->SetAnmIdxAndExecuteScript(&this->impl->bombSpellcardDecorLeft, 1188);
@@ -329,6 +340,16 @@ void Gui::ShowBombNamePortrait(i32 sprite, const char *name)
 
 void Gui::ShowSpellcard(i32 spellcardSprite, const char *spellcardName)
 {
+#if defined(TH07_PSP_PERF_DIAG)
+    {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "boss spell start frame %d bullets %d effects %d sprite %d",
+                      g_GameManager.framesThisStage, g_BulletManager.bulletCount,
+                      g_EffectManager.activeEffectsCount, spellcardSprite);
+        th07_psp_boot_note(message);
+    }
+#endif
     if (spellcardSprite >= 0)
     {
         g_AnmManager->SetAnmIdxAndExecuteScript(&this->impl->enemySpellcardPortrait, 1187);

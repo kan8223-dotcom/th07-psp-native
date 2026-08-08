@@ -1,5 +1,8 @@
 #include "MusicRoom.hpp"
 
+#include <algorithm>
+#include <cstdio>
+
 #include "AnmIdx.hpp"
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
@@ -8,6 +11,80 @@
 #include "FileSystem.hpp"
 #include "SoundPlayer.hpp"
 #include "Supervisor.hpp"
+#if defined(TH07_PSP)
+#include "fileio.hpp"
+#include "graphics/PspGuGraphics.hpp"
+
+namespace
+{
+void DrawMusicTitle(MusicRoom *room, i32 idx)
+{
+    if (idx < 0 || idx >= room->numDescriptors || room->titleRendered[idx])
+    {
+        return;
+    }
+    AnmManager::DrawVmTextFmt(g_AnmManager, room->titleSprites + idx, 0xc0e0ff, 0x302080,
+                              room->trackDescriptors[idx].title);
+    room->titleRendered[idx] = 1;
+}
+
+bool DrawNextVisibleMusicTitle(MusicRoom *room)
+{
+    // Keep the selected row usable first, then fill the rest of the visible
+    // window from top to bottom.  Exactly one FreeType raster/upload is done
+    // in an update so entering or scrolling never blocks on ten rows at once.
+    if (room->cursor >= room->listingOffset && room->cursor < room->listingOffset + 10 &&
+        room->cursor < room->numDescriptors && !room->titleRendered[room->cursor])
+    {
+        DrawMusicTitle(room, room->cursor);
+        return true;
+    }
+
+    const i32 end = std::min(room->listingOffset + 10, room->numDescriptors);
+    for (i32 i = room->listingOffset; i < end; ++i)
+    {
+        if (!room->titleRendered[i])
+        {
+            DrawMusicTitle(room, i);
+            return true;
+        }
+    }
+    return false;
+}
+
+void QueueMusicDescription(MusicRoom *room, i32 trackIdx)
+{
+    room->selectedIdx = trackIdx;
+    room->descriptionRenderIdx = 0;
+    for (AnmVm &description : room->descriptionSprites)
+    {
+        description.active = 0;
+        description.pendingInterrupt = 1;
+    }
+}
+
+void DrawNextMusicDescriptionLine(MusicRoom *room)
+{
+    const i32 lineIdx = room->descriptionRenderIdx;
+    if (lineIdx < 0 || lineIdx >= 8)
+    {
+        return;
+    }
+
+    char line[66] = {};
+    memcpy(line, room->trackDescriptors[room->selectedIdx].description[lineIdx], 64);
+    if (line[0] != '\0')
+    {
+        room->descriptionSprites[lineIdx].active = 1;
+        AnmManager::DrawVmTextFmt(g_AnmManager, room->descriptionSprites + lineIdx,
+                                  0xffe0c0, 0x300000, line);
+    }
+    room->descriptionSprites[lineIdx].pendingInterrupt = 1;
+    room->descriptionRenderIdx = lineIdx == 7 ? -1 : lineIdx + 1;
+}
+
+} // namespace
+#endif
 
 ZunResult MusicRoom::CheckInputEnable()
 {
@@ -40,7 +117,9 @@ ZunResult MusicRoom::CheckInputEnable()
 
 i32 MusicRoom::ProcessInput()
 {
+#if !defined(TH07_PSP)
     char local_54[66];
+#endif
     i32 i;
 
     if (WAS_PRESSED_RAW(TH_BUTTON_UP))
@@ -106,6 +185,14 @@ i32 MusicRoom::ProcessInput()
             g_SoundPlayer.StartBGM("thbgm.dat");
         }
         g_Supervisor.PlayAudio(this->trackDescriptors[this->selectedIdx].path);
+#if defined(TH07_PSP)
+        // Dispatch AUDIO_START before FreeType redraws the eight comment
+        // lines.  The producer can fill its ring while those glyphs are
+        // rendered, so selecting a track is no longer followed by a long
+        // silent pause on Memory Stick hardware.
+        g_SoundPlayer.ProcessQueues();
+        QueueMusicDescription(this, this->selectedIdx);
+#else
         for (i = 0; i < 8; i++)
         {
             memset(local_54, 0, sizeof(local_54));
@@ -122,9 +209,16 @@ i32 MusicRoom::ProcessInput()
             }
             this->descriptionSprites[i].pendingInterrupt = 1;
         }
+#endif
     }
     if (WAS_PRESSED_RAW(TH_BUTTON_RETURNMENU))
     {
+#if defined(TH07_PSP)
+        g_Supervisor.StopAudio();
+        while (g_SoundPlayer.ProcessQueues())
+        {
+        }
+#endif
         g_Supervisor.curState = 1;
         return 1;
     }
@@ -164,7 +258,12 @@ recheck:
         arg->waitFramesCounter++;
     }
     g_AnmManager->ExecuteScript(&arg->vm[0]);
+#if defined(TH07_PSP)
+    const i32 titleEnd = std::min(arg->listingOffset + 10, arg->numDescriptors);
+    for (i = arg->listingOffset; i < titleEnd; i++)
+#else
     for (i = 0; i < 31; i++)
+#endif
     {
         g_AnmManager->ExecuteScript(&arg->titleSprites[i]);
     }
@@ -172,6 +271,12 @@ recheck:
     {
         g_AnmManager->ExecuteScript(&arg->descriptionSprites[i]);
     }
+#if defined(TH07_PSP)
+    if (!DrawNextVisibleMusicTitle(arg))
+    {
+        DrawNextMusicDescriptionLine(arg);
+    }
+#endif
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -217,20 +322,33 @@ u32 MusicRoom::OnDraw(MusicRoom *arg)
 
 ZunResult MusicRoom::AddedCallback(MusicRoom *arg)
 {
+#if !defined(TH07_PSP)
     char lineCharBuffer[66];
+#endif
     char *firstChar;
     i32 charIdx;
     char *curChar;
     i32 lineIdx;
     i32 offset;
+#if defined(TH07_PSP)
+    th07_psp_boot_note("music added begin");
+    memset(arg->titleRendered, 0, sizeof(arg->titleRendered));
+#endif
     if (g_AnmManager->LoadSurface(0, "data/result/music.jpg") != ZUN_SUCCESS)
     {
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("music background decoded");
+#endif
     if (g_AnmManager->LoadAnms(ANM_FILE_MUSIC, "data/music00.anm", ANM_OFFSET_MUSIC) != ZUN_SUCCESS)
     {
+        g_AnmManager->ReleaseSurface(0);
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP)
+    th07_psp_boot_note("music anm loaded");
+#endif
 
     g_AnmManager->SetAnmIdxAndExecuteScript(&arg->vm[0], 2304);
     arg->waitFramesCounter = 0;
@@ -238,6 +356,9 @@ ZunResult MusicRoom::AddedCallback(MusicRoom *arg)
     firstChar = curChar;
     if ((u8 *)curChar == NULL)
     {
+        g_AnmManager->ReleaseAnm(46);
+        g_AnmManager->ReleaseAnm(47);
+        g_AnmManager->ReleaseSurface(0);
         return ZUN_ERROR;
     }
 
@@ -324,11 +445,16 @@ ZunResult MusicRoom::AddedCallback(MusicRoom *arg)
     }
 LAB_0043b195:
     arg->numDescriptors = offset + 1;
+#if defined(TH07_PSP)
+    th07_psp_boot_note("music comments parsed");
+#endif
     for (offset = 0; offset < arg->numDescriptors; offset++)
     {
         g_AnmManager->SetAnmIdxAndExecuteScript(&arg->titleSprites[offset], offset + 2305);
+#if !defined(TH07_PSP)
         AnmManager::DrawVmTextFmt(g_AnmManager, arg->titleSprites + offset, 0xc0e0ff, 0x302080,
                                   arg->trackDescriptors[offset].title);
+#endif
         arg->titleSprites[offset].pos.x = 93.0f;
         arg->titleSprites[offset].pos.y = (f32)((offset + 1) * 18) + 104.0f - 20.0f;
         arg->titleSprites[offset].pos.z = 0.0f;
@@ -337,6 +463,10 @@ LAB_0043b195:
     for (offset = 0; offset < 8; offset++)
     {
         g_AnmManager->SetAnmIdxAndExecuteScript(&arg->descriptionSprites[offset], offset + 1799);
+#if defined(TH07_PSP)
+        // Initial comments are drawn below after every sprite has its script.
+        arg->descriptionSprites[offset].active = 0;
+#else
         memset(lineCharBuffer, 0, sizeof(lineCharBuffer));
         memcpy(lineCharBuffer, arg->trackDescriptors[arg->selectedIdx].description[offset], 64);
         if (*lineCharBuffer != '\0')
@@ -349,20 +479,36 @@ LAB_0043b195:
         {
             arg->descriptionSprites[offset].active = 0;
         }
+#endif
     }
+#if defined(TH07_PSP)
+    QueueMusicDescription(arg, arg->selectedIdx);
+    Th07PspTrimTextureCache();
+    th07_psp_boot_note("music added ready");
+#endif
     free(firstChar);
     return ZUN_SUCCESS;
 }
 
 ZunResult MusicRoom::DeletedCallback(MusicRoom *arg)
 {
-    delete arg->trackDescriptors;
+#if defined(TH07_PSP)
+    th07_psp_boot_note("music delete begin");
+#endif
+    g_Chain.Cut(arg->drawChain);
+    arg->drawChain = NULL;
+    delete[] arg->trackDescriptors;
     arg->trackDescriptors = NULL;
     g_AnmManager->ReleaseSurface(0);
     g_AnmManager->ReleaseAnm(46);
     g_AnmManager->ReleaseAnm(47);
-    g_Chain.Cut(arg->drawChain);
-    arg->drawChain = NULL;
+#if defined(TH07_PSP)
+    const unsigned int releasedBytes = Th07PspTrimTextureCache();
+    char message[80];
+    std::snprintf(message, sizeof(message), "music delete ready trim %uK",
+                  releasedBytes / 1024u);
+    th07_psp_boot_note(message);
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -377,6 +523,8 @@ ZunResult MusicRoom::RegisterChain()
     musicRoom->calcChain->deletedCallback = (ChainLifecycleCallback)DeletedCallback;
     if (g_Chain.AddToCalcChain(musicRoom->calcChain, 3))
     {
+        g_Chain.Cut(musicRoom->calcChain);
+        musicRoom->calcChain = NULL;
         return ZUN_ERROR;
     }
 

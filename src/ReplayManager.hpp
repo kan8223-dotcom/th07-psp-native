@@ -101,6 +101,7 @@ struct ReplayManager
     static void SaveReplay(const char *filename, char *replayName);
     static void SaveReplay2(const char *filename);
     static void StopRecording();
+    static void CompactRecordedStage(i32 stage);
     static ReplayFile *ValidateReplayData(ReplayFile *data, i32 size);
     static void FreeReplay(ReplayFile *replay);
 
@@ -134,6 +135,7 @@ struct ReplayManager
     ChainElem *rngCalcChain;
     u16 rngSeed;
     u16 replayEventFlags;
+    i32 recordingStage;
 };
 
 extern ReplayManager *g_ReplayManager;

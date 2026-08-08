@@ -173,6 +173,19 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
             arg->curState = 1;
             if (MainMenu::RegisterChain() != ZUN_SUCCESS)
             {
+#if defined(TH07_PSP)
+                th07_psp_boot_note("menu init failed; trim and retry");
+                const unsigned int releasedBytes = Th07PspTrimTextureCache();
+                char retryMessage[80];
+                std::snprintf(retryMessage, sizeof(retryMessage),
+                              "menu retry after trim %uK", releasedBytes / 1024u);
+                th07_psp_boot_note(retryMessage);
+                if (MainMenu::RegisterChain() == ZUN_SUCCESS)
+                {
+                    break;
+                }
+                th07_psp_boot_note("menu retry failed");
+#endif
                 return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
             }
             break;
@@ -328,6 +341,10 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                     if (GameManager::RegisterChain() != ZUN_SUCCESS)
                     {
                         th07_psp_boot_note("next stage retry failed; return title");
+                        // Transition state preserves common gameplay ANMs.
+                        // Switch state before teardown so the failure fallback
+                        // releases them and leaves enough memory for the title.
+                        arg->curState = 1;
                         GameManager::CutChain();
                         g_GameManager.currentStage = completedStage;
                         arg->prevState = 2;
@@ -702,14 +719,22 @@ ZunResult Supervisor::RegisterChain()
     ZunResult res;
 
     Supervisor *mgr = &g_Supervisor;
-#if defined(TH07_PSP_DIRECT_GAME)
+#if defined(TH07_PSP_DIRECT_MUSIC)
+    // Deterministic profiler route for the music room.  Start through the
+    // regular title allocation/teardown path so the room sees the same heap
+    // layout as a physical title -> Music Room transition.  MainMenu performs
+    // the guarded automatic selection once its title VMs are ready.
+    mgr->wantedState = 0;
+    mgr->curState = -1;
+    th07_psp_boot_note("direct music room via title");
+#elif defined(TH07_PSP_DIRECT_GAME)
 #if !defined(TH07_PSP_DIRECT_STAGE)
 #define TH07_PSP_DIRECT_STAGE 3
 #endif
     // Gameplay bring-up route: reproduce the normal menu result without
-    // spending each test run traversing the title and selection screens.
-    // AddedCallback still performs the common archive/config initialization;
-    // the first supervisor update then registers GameManager directly.
+    // manual selection.  As with the Music Room profiler route, start through
+    // the real title allocation/teardown path; MainMenu performs the guarded
+    // automatic transition after its VMs are ready.
     g_GameManager.practice = 0;
     g_GameManager.demo = 0;
     g_GameManager.character = CHAR_REIMU;
@@ -719,11 +744,11 @@ ZunResult Supervisor::RegisterChain()
     g_GameManager.currentStage = TH07_PSP_DIRECT_STAGE - 1;
     g_GameManager.difficulty = DIFF_NORMAL;
     g_GameManager.SetReplay(0);
-    mgr->wantedState = 1;
-    mgr->curState = 2;
+    mgr->wantedState = 0;
+    mgr->curState = -1;
     {
         char message[64];
-        std::snprintf(message, sizeof(message), "direct game normal reimu-a stage %d",
+        std::snprintf(message, sizeof(message), "direct game via title normal reimu-a stage %d",
                       TH07_PSP_DIRECT_STAGE);
         th07_psp_boot_note(message);
     }

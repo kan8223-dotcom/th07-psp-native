@@ -1,9 +1,12 @@
 #include "Player.hpp"
 
+#include <algorithm>
+
 #include "AnmIdx.hpp"
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
 #include "BombData.hpp"
+#include "BulletManager.hpp"
 #include "Chain.hpp"
 #include "Controller.hpp"
 #include "EffectManager.hpp"
@@ -397,6 +400,10 @@ i32 ShtData::UpdatePlayerLaser(Player *player, PlayerBullet *bullet)
             player->bombDamageBoxes[i + 96].pos = bullet->posHistory[i];
             player->bombDamageBoxes[i + 96].lifetime = 1;
             player->bombDamageBoxes[i + 96].size = bullet->hitboxSize;
+#if defined(TH07_PSP)
+            player->pspBombDamageHighWater =
+                std::max(player->pspBombDamageHighWater, i + 97);
+#endif
         }
     }
     for (i = 15; 0 < i; i--)
@@ -556,10 +563,21 @@ void Player::SpawnBullets(Player *player, u32 timer)
     bullet = player->bullets;
     for (i = 0; i < 96; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (player->PspIsShotSlotTracked(i))
+        {
+            if (bullet->bulletState != 0)
+            {
+                continue;
+            }
+            player->PspForgetShotSlot(i);
+        }
+#else
         if (bullet->bulletState != 0)
         {
             continue;
         }
+#endif
 
     loop_with_goto_for_some_reason:
         if (entry->fireCallback)
@@ -578,6 +596,9 @@ void Player::SpawnBullets(Player *player, u32 timer)
             bullet->updateCallback = bullet->shtEntry->updateCallback;
             bullet->drawCallback = bullet->shtEntry->drawCallback;
             bullet->hitCallback = bullet->shtEntry->hitCallback;
+#if defined(TH07_PSP)
+            player->PspTrackShotSlot(i);
+#endif
         }
         entry++;
         if (entry->fireInterval < 0)
@@ -648,14 +669,26 @@ void Player::UpdateShots()
     bullet = this->bullets;
     for (i = 0; i < 96; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsShotSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (bullet->bulletState == 0)
         {
+#if defined(TH07_PSP)
+            this->PspForgetShotSlot(i);
+#endif
             continue;
         }
 
         if (bullet->updateCallback && bullet->updateCallback(this, bullet))
         {
             bullet->bulletState = 0;
+#if defined(TH07_PSP)
+            this->PspForgetShotSlot(i);
+#endif
             continue;
         }
 
@@ -672,6 +705,12 @@ void Player::UpdateShots()
             bullet->bulletState = 0;
         }
         bullet->timer++;
+#if defined(TH07_PSP)
+        if (bullet->bulletState == 0)
+        {
+            this->PspForgetShotSlot(i);
+        }
+#endif
     }
 }
 
@@ -683,6 +722,12 @@ void Player::DrawBullets()
     bullet = this->bullets;
     for (i = 0; i < 96; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsShotSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (bullet->bulletState != 1)
         {
             continue;
@@ -713,6 +758,12 @@ void Player::DrawBulletExplosions()
     bullet = this->bullets;
     for (i = 0; i < 96; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsShotSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (bullet->bulletState != 2)
         {
             continue;
@@ -789,6 +840,12 @@ i32 Player::CalcDamageToEnemy(ZunVec3 *center, ZunVec3 *size, i32 *param_3)
     }
     for (i = 0; i < 96; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsShotSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (bullet->bulletState == 0 || (bullet->bulletState != 1 && bullet->bulletState2 != 3))
         {
             continue;
@@ -838,7 +895,12 @@ i32 Player::CalcDamageToEnemy(ZunVec3 *center, ZunVec3 *size, i32 *param_3)
             }
         }
     }
-    for (i = 0; i < 112; i++)
+#if defined(TH07_PSP)
+    const i32 bombDamageLimit = this->pspBombDamageHighWater;
+#else
+    const i32 bombDamageLimit = 112;
+#endif
+    for (i = 0; i < bombDamageLimit; i++)
     {
         if (this->bombDamageBoxes[i].size.x <= 0.0f)
         {
@@ -892,7 +954,12 @@ i32 Player::CheckBombGraze(ZunVec3 *center, ZunVec3 *size)
     bulletTopLeft.y = center->y - size->y / 2.0f;
     bulletBottomRight.x = center->x + size->x / 2.0f;
     bulletBottomRight.y = center->y + size->y / 2.0f;
-    for (i = 0; i < 96; i++, bombProjectile++)
+#if defined(TH07_PSP)
+    const i32 bombClearLimit = this->pspBombClearHighWater;
+#else
+    const i32 bombClearLimit = 96;
+#endif
+    for (i = 0; i < bombClearLimit; i++, bombProjectile++)
     {
         if (bombProjectile->pos.z != 0.0f)
         {
@@ -921,13 +988,13 @@ i32 Player::CheckBombGraze(ZunVec3 *center, ZunVec3 *size)
     return 0;
 }
 
-i32 Player::CalcKillboxCollision(ZunVec3 *center, ZunVec3 *size)
+i32 Player::CalcKillboxCollision(ZunVec3 *center, ZunVec3 *size, bool checkBomb)
 {
     ZunVec3 killboxBottomRight;
     ZunVec3 killboxTopLeft;
 
     this->itemType = ITEM_POINT_BULLET;
-    if (CheckBombGraze(center, size))
+    if (checkBomb && CheckBombGraze(center, size))
     {
         return 2;
     }
@@ -1568,12 +1635,25 @@ void Player::UpdateBombProjectiles()
     BombClearBox *bomb;
     i32 i;
 
+#if defined(TH07_PSP)
+    const i32 previousBombDamageHighWater = this->pspBombDamageHighWater;
+    const i32 previousBombClearHighWater = this->pspBombClearHighWater;
+    for (i = 0; i < previousBombDamageHighWater; i++)
+#else
     for (i = 0; i < 112; i++)
+#endif
     {
         this->bombDamageBoxes[i].size.x = 0.0f;
     }
     bomb = this->bombClearBoxes;
-    for (i = 0; i < 96; i++, bomb++)
+#if defined(TH07_PSP)
+    this->pspBombClearHighWater = 0;
+    this->pspBombDamageHighWater = 0;
+    const i32 bombClearUpdateLimit = previousBombClearHighWater;
+#else
+    const i32 bombClearUpdateLimit = 96;
+#endif
+    for (i = 0; i < bombClearUpdateLimit; i++, bomb++)
     {
         if (bomb->lifetime <= 0)
         {
@@ -1585,6 +1665,12 @@ void Player::UpdateBombProjectiles()
             bomb->lifetime--;
             bomb->size.y += bomb->size.z;
         }
+#if defined(TH07_PSP)
+        if (bomb->pos.z != 0.0f || bomb->size.y != 0.0f)
+        {
+            this->pspBombClearHighWater = i + 1;
+        }
+#endif
     }
 }
 
@@ -1638,6 +1724,20 @@ void Player::UpdateBorderAndBombState()
                 this->isBombing = 1;
                 this->bombInfo.bombTimer = 0;
                 this->bombInfo.bombDuration = 999;
+#if defined(TH07_PSP_PERF_DIAG)
+                {
+                    char message[128];
+                    std::snprintf(message, sizeof(message),
+                                  "player bomb start frame %d char %d type %d focus %d bullets %d effects %d",
+                                  g_GameManager.framesThisStage,
+                                  static_cast<int>(g_GameManager.character),
+                                  static_cast<int>(g_GameManager.shotType),
+                                  this->bombInfo.isFocus,
+                                  g_BulletManager.bulletCount,
+                                  g_EffectManager.activeEffectsCount);
+                    th07_psp_boot_note(message);
+                }
+#endif
                 if (!this->bombInfo.isFocus)
                 {
                     this->bombInfo.bombCalc(this);
@@ -1662,6 +1762,32 @@ void Player::UpdateBorderAndBombState()
             }
         }
     }
+#if defined(TH07_PSP)
+    // Several original bomb callbacks write bombDamageBoxes/bombClearBoxes
+    // directly instead of going through SpawnBombEffect.  Rebuild the compact
+    // limits once after the callback so every bomb type remains effective;
+    // the expensive collision path can then use these limits for every enemy
+    // and enemy bullet without rescanning empty tails.
+    for (i32 i = 111; i >= 0; --i)
+    {
+        if (this->bombDamageBoxes[i].size.x > 0.0f)
+        {
+            this->pspBombDamageHighWater =
+                std::max(this->pspBombDamageHighWater, i + 1);
+            break;
+        }
+    }
+    for (i32 i = 95; i >= 0; --i)
+    {
+        if (this->bombClearBoxes[i].pos.z != 0.0f ||
+            this->bombClearBoxes[i].size.y != 0.0f)
+        {
+            this->pspBombClearHighWater =
+                std::max(this->pspBombClearHighWater, i + 1);
+            break;
+        }
+    }
+#endif
 }
 
 i32 Player::UpdateDeath()
@@ -1966,6 +2092,11 @@ BombClearBox *Player::SpawnBombProjectile(ZunVec3 *centerPosition, f32 posZ, f32
     bomb->size.x = size;
     bomb->lifetime = 0;
     bomb->itemType = itemType;
+#if defined(TH07_PSP)
+    this->pspBombClearHighWater =
+        std::max(this->pspBombClearHighWater,
+                 static_cast<i32>(bomb - this->bombClearBoxes) + 1);
+#endif
     return bomb;
 }
 
@@ -1989,6 +2120,11 @@ BombClearBox *Player::SpawnBombEffect(ZunVec3 *pos, f32 sizeY, f32 sizeZ, i32 li
     bomb->size.z = sizeZ;
     bomb->lifetime = lifetime;
     bomb->itemType = itemType;
+#if defined(TH07_PSP)
+    this->pspBombClearHighWater =
+        std::max(this->pspBombClearHighWater,
+                 static_cast<i32>(bomb - this->bombClearBoxes) + 1);
+#endif
     return bomb;
 }
 
@@ -2353,6 +2489,11 @@ ZunResult Player::AddedCallback(Player *arg)
     {
         bullet->bulletState = 0;
     }
+#if defined(TH07_PSP)
+    memset(arg->pspActiveShotBits, 0, sizeof(arg->pspActiveShotBits));
+    arg->pspBombClearHighWater = 0;
+    arg->pspBombDamageHighWater = 0;
+#endif
     arg->fireBulletTimer = -1;
     arg->bombInfo.bombCalc = g_BombData[g_GameManager.shotTypeAndCharacter].calc;
     arg->bombInfo.draw = g_BombData[g_GameManager.shotTypeAndCharacter].draw;

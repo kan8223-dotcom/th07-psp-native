@@ -2,6 +2,37 @@
 
 #include <stddef.h>
 
+#if defined(TH07_PSP_PERF_DIAG)
+#include <pspkernel.h>
+
+#include "graphics/PspGuGraphics.hpp"
+
+namespace
+{
+class PspChainPerfScope
+{
+  public:
+    explicit PspChainPerfScope(bool draw) : mStartUs(sceKernelGetSystemTimeWide()), mDraw(draw) {}
+    ~PspChainPerfScope()
+    {
+        const unsigned long long elapsed = sceKernelGetSystemTimeWide() - mStartUs;
+        if (mDraw)
+        {
+            Th07PspPerfAddDrawTime(elapsed);
+        }
+        else
+        {
+            Th07PspPerfAddCalcTime(elapsed);
+        }
+    }
+
+  private:
+    unsigned long long mStartUs;
+    bool mDraw;
+};
+} // namespace
+#endif
+
 Chain g_Chain;
 
 Chain::~Chain()
@@ -122,9 +153,13 @@ ZunResult Chain::AddToDrawChain(ChainElem *elem, i32 priority)
 
 i32 Chain::RunCalcChain()
 {
+#if defined(TH07_PSP_PERF_DIAG)
+    PspChainPerfScope perfScope(false);
+#endif
     ChainElem *next;
     ChainElem *current;
     i32 updateCount;
+    i32 callbackResult;
 
 restart_from_first_job:
     updateCount = 0;
@@ -134,7 +169,22 @@ restart_from_first_job:
         if (current->callback)
         {
         execute_again:
-            switch (current->callback(current->arg))
+#if defined(TH07_PSP_PERF_DIAG)
+            const bool measureJob = current->priority == 3 || current->priority == 7 ||
+                                    current->priority == 8 || current->priority == 10 ||
+                                    current->priority == 11 || current->priority == 12;
+            const unsigned long long jobStartUs =
+                measureJob ? sceKernelGetSystemTimeWide() : 0;
+#endif
+            callbackResult = current->callback(current->arg);
+#if defined(TH07_PSP_PERF_DIAG)
+            if (measureJob)
+            {
+                Th07PspPerfAddCalcJobTime(current->priority,
+                                         sceKernelGetSystemTimeWide() - jobStartUs);
+            }
+#endif
+            switch (callbackResult)
             {
             case CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB:
                 next = current;
@@ -164,6 +214,9 @@ restart_from_first_job:
 
 i32 Chain::RunDrawChain()
 {
+#if defined(TH07_PSP_PERF_DIAG)
+    PspChainPerfScope perfScope(true);
+#endif
     ChainElem *next;
     ChainElem *current;
     i32 updateCount;
@@ -175,7 +228,15 @@ i32 Chain::RunDrawChain()
         if (current->callback)
         {
         execute_again:
-            switch (current->callback(current->arg))
+#if defined(TH07_PSP_PERF_DIAG)
+            const unsigned long long jobStartUs = sceKernelGetSystemTimeWide();
+#endif
+            const i32 callbackResult = current->callback(current->arg);
+#if defined(TH07_PSP_PERF_DIAG)
+            Th07PspPerfAddDrawJobTime(current->priority,
+                                      sceKernelGetSystemTimeWide() - jobStartUs);
+#endif
+            switch (callbackResult)
             {
             case CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB:
                 next = current;

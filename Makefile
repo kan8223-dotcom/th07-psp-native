@@ -59,7 +59,7 @@ EXTRA_TARGETS := EBOOT.PBP
 SDL_CFLAGS := $(shell psp-pkg-config --cflags sdl2 SDL2_image SDL2_ttf)
 
 CXXFLAGS := -std=gnu++17 -O2 -G0 -march=allegrex -mtune=allegrex \
-            -Wall -Wextra -Wno-unused-parameter -fno-pic -MMD -MP \
+            -Wall -Wextra -Wno-unused-parameter -fno-exceptions -fno-rtti -fno-pic -MMD -MP \
             -DPSP -DTH07_PSP -DSDL_MAIN_HANDLED \
             -Ipsp -Isrc -Isrc/pbg4 $(SDL_CFLAGS)
 CFLAGS := -O2 -G0 -march=allegrex -mtune=allegrex -Wall -Wextra -fno-pic \
@@ -68,16 +68,24 @@ CFLAGS := -O2 -G0 -march=allegrex -mtune=allegrex -Wall -Wextra -fno-pic \
 # Same measured hot translation units as TH06 PSP.  Keep the global build at
 # -O2, but allow extra inlining/loop work where sprite, bullet and stage data
 # are generated every frame.
-src/AnmManager.o src/BulletManager.o src/Stage.o: CXXFLAGS += -O3 -funroll-loops
+src/AnmManager.o src/BulletManager.o src/Player.o src/Stage.o: CXXFLAGS += -O3 -funroll-loops
+# These managers walk sparse object pools every frame.  O3 helps the compact
+# PSP occupancy-map checks without unrolling their large decompiled bodies.
+src/EnemyManager.o src/EffectManager.o src/ItemManager.o: CXXFLAGS += -O3
 
 # The normal menu-driven game is always the default.  The stage route contains
 # auto-fire/infinite-lives/MAX-power helpers and is only an explicit test EBOOT.
 PSP_DIRECT_GAME ?= 0
+PSP_DIRECT_MUSIC ?= 0
 PSP_DIRECT_STAGE ?= 3
 PSP_DIRECT_TRANSITION_TEST ?= 0
 ifeq ($(PSP_DIRECT_GAME),1)
 CXXFLAGS += -DTH07_PSP_DIRECT_GAME -DTH07_PSP_DIRECT_STAGE=$(PSP_DIRECT_STAGE)
 PSP_EBOOT_TITLE := TH07 PSP stage debug
+endif
+ifeq ($(PSP_DIRECT_MUSIC),1)
+CXXFLAGS += -DTH07_PSP_DIRECT_MUSIC
+PSP_EBOOT_TITLE := TH07 PSP music perf
 endif
 ifeq ($(PSP_DIRECT_TRANSITION_TEST),1)
 CXXFLAGS += -DTH07_PSP_DIRECT_TRANSITION_TEST
@@ -109,7 +117,7 @@ $(TARGET).elf: $(MECC_LIB)
 
 # Changing a Make variable does not normally invalidate existing .o files.
 # Keep release and debug objects from ever being silently mixed.
-PROFILE_STAMP := .build-profile-$(PSP_DIRECT_GAME)-$(PSP_PERF_DIAG)-$(PSP_DIRECT_STAGE)-$(PSP_DIRECT_TRANSITION_TEST)
+PROFILE_STAMP := .build-profile-$(PSP_DIRECT_GAME)-$(PSP_DIRECT_MUSIC)-$(PSP_PERF_DIAG)-$(PSP_DIRECT_STAGE)-$(PSP_DIRECT_TRANSITION_TEST)
 .PHONY: FORCE_PROFILE
 $(PROFILE_STAMP): FORCE_PROFILE
 	@if [ ! -f "$@" ]; then rm -f .build-profile-*; touch "$@"; fi
@@ -139,7 +147,9 @@ release: release-build psp/assets/NotoSansJP-Regular.ttf
 	mv "$$stage_root/th07-psp-native-v0.1.0-beta.zip" dist/th07-psp-native-v0.1.0-beta.zip
 	./tools/release_audit.sh
 
-# build.mak does not otherwise notice title-only changes.
-$(PSP_EBOOT_SFO): Makefile
+# build.mak does not otherwise notice title-only changes.  The profile stamp is
+# required too: switching from a perf/direct build to release must regenerate
+# PARAM.SFO or the release PBP retains the diagnostic title/marker.
+$(PSP_EBOOT_SFO): $(PROFILE_STAMP) Makefile
 
 -include $(OBJS:.o=.d)

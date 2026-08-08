@@ -35,6 +35,55 @@ VertexTex1DiffuseXyz g_Quad3DFallback[4];
 #if defined(TH07_PSP)
 namespace
 {
+SDL_Surface *LoadPspMusicRawSurface()
+{
+    struct RawHeader
+    {
+        char magic[8];
+        u32 width;
+        u32 height;
+    };
+    static const char expectedMagic[8] = {'T', 'H', '0', '7', 'M', '5', '6', '5'};
+
+    FILE *file = std::fopen("music_bg.rgb565", "rb");
+    if (!file)
+    {
+        // Keep compatibility with early diagnostic installs which placed the
+        // user-derived cache next to th07.dat.
+        file = std::fopen("th7/music_bg.rgb565", "rb");
+    }
+    if (!file)
+    {
+        return nullptr;
+    }
+    RawHeader header{};
+    if (std::fread(&header, 1, sizeof(header), file) != sizeof(header) ||
+        std::memcmp(header.magic, expectedMagic, sizeof(expectedMagic)) != 0 ||
+        header.width != 640 || header.height != 480)
+    {
+        std::fclose(file);
+        return nullptr;
+    }
+
+    SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormat(
+        0, static_cast<i32>(header.width), static_cast<i32>(header.height), 16,
+        SDL_PIXELFORMAT_RGB565);
+    bool loaded = surface != nullptr;
+    for (u32 y = 0; loaded && y < header.height; ++y)
+    {
+        void *row = static_cast<u8 *>(surface->pixels) + y * surface->pitch;
+        loaded = std::fread(row, 1, header.width * 2u, file) == header.width * 2u;
+    }
+    std::fclose(file);
+    if (!loaded)
+    {
+        SDL_FreeSurface(surface);
+        return nullptr;
+    }
+    th07_psp_boot_note("music raw cache loaded");
+    return surface;
+}
+
 inline float PspRenderFloor(float value)
 {
     if (!std::isfinite(value) || value < -2147483520.0f || value > 2147483520.0f)
@@ -59,16 +108,21 @@ inline void PspRenderSinCos(float angle, float *outSin, float *outCos)
     sincosf(outSin, outCos, angle);
 }
 
-inline void WritePspSpriteVertex(VertexTex1DiffuseXyzrhw &out, float x, float y, float z,
+inline unsigned int PspGuColor(ZunColor color)
+{
+    return (color.color & 0xff00ff00u) | ((color.color & 0x00ff0000u) >> 16) |
+           ((color.color & 0x000000ffu) << 16);
+}
+
+inline void WritePspSpriteVertex(Th07PspSpriteVertex &out, float x, float y, float z,
                                  float u, float v, ZunColor color)
 {
-    out.pos.x = x;
-    out.pos.y = y;
-    out.pos.z = z;
-    out.w = 1.0f;
-    out.color = color;
-    out.textureUV.x = u;
-    out.textureUV.y = v;
+    out.u = u;
+    out.v = v;
+    out.color = PspGuColor(color);
+    out.x = x;
+    out.y = y;
+    out.z = z;
 }
 } // namespace
 #endif
@@ -450,7 +504,7 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     i32 startIdx = anmIdx;
     if (!entry)
     {
-#if defined(TH07_PSP_PERF_DIAG)
+#if defined(TH07_PSP)
         th07_psp_boot_notef("ANM OPEN NG %s", path ? path : "?");
 #endif
         g_GameErrorContext.Fatal("アニメが読み込めません。データが失われてるか壊れています\n");
@@ -1074,6 +1128,10 @@ void AnmManager::ResetVertexBuffer()
     this->spritesToDraw = 0;
     this->vertexBufferCurPtr = this->spriteVertexBuffer;
     this->vertexBufferStartPtr = this->vertexBufferCurPtr;
+#if defined(TH07_PSP)
+    this->pspSpriteBatchUsesPairs = 0;
+    this->pspPreferSpritePairs = 0;
+#endif
 }
 
 void AnmManager::Flush()
@@ -1088,9 +1146,14 @@ void AnmManager::Flush()
     g_Supervisor.gfxDevice->SetColorOp(COMPONENT_RGB, COLOR_OP_MODULATE);
 
 #if defined(TH07_PSP)
-    g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_QUADS, this->spritesToDraw,
-                                            this->vertexBufferStartPtr,
-                                            sizeof(VertexTex1DiffuseXyzrhw));
+    if (this->pspSpriteBatchUsesPairs)
+    {
+        Th07PspDrawSpritePairs(this->vertexBufferStartPtr, this->spritesToDraw);
+    }
+    else
+    {
+        Th07PspDrawSpriteQuads(this->vertexBufferStartPtr, this->spritesToDraw);
+    }
 #else
     g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLES, this->spritesToDraw << 1,
                                             this->vertexBufferStartPtr,
@@ -1104,10 +1167,18 @@ void AnmManager::Flush()
 ZunResult AnmManager::PushSprite(VertexTex1DiffuseXyzrhw *spriteVertex)
 {
 #if defined(TH07_PSP)
-    this->vertexBufferCurPtr[0] = spriteVertex[0];
-    this->vertexBufferCurPtr[1] = spriteVertex[1];
-    this->vertexBufferCurPtr[2] = spriteVertex[2];
-    this->vertexBufferCurPtr[3] = spriteVertex[3];
+    if (this->pspSpriteBatchUsesPairs)
+    {
+        this->Flush();
+        this->pspSpriteBatchUsesPairs = 0;
+    }
+    for (i32 i = 0; i < 4; ++i)
+    {
+        WritePspSpriteVertex(this->vertexBufferCurPtr[i], spriteVertex[i].pos.x,
+                             spriteVertex[i].pos.y, spriteVertex[i].pos.z,
+                             spriteVertex[i].textureUV.x, spriteVertex[i].textureUV.y,
+                             spriteVertex[i].color);
+    }
     this->vertexBufferCurPtr += 4;
 #else
     this->vertexBufferCurPtr[0] = spriteVertex[0];
@@ -1141,6 +1212,108 @@ ZunResult AnmManager::DrawNoRotation(AnmVm *vm, f32 pspClipTop)
     {
         return ZUN_ERROR;
     }
+
+#if defined(TH07_PSP)
+    if (!vm->sprite)
+    {
+        return ZUN_ERROR;
+    }
+    // Loading sprites can be drawn from a scene lifecycle callback before
+    // GameWindow reaches its first regular draw frame.  Start the native
+    // batch on demand in that narrow startup/transition window.
+    if (!this->vertexBufferCurPtr)
+    {
+        this->ResetVertexBuffer();
+    }
+
+    // Most UI, item, effect and non-rotating enemy sprites used to construct
+    // four generic PC vertices, rescan all four for clipping, then copy them
+    // into the native GU buffer.  Emit the final PSP quad directly, as the
+    // dense-bullet path already does.
+    const f32 halfWidth = vm->sprite->widthPx * vm->scale.x * 0.5f;
+    const f32 halfHeight = vm->sprite->heightPx * vm->scale.y * 0.5f;
+    const f32 rawLeft = (vm->anchor & 1) ? vm->pos.x : vm->pos.x - halfWidth;
+    const f32 rawRight =
+        (vm->anchor & 1) ? vm->pos.x + halfWidth * 2.0f : vm->pos.x + halfWidth;
+    const f32 rawTop = (vm->anchor & 2) ? vm->pos.y : vm->pos.y - halfHeight;
+    const f32 rawBottom =
+        (vm->anchor & 2) ? vm->pos.y + halfHeight * 2.0f : vm->pos.y + halfHeight;
+    const f32 left = PspRenderFloor(rawLeft + this->offset.x + 0.5f);
+    const f32 right = PspRenderFloor(rawRight + this->offset.x + 0.5f);
+    f32 top = PspRenderFloor(rawTop + this->offset.y + 0.5f);
+    const f32 bottom = PspRenderFloor(rawBottom + this->offset.y + 0.5f);
+
+    const f32 minX = std::min(left, right);
+    const f32 maxX = std::max(left, right);
+    const f32 minY = std::min(top, bottom);
+    const f32 maxY = std::max(top, bottom);
+    if (maxX < g_Supervisor.viewport.x || maxY < g_Supervisor.viewport.y ||
+        minX > g_Supervisor.viewport.x + g_Supervisor.viewport.width ||
+        minY > g_Supervisor.viewport.y + g_Supervisor.viewport.height)
+    {
+        return ZUN_SUCCESS;
+    }
+
+    f32 u0 = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+    const f32 u1 = vm->sprite->uvEnd.x + vm->uvScrollPos.x;
+    f32 v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
+    const f32 v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
+    if (pspClipTop > -999999.0f && top < pspClipTop && bottom > top)
+    {
+        if (bottom <= pspClipTop)
+        {
+            return ZUN_SUCCESS;
+        }
+        const f32 ratio = (pspClipTop - top) / (bottom - top);
+        v0 += (v1 - v0) * ratio;
+        top = pspClipTop;
+    }
+
+    const GfxTextureHandle texture = this->textures[vm->sprite->sourceFileIndex];
+    if (this->currentTexture != texture)
+    {
+        this->currentTexture = texture;
+        this->Flush();
+        g_Supervisor.gfxDevice->BindTexture(this->currentTexture);
+    }
+    if (this->currentVertexShader != 1)
+    {
+        this->Flush();
+        this->currentVertexShader = 1;
+    }
+
+    ZunColor color = vm->useColor2 ? vm->color2 : vm->color;
+    if (this->colorMulEnabled)
+    {
+        color.bytes.r = ZunColor::Multiply(color.bytes.r, this->color.bytes.r);
+        color.bytes.g = ZunColor::Multiply(color.bytes.g, this->color.bytes.g);
+        color.bytes.b = ZunColor::Multiply(color.bytes.b, this->color.bytes.b);
+        color.bytes.a = ZunColor::Multiply(color.bytes.a, this->color.bytes.a);
+    }
+    SyncRenderState(vm);
+
+    if (this->pspSpriteBatchUsesPairs != this->pspPreferSpritePairs)
+    {
+        this->Flush();
+        this->pspSpriteBatchUsesPairs = this->pspPreferSpritePairs;
+    }
+    Th07PspSpriteVertex *out = this->vertexBufferCurPtr;
+    WritePspSpriteVertex(out[0], left, top, vm->pos.z, u0, v0, color);
+    if (this->pspSpriteBatchUsesPairs)
+    {
+        WritePspSpriteVertex(out[1], right, bottom, vm->pos.z, u1, v1, color);
+        this->vertexBufferCurPtr += 2;
+    }
+    else
+    {
+        WritePspSpriteVertex(out[1], right, top, vm->pos.z, u1, v0, color);
+        WritePspSpriteVertex(out[2], left, bottom, vm->pos.z, u0, v1, color);
+        WritePspSpriteVertex(out[3], right, bottom, vm->pos.z, u1, v1, color);
+        this->vertexBufferCurPtr += 4;
+    }
+    ++this->spritesToDraw;
+    return ZUN_SUCCESS;
+#endif
 
     centerX = vm->sprite->widthPx * vm->scale.x / 2.0f;
     centerY = vm->sprite->heightPx * vm->scale.y / 2.0f;
@@ -1244,6 +1417,22 @@ ZunResult AnmManager::Draw(AnmVm *vm)
 }
 
 #if defined(TH07_PSP)
+ZunResult AnmManager::DrawPspFastSprite(AnmVm *vm)
+{
+    if (!vm)
+    {
+        return ZUN_ERROR;
+    }
+    if (vm->rotation.z != 0.0f)
+    {
+        return Draw(vm);
+    }
+    this->pspPreferSpritePairs = 1;
+    const ZunResult result = DrawNoRotation(vm);
+    this->pspPreferSpritePairs = 0;
+    return result;
+}
+
 ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *cachedCos)
 {
     // TH06's largest SC-side win was avoiding the generic four-vertex
@@ -1257,6 +1446,21 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
 
     const float halfWidth = vm->sprite->widthPx * vm->scale.x * 0.5f;
     const float halfHeight = vm->sprite->heightPx * vm->scale.y * 0.5f;
+    // Special bullet commands retain some off-screen bullets for many frames.
+    // Reject those using a conservative rotated bound before constructing and
+    // scanning four corners.
+    const float centerX =
+        vm->pos.x + this->offset.x + ((vm->anchor & 1) ? halfWidth : 0.0f);
+    const float centerY =
+        vm->pos.y + this->offset.y + ((vm->anchor & 2) ? halfHeight : 0.0f);
+    const float bound = fabsf(halfWidth) + fabsf(halfHeight);
+    if (centerX + bound < g_Supervisor.viewport.x ||
+        centerY + bound < g_Supervisor.viewport.y ||
+        centerX - bound > g_Supervisor.viewport.x + g_Supervisor.viewport.width ||
+        centerY - bound > g_Supervisor.viewport.y + g_Supervisor.viewport.height)
+    {
+        return ZUN_SUCCESS;
+    }
     float x[4];
     float y[4];
     if (vm->rotation.z == 0.0f)
@@ -1306,24 +1510,6 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
         }
     }
 
-    float minX = x[0];
-    float maxX = x[0];
-    float minY = y[0];
-    float maxY = y[0];
-    for (int i = 1; i < 4; ++i)
-    {
-        minX = std::min(minX, x[i]);
-        maxX = std::max(maxX, x[i]);
-        minY = std::min(minY, y[i]);
-        maxY = std::max(maxY, y[i]);
-    }
-    if (maxX < g_Supervisor.viewport.x || maxY < g_Supervisor.viewport.y ||
-        minX > g_Supervisor.viewport.x + g_Supervisor.viewport.width ||
-        minY > g_Supervisor.viewport.y + g_Supervisor.viewport.height)
-    {
-        return ZUN_SUCCESS;
-    }
-
     const GfxTextureHandle texture = this->textures[vm->sprite->sourceFileIndex];
     if (this->currentTexture != texture)
     {
@@ -1352,12 +1538,26 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
     const float v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
     const float v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
     const float z = vm->pos.z;
-    VertexTex1DiffuseXyzrhw *out = this->vertexBufferCurPtr;
+    const bool usePairs = vm->rotation.z == 0.0f;
+    if (this->pspSpriteBatchUsesPairs != usePairs)
+    {
+        this->Flush();
+        this->pspSpriteBatchUsesPairs = usePairs;
+    }
+    Th07PspSpriteVertex *out = this->vertexBufferCurPtr;
     WritePspSpriteVertex(out[0], x[0], y[0], z, u0, v0, color);
-    WritePspSpriteVertex(out[1], x[1], y[1], z, u1, v0, color);
-    WritePspSpriteVertex(out[2], x[2], y[2], z, u0, v1, color);
-    WritePspSpriteVertex(out[3], x[3], y[3], z, u1, v1, color);
-    this->vertexBufferCurPtr += 4;
+    if (usePairs)
+    {
+        WritePspSpriteVertex(out[1], x[3], y[3], z, u1, v1, color);
+        this->vertexBufferCurPtr += 2;
+    }
+    else
+    {
+        WritePspSpriteVertex(out[1], x[1], y[1], z, u1, v0, color);
+        WritePspSpriteVertex(out[2], x[2], y[2], z, u0, v1, color);
+        WritePspSpriteVertex(out[3], x[3], y[3], z, u1, v1, color);
+        this->vertexBufferCurPtr += 4;
+    }
     ++this->spritesToDraw;
     return ZUN_SUCCESS;
 }
@@ -1600,6 +1800,9 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     ZunMatrix world;
     ZunMatrix rot;
     ZunMatrix uv;
+#if defined(TH07_PSP)
+    VertexTex1DiffuseXyz pspWorldQuad[4];
+#endif
 
     if (!vm->visible)
     {
@@ -1672,7 +1875,23 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     SetRenderStateForVm(vm);
     world.m[3][2] = vm->pos.z;
 
+#if defined(TH07_PSP)
+    // Stage backgrounds are made from many independent 3D cards. Sending a
+    // new GE model matrix for every card is disproportionately expensive on
+    // PSP. This is the same approach used by TH06's buffered path: bake the
+    // affine model transform into the four source vertices and keep one
+    // identity model matrix for the whole background pass.
+    static ZunMatrix pspIdentityModel;
+    static bool pspIdentityModelReady;
+    if (!pspIdentityModelReady)
+    {
+        pspIdentityModel.Identity();
+        pspIdentityModelReady = true;
+    }
+    g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_MODEL, pspIdentityModel);
+#else
     g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_MODEL, world);
+#endif
 
     if (this->currentSprite != vm->sprite)
     {
@@ -1697,14 +1916,33 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
         this->currentVertexShader = 2;
     }
 
+#if defined(TH07_PSP)
+    for (i32 i = 0; i < 4; ++i)
+    {
+        pspWorldQuad[i] = g_Quad3DFallback[i];
+        const ZunVec3 &source = g_Quad3DFallback[i].position;
+        pspWorldQuad[i].position.x = source.x * world.m[0][0] + source.y * world.m[1][0] +
+                                     source.z * world.m[2][0] + world.m[3][0];
+        pspWorldQuad[i].position.y = source.x * world.m[0][1] + source.y * world.m[1][1] +
+                                     source.z * world.m[2][1] + world.m[3][1];
+        pspWorldQuad[i].position.z = source.x * world.m[0][2] + source.y * world.m[1][2] +
+                                     source.z * world.m[2][2] + world.m[3][2];
+    }
+#endif
+
     if (!g_Supervisor.cfg.noVertexBuffers)
     {
         g_Supervisor.gfxDevice->DrawPrimitive(PRIM_TRIANGLE_STRIP, 0, 2);
     }
     else
     {
+#if defined(TH07_PSP)
+        g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLE_STRIP, 2, pspWorldQuad,
+                                                sizeof(VertexTex1DiffuseXyz));
+#else
         g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLE_STRIP, 2, g_Quad3DFallback,
                                                 sizeof(VertexTex1DiffuseXyz));
+#endif
     }
     return ZUN_SUCCESS;
 }
@@ -2557,24 +2795,38 @@ ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
     {
         ReleaseSurface(surfaceIdx);
     }
-    u8 *data = FileSystem::OpenFile(path, 0);
-    if (!data)
+    SDL_Surface *converted = nullptr;
+#if defined(TH07_PSP)
+    if (strcmp(path, "data/result/music.jpg") == 0)
     {
-        g_GameErrorContext.Fatal("%sが読み込めないです。\n", path);
-        return ZUN_ERROR;
+        converted = LoadPspMusicRawSurface();
     }
-
-    SDL_RWops *rw = SDL_RWFromMem(data, g_LastFileSize);
-    SDL_Surface *surf = IMG_Load_RW(rw, 1);
-    free(data);
-
-    if (!surf)
+#endif
+    if (!converted)
     {
-        return ZUN_ERROR;
+        u8 *data = FileSystem::OpenFile(path, 0);
+        if (!data)
+        {
+            g_GameErrorContext.Fatal("%sが読み込めないです。\n", path);
+            return ZUN_ERROR;
+        }
+        SDL_RWops *rw = SDL_RWFromMem(data, g_LastFileSize);
+        SDL_Surface *surf = IMG_Load_RW(rw, 1);
+        if (!surf)
+        {
+            free(data);
+            return ZUN_ERROR;
+        }
+        converted = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
+        SDL_FreeSurface(surf);
+        free(data);
+#if defined(TH07_PSP)
+        if (strcmp(path, "data/result/music.jpg") == 0)
+        {
+            th07_psp_boot_note("music jpeg SDL fallback");
+        }
+#endif
     }
-
-    SDL_Surface *converted = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
-    SDL_FreeSurface(surf);
     if (!converted)
     {
         return ZUN_ERROR;
@@ -2608,6 +2860,14 @@ ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
 
 void AnmManager::ReleaseSurface(i32 surfaceIdx)
 {
+#if defined(TH07_PSP)
+    if (this->pspSurfaceTextures[surfaceIdx])
+    {
+        g_Supervisor.gfxDevice->DeleteTexture(this->pspSurfaceTextures[surfaceIdx]);
+        this->pspSurfaceTextures[surfaceIdx] = {};
+        this->pspSurfaceTextureSources[surfaceIdx] = nullptr;
+    }
+#endif
     if (this->surfaces[surfaceIdx])
     {
 #if defined(TH07_PSP)
@@ -2626,6 +2886,45 @@ void AnmManager::ReleaseSurface(i32 surfaceIdx)
     }
 }
 
+#if defined(TH07_PSP)
+namespace
+{
+GfxTextureHandle GetPersistentSurfaceTexture(AnmManager *manager, i32 surfaceIdx,
+                                             SDL_Surface *surface)
+{
+    if (manager->pspSurfaceTextures[surfaceIdx] &&
+        manager->pspSurfaceTextureSources[surfaceIdx] == surface->pixels)
+    {
+        return manager->pspSurfaceTextures[surfaceIdx];
+    }
+
+    // The PSP backend deliberately owns only one converted full-screen
+    // surface allocation.  Retire any handle which borrowed its previous
+    // contents before filling it with another JPEG.
+    for (i32 i = 0; i < 32; ++i)
+    {
+        if (manager->pspSurfaceTextures[i])
+        {
+            g_Supervisor.gfxDevice->DeleteTexture(manager->pspSurfaceTextures[i]);
+            manager->pspSurfaceTextures[i] = {};
+            manager->pspSurfaceTextureSources[i] = nullptr;
+        }
+    }
+
+    GfxTextureHandle texture = g_Supervisor.gfxDevice->CreateTexture();
+    g_Supervisor.gfxDevice->BindTexture(texture);
+    const PixelDataType uploadType = surface->format->format == SDL_PIXELFORMAT_RGB565
+                                         ? PIXEL_UNSIGNED_SHORT_5_6_5
+                                         : PIXEL_UNSIGNED_BYTE;
+    g_Supervisor.gfxDevice->SetTextureImage(surface->w, surface->h, PIXEL_RGBA,
+                                            uploadType, surface->pixels);
+    manager->pspSurfaceTextures[surfaceIdx] = texture;
+    manager->pspSurfaceTextureSources[surfaceIdx] = surface->pixels;
+    return texture;
+}
+} // namespace
+#endif
+
 void AnmManager::CopySurfaceToBackBuffer(i32 surfaceIdx, i32 left, i32 top, i32 x, i32 y)
 {
     if (!this->surfacesBis[surfaceIdx])
@@ -2635,10 +2934,15 @@ void AnmManager::CopySurfaceToBackBuffer(i32 surfaceIdx, i32 left, i32 top, i32 
 
     SDL_Surface *surf = this->surfacesBis[surfaceIdx];
 
+#if defined(TH07_PSP)
+    GfxTextureHandle tex = GetPersistentSurfaceTexture(this, surfaceIdx, surf);
+    g_Supervisor.gfxDevice->BindTexture(tex);
+#else
     GfxTextureHandle tex = g_Supervisor.gfxDevice->CreateTexture();
     g_Supervisor.gfxDevice->BindTexture(tex);
     g_Supervisor.gfxDevice->SetTextureImage(surf->w, surf->h, PIXEL_RGBA, PIXEL_UNSIGNED_BYTE,
                                             surf->pixels);
+#endif
 
     VertexTex1DiffuseXyzrhw vertices[4];
     f32 width = (f32)this->surfaceSourceInfo[surfaceIdx].width;
@@ -2671,7 +2975,9 @@ void AnmManager::CopySurfaceToBackBuffer(i32 surfaceIdx, i32 left, i32 top, i32 
     g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLE_STRIP, 2, vertices,
                                             sizeof(VertexTex1DiffuseXyzrhw));
     g_Supervisor.gfxDevice->Enable(CAPS_ALPHA_TEST);
+#if !defined(TH07_PSP)
     g_Supervisor.gfxDevice->DeleteTexture(tex);
+#endif
 }
 
 void AnmManager::DrawEndingRect(i32 surfaceIdx, i32 rectX, i32 rectY, i32 rectLeft, i32 rectTop,
@@ -2685,10 +2991,15 @@ void AnmManager::DrawEndingRect(i32 surfaceIdx, i32 rectX, i32 rectY, i32 rectLe
     SDL_Surface *surf =
         this->surfaces[surfaceIdx] ? this->surfaces[surfaceIdx] : this->surfacesBis[surfaceIdx];
 
+#if defined(TH07_PSP)
+    GfxTextureHandle tex = GetPersistentSurfaceTexture(this, surfaceIdx, surf);
+    g_Supervisor.gfxDevice->BindTexture(tex);
+#else
     GfxTextureHandle tex = g_Supervisor.gfxDevice->CreateTexture();
     g_Supervisor.gfxDevice->BindTexture(tex);
     g_Supervisor.gfxDevice->SetTextureImage(surf->w, surf->h, PIXEL_RGBA, PIXEL_UNSIGNED_BYTE,
                                             surf->pixels);
+#endif
 
     VertexTex1DiffuseXyzrhw vertices[4];
     f32 drawWidth = width;
@@ -2720,7 +3031,9 @@ void AnmManager::DrawEndingRect(i32 surfaceIdx, i32 rectX, i32 rectY, i32 rectLe
     g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLE_STRIP, 2, vertices,
                                             sizeof(VertexTex1DiffuseXyzrhw));
 
+#if !defined(TH07_PSP)
     g_Supervisor.gfxDevice->DeleteTexture(tex);
+#endif
 }
 
 void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcWidth, i32 srcHeight,

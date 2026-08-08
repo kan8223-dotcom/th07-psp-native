@@ -46,4 +46,13 @@ struct MusicRoom
     AnmVm vm[1]; // ZUN quirk: WHY is this an array
     AnmVm titleSprites[31];
     AnmVm descriptionSprites[8];
+#if defined(TH07_PSP)
+    // PSP fills only the visible rows, one per update.  This keeps room entry
+    // and scrolling from rasterising a whole page of Japanese strings in one
+    // blocking callback.
+    u8 titleRendered[31];
+    // Comments remain part of the normal room presentation, but rendering
+    // one line per update avoids a single long FreeType/atlas upload stall.
+    i32 descriptionRenderIdx;
+#endif
 };

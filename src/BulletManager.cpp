@@ -111,10 +111,23 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
 
     for (bullet = this->bulletsStart, i = 0; i < 1024; i++)
     {
+#if defined(TH07_PSP)
+        const i32 bulletIndex = static_cast<i32>(bullet - this->bullets);
+        if (!this->PspIsBulletSlotTracked(bulletIndex))
+        {
+            break;
+        }
+        if (bullet->state == BULLET_INACTIVE)
+        {
+            this->PspForgetBulletSlot(bulletIndex);
+            break;
+        }
+#else
         if (bullet->state == BULLET_INACTIVE)
         {
             break;
         }
+#endif
         bullet++;
         if (bullet->state == BULLET_END_ARRAY)
         {
@@ -188,6 +201,9 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
                       bulletProps->speed2;
     }
     bullet->state = BULLET_NORMAL;
+#if defined(TH07_PSP)
+    this->PspTrackBulletSlot(static_cast<i32>(bullet - this->bullets));
+#endif
     bullet->spawned = 1;
     bullet->grazed = 0;
     bullet->timer1 = 0;
@@ -407,6 +423,12 @@ void BulletManager::RemoveAllBullets(i32 param_1)
     bullet = g_BulletManager.bullets;
     for (i = 0; i < 1024; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsBulletSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
             continue;
@@ -422,6 +444,9 @@ void BulletManager::RemoveAllBullets(i32 param_1)
                 g_ItemManager.SpawnItem(&bullet->pos, ITEM_CHERRY_SMALL, 1);
             }
             memset(bullet, 0, sizeof(Bullet));
+#if defined(TH07_PSP)
+            this->PspForgetBulletSlot(i);
+#endif
         }
         else
         {
@@ -492,7 +517,8 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
     unsigned int activeBullets = 0;
     for (unsigned int bulletIdx = 0; bulletIdx < 1024; ++bulletIdx)
     {
-        if (g_BulletManager.bullets[bulletIdx].state != BULLET_INACTIVE)
+        if (g_BulletManager.PspIsBulletSlotTracked(static_cast<i32>(bulletIdx)) &&
+            g_BulletManager.bullets[bulletIdx].state != BULLET_INACTIVE)
         {
             ++activeBullets;
         }
@@ -507,6 +533,12 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
     bullet = g_BulletManager.bullets;
     for (i = 0; i < 1024; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsBulletSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (bullet->state == BULLET_INACTIVE)
         {
             continue;
@@ -571,6 +603,12 @@ void BulletManager::RemoveBulletsInRadius(ZunVec3 *centerPos, f32 radius)
     radius *= radius;
     for (i = 0; i < 1024; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsBulletSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
             continue;
@@ -585,6 +623,9 @@ void BulletManager::RemoveBulletsInRadius(ZunVec3 *centerPos, f32 radius)
 
         g_ItemManager.SpawnItem(&bullet->pos, ITEM_POINT_BULLET, 1);
         memset(bullet, 0, sizeof(Bullet));
+#if defined(TH07_PSP)
+        this->PspForgetBulletSlot(i);
+#endif
     }
 }
 
@@ -859,6 +900,7 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
     f32 width;
     i32 i;
     i32 collisionRes;
+    bool bombCollisionChecked;
 
     blockIdx = 0;
     bullet = arg->bullets;
@@ -878,11 +920,21 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
 
     for (i = 0; i < 1024; i++)
     {
-        if (bullet->state == BULLET_INACTIVE)
+#if defined(TH07_PSP)
+        if (!arg->PspIsBulletSlotTracked(blockIdx))
         {
             goto bullet_loop_continue;
         }
+#endif
+        if (bullet->state == BULLET_INACTIVE)
+        {
+#if defined(TH07_PSP)
+            arg->PspForgetBulletSlot(blockIdx);
+#endif
+            goto bullet_loop_continue;
+        }
         arg->bulletCount++;
+        bombCollisionChecked = false;
 
         switch (bullet->state)
         {
@@ -963,6 +1015,7 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
             if (!bullet->grazed && bullet->timer2.GetCurrent() >= 16)
             {
                 collisionRes = g_Player.CheckGraze(&bullet->pos, &bullet->sprites.grazeSize);
+                bombCollisionChecked = true;
                 if (collisionRes == 1)
                 {
                     bullet->grazed = 1;
@@ -980,7 +1033,13 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
             }
 
         do_player_collision:
-            collisionRes = g_Player.CalcKillboxCollision(&bullet->pos, &bullet->sprites.grazeSize);
+            // When CheckGraze ran immediately above it already tested this
+            // bullet against the active bomb-clear volumes. Dense patterns
+            // must not scan the same list twice per bullet. Already-grazed and
+            // newly spawned bullets still take the normal bomb test.
+            collisionRes =
+                g_Player.CalcKillboxCollision(&bullet->pos, &bullet->sprites.grazeSize,
+                                              !bombCollisionChecked);
             if (collisionRes != 0)
             {
                 if (collisionRes != 2 || (bullet->moreFlags & 0x1000) == 0)
@@ -1047,6 +1106,12 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
         arg->bulletsPtrs[bullet->sprites.collisionType] = bullet;
 
     bullet_loop_continue:
+#if defined(TH07_PSP)
+        if (arg->PspIsBulletSlotTracked(blockIdx) && bullet->state == BULLET_INACTIVE)
+        {
+            arg->PspForgetBulletSlot(blockIdx);
+        }
+#endif
         blockIdx--;
         if (blockIdx < 0)
         {
@@ -1228,15 +1293,17 @@ void Bullet::Draw()
 #if defined(TH07_PSP)
     if (vm->autoRotate)
     {
-        const f32 renderAngle = utils::AddNormalizeAngle(1.5707964f + this->angle, 0.0f);
-        vm->SetRotationZ(renderAngle);
-        vm->updateRotation = 1;
-        if (!this->pspRenderRotationValid || this->pspRenderAngle != renderAngle)
+        if (!this->pspRenderRotationValid || this->pspRenderSourceAngle != this->angle)
         {
+            const f32 renderAngle =
+                utils::AddNormalizeAngle(1.5707964f + this->angle, 0.0f);
             PspBulletRenderSinCos(renderAngle, &this->pspRenderSin, &this->pspRenderCos);
+            this->pspRenderSourceAngle = this->angle;
             this->pspRenderAngle = renderAngle;
             this->pspRenderRotationValid = 1;
         }
+        vm->SetRotationZ(this->pspRenderAngle);
+        vm->updateRotation = 1;
         g_AnmManager->DrawPspBullet(vm, &this->pspRenderSin, &this->pspRenderCos);
     }
     else
@@ -1476,6 +1543,12 @@ void BulletManager::StopBulletMovement()
     bullet = g_BulletManager.bullets;
     for (i = 0; i < 1024; i++, bullet++)
     {
+#if defined(TH07_PSP)
+        if (!this->PspIsBulletSlotTracked(i))
+        {
+            continue;
+        }
+#endif
         if (bullet->state == BULLET_INACTIVE)
         {
             continue;

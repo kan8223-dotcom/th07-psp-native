@@ -52,6 +52,10 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
             buf = (u8 *)malloc(fsize);
             if (!buf)
             {
+#if defined(TH07_PSP)
+                th07_psp_boot_notef("ARC ALLOC NG %s %uK", filename, fsize / 1024u);
+                th07_psp_heap_note("arc alloc failed");
+#endif
                 return NULL;
             }
 
@@ -83,6 +87,10 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
     buf = (u8 *)malloc(fsize);
     if (!buf)
     {
+#if defined(TH07_PSP)
+        th07_psp_boot_notef("FILE ALLOC NG %s %uK", filepath, fsize / 1024u);
+        th07_psp_heap_note("file alloc failed");
+#endif
         fclose(file);
         return NULL;
     }

@@ -18,6 +18,8 @@
 #if !defined(TH07_PSP)
 #include "graphics/Gles.hpp"
 #else
+#include <pspdisplay.h>
+
 #include "graphics/PspGuGraphics.hpp"
 #include "fileio.hpp"
 #endif
@@ -30,6 +32,15 @@ GameWindow g_GameWindow;
 i32 g_FrameCount;
 f64 g_LastFrameTime;
 u64 g_LastPerfCounter;
+
+#if defined(TH07_PSP)
+namespace
+{
+bool g_PspFixed30Fps;
+bool g_PspDrawNextFrame = true;
+unsigned int g_PspLastPresentVcount;
+}
+#endif
 
 static GfxInit g_RenderingBackends[] = {
 #if !defined(TH07_PSP)
@@ -99,38 +110,42 @@ RenderResult GameWindow::Render()
         return RENDER_RESULT_KEEP_RUNNING;
     }
 
-    g_AnmManager->ResetVertexBuffer();
-    g_Supervisor.fogEnabled = 255;
-    g_Supervisor.DisableFog();
-
-    // The original renderer preserves the playfield between frames for
-    // several stage/screen effects.  Preserve that behavior, but initialize
-    // the four HUD-frame bands in both PSP backbuffers before their
-    // translucent tiles are redrawn.  Clearing the whole screen fixes the
-    // frame flicker too, but destroys those playfield effects.
-    const ZunViewport frameBands[] = {
-        {0, 0, 640, 16, 0.0f, 1.0f},
-        {0, 464, 640, 16, 0.0f, 1.0f},
-        {0, 16, 32, 448, 0.0f, 1.0f},
-        {416, 16, 224, 448, 0.0f, 1.0f},
-    };
-    const ZunViewport savedViewport = g_Supervisor.viewport;
-    g_Supervisor.gfxDevice->SetClearColor({0xff000000});
-    for (const ZunViewport &band : frameBands)
+    const bool drawThisFrame = !g_PspFixed30Fps || g_PspDrawNextFrame;
+    if (drawThisFrame)
     {
-        g_Supervisor.gfxDevice->SetViewport(band);
-        g_Supervisor.gfxDevice->Clear(CLEAR_COLOR_BUFFER | CLEAR_DEPTH_BUFFER);
-    }
-    g_Supervisor.gfxDevice->SetViewport(savedViewport);
-    g_Chain.RunDrawChain();
-    g_AnmManager->Flush();
-    g_Supervisor.gfxDevice->BindTexture({0});
+        g_AnmManager->ResetVertexBuffer();
+        g_Supervisor.fogEnabled = 255;
+        g_Supervisor.DisableFog();
 
-    g_Supervisor.viewport.x = 0;
-    g_Supervisor.viewport.y = 0;
-    g_Supervisor.viewport.width = 640;
-    g_Supervisor.viewport.height = 480;
-    g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
+        // The original renderer preserves the playfield between frames for
+        // several stage/screen effects.  Preserve that behavior, but initialize
+        // the four HUD-frame bands in both PSP backbuffers before their
+        // translucent tiles are redrawn.  Clearing the whole screen fixes the
+        // frame flicker too, but destroys those playfield effects.
+        const ZunViewport frameBands[] = {
+            {0, 0, 640, 16, 0.0f, 1.0f},
+            {0, 464, 640, 16, 0.0f, 1.0f},
+            {0, 16, 32, 448, 0.0f, 1.0f},
+            {416, 16, 224, 448, 0.0f, 1.0f},
+        };
+        const ZunViewport savedViewport = g_Supervisor.viewport;
+        g_Supervisor.gfxDevice->SetClearColor({0xff000000});
+        for (const ZunViewport &band : frameBands)
+        {
+            g_Supervisor.gfxDevice->SetViewport(band);
+            g_Supervisor.gfxDevice->Clear(CLEAR_COLOR_BUFFER | CLEAR_DEPTH_BUFFER);
+        }
+        g_Supervisor.gfxDevice->SetViewport(savedViewport);
+        g_Chain.RunDrawChain();
+        g_AnmManager->Flush();
+        g_Supervisor.gfxDevice->BindTexture({0});
+
+        g_Supervisor.viewport.x = 0;
+        g_Supervisor.viewport.y = 0;
+        g_Supervisor.viewport.width = 640;
+        g_Supervisor.viewport.height = 480;
+        g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
+    }
 
     const i32 chainResult = g_Chain.RunCalcChain();
     g_SoundPlayer.ProcessQueues();
@@ -145,7 +160,35 @@ RenderResult GameWindow::Render()
         return RENDER_RESULT_EXIT_ERROR;
     }
 
-    Present();
+    const bool toggledFixed30 = WAS_PRESSED_RAW(TH_BUTTON_FPS_TOGGLE);
+    if (toggledFixed30)
+    {
+        g_PspFixed30Fps = !g_PspFixed30Fps;
+        g_PspDrawNextFrame = !g_PspFixed30Fps;
+        th07_psp_boot_note(g_PspFixed30Fps ? "fixed 30fps on" : "fixed 30fps off");
+    }
+    else if (g_PspFixed30Fps)
+    {
+        g_PspDrawNextFrame = !g_PspDrawNextFrame;
+    }
+    else
+    {
+        g_PspDrawNextFrame = true;
+    }
+
+    if (drawThisFrame)
+    {
+        if (g_PspFixed30Fps && sceDisplayGetVcount() == g_PspLastPresentVcount)
+        {
+            // Fixed-30 runs the skipped update and the rendered update as a
+            // pair, then presents no earlier than the second vblank.  This
+            // gives the pair the full 33 ms budget while retaining two 60 Hz
+            // simulation ticks per displayed frame.
+            sceDisplayWaitVblankStart();
+        }
+        Present();
+        g_PspLastPresentVcount = sceDisplayGetVcount();
+    }
     g_FrameCount++;
     return RENDER_RESULT_KEEP_RUNNING;
 #else

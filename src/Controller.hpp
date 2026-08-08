@@ -19,6 +19,7 @@ enum TouhouButton
     TH_BUTTON_ENTER = 1 << 12,
     TH_BUTTON_D = 1 << 13, // only used for cheat code
     TH_BUTTON_RESET = 1 << 14,
+    TH_BUTTON_FPS_TOGGLE = 1 << 15,
 
     TH_BUTTON_UP_LEFT = TH_BUTTON_UP | TH_BUTTON_LEFT,
     TH_BUTTON_UP_RIGHT = TH_BUTTON_UP | TH_BUTTON_RIGHT,

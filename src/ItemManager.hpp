@@ -71,5 +71,25 @@ struct ItemManager
     i32 activeItemCount;
     struct Item listHead;
     struct Item *listTail;
+#if defined(TH07_PSP)
+    // Item embeds an AnmVm; probing 1100 empty slots costs far more cache
+    // traffic than walking this 140-byte map first.
+    u32 pspActiveItemBits[35];
+
+    bool PspIsItemSlotTracked(i32 index) const
+    {
+        return (pspActiveItemBits[index >> 5] & (1u << (index & 31))) != 0;
+    }
+
+    void PspTrackItemSlot(i32 index)
+    {
+        pspActiveItemBits[index >> 5] |= 1u << (index & 31);
+    }
+
+    void PspForgetItemSlot(i32 index)
+    {
+        pspActiveItemBits[index >> 5] &= ~(1u << (index & 31));
+    }
+#endif
 };
 extern ItemManager g_ItemManager;

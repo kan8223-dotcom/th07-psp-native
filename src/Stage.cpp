@@ -13,6 +13,12 @@
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
 #include "utils.hpp"
+#if defined(TH07_PSP_PERF_DIAG)
+#include <pspkernel.h>
+
+#include "fileio.hpp"
+#include "graphics/PspGuGraphics.hpp"
+#endif
 
 StageAnms g_EnemyAnmStageFiles[9] = {
     {"dummy", "dummy"},         {"data/stg1enm.anm", NULL}, {"data/stg2enm.anm", NULL},
@@ -574,8 +580,20 @@ u32 Stage::OnDrawLowPrio(Stage *arg)
     {
         if (g_Gui.IsStageFinished() == 0)
         {
+#if defined(TH07_PSP)
+            // The one-second spell transition already draws its animated
+            // background, fade square and portrait over the scene. Keep the
+            // high-priority base layers, but omit the two low-priority 3D
+            // layers only during this overlap to avoid the gate/stair spike.
+            if (arg->spellCardState == 0)
+            {
+                arg->RenderObjects(2);
+                arg->RenderObjects(3);
+            }
+#else
             arg->RenderObjects(2);
             arg->RenderObjects(3);
+#endif
             if (!g_Supervisor.cfg.disableFog)
             {
                 g_Supervisor.DisableFog();
@@ -746,6 +764,15 @@ ZunResult Stage::DeletedCallback(Stage *arg)
     g_AnmManager->ReleaseAnm(7);
     g_AnmManager->ReleaseAnm(8);
     g_AnmManager->ReleaseAnm(9);
+#if defined(TH07_PSP)
+    for (i32 z = 0; z < 4; ++z)
+    {
+        SAFE_FREE(arg->pspInstancesByZ[z]);
+        arg->pspInstanceCounts[z] = 0;
+    }
+    SAFE_FREE(arg->pspObjectCullRadii);
+    arg->pspInstanceBucketsReady = 0;
+#endif
     SAFE_DELETE_ARRAY(arg->objects);
     SAFE_FREE(arg->quadVms);
     SAFE_FREE(arg->stdData);
@@ -829,6 +856,88 @@ ZunResult Stage::LoadStageData(const char *stdPath)
             quad = (StdRawQuadBasic *)((u8 *)quad + quad->byteSize);
         }
     }
+#if defined(TH07_PSP)
+    // The original renderer scans the complete instance stream four times,
+    // once per Z layer.  Bucket immutable STD instances at load time, keeping
+    // their original order so alpha/depth behaviour is unchanged.  Each
+    // bucket carries the same negative-id sentinel as the source stream.
+    i32 bucketCounts[4] = {};
+    for (StdRawInstance *instance = this->objectInstances; instance->id >= 0; ++instance)
+    {
+        if (instance->id < this->objectsCount)
+        {
+            const i32 z = this->objects[instance->id]->zLevel;
+            if (z >= 0 && z < 4)
+            {
+                ++bucketCounts[z];
+            }
+        }
+    }
+
+    bool bucketsReady = true;
+    for (i32 z = 0; z < 4; ++z)
+    {
+        this->pspInstancesByZ[z] = static_cast<StdRawInstance *>(
+            malloc(static_cast<size_t>(bucketCounts[z] + 1) * sizeof(StdRawInstance)));
+        if (!this->pspInstancesByZ[z])
+        {
+            bucketsReady = false;
+            break;
+        }
+        this->pspInstanceCounts[z] = 0;
+    }
+    if (bucketsReady)
+    {
+        for (StdRawInstance *instance = this->objectInstances; instance->id >= 0; ++instance)
+        {
+            if (instance->id >= this->objectsCount)
+            {
+                continue;
+            }
+            const i32 z = this->objects[instance->id]->zLevel;
+            if (z >= 0 && z < 4)
+            {
+                this->pspInstancesByZ[z][this->pspInstanceCounts[z]++] = *instance;
+            }
+        }
+        for (i32 z = 0; z < 4; ++z)
+        {
+            StdRawInstance &sentinel = this->pspInstancesByZ[z][this->pspInstanceCounts[z]];
+            memset(&sentinel, 0, sizeof(sentinel));
+            sentinel.id = -1;
+        }
+        this->pspInstanceBucketsReady = 1;
+#if defined(TH07_PSP_PERF_DIAG)
+        th07_psp_boot_notef("stage bg buckets %d/%d/%d/%d", this->pspInstanceCounts[0],
+                            this->pspInstanceCounts[1], this->pspInstanceCounts[2],
+                            this->pspInstanceCounts[3]);
+#endif
+    }
+    else
+    {
+        for (i32 z = 0; z < 4; ++z)
+        {
+            SAFE_FREE(this->pspInstancesByZ[z]);
+            this->pspInstanceCounts[z] = 0;
+        }
+        this->pspInstanceBucketsReady = 0;
+    }
+
+    // Object dimensions never change.  Avoid one sqrt per visible instance
+    // per frame in the gate/stair backgrounds; fall back to the exact source
+    // expression if this small optional cache cannot be allocated.
+    this->pspObjectCullRadii =
+        static_cast<f32 *>(malloc(static_cast<size_t>(this->objectsCount) * sizeof(f32)));
+    if (this->pspObjectCullRadii)
+    {
+        for (i32 objectIdx = 0; objectIdx < this->objectsCount; ++objectIdx)
+        {
+            this->pspObjectCullRadii[objectIdx] =
+                this->objects[objectIdx]->size.Length() * 0.5f + 880.0f;
+        }
+    }
+    this->pspCameraMatrixFrame = -1;
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -876,6 +985,9 @@ ZunResult Stage::UpdateObjects()
 
 i32 Stage::RenderObjects(i32 zLevel)
 {
+#if defined(TH07_PSP_PERF_DIAG)
+    const unsigned long long pspStageStartUs = sceKernelGetSystemTimeWide();
+#endif
     ZunColor origColor;
     f32 var_98;
     ZunVec3 projectSrc;
@@ -891,13 +1003,40 @@ i32 Stage::RenderObjects(i32 zLevel)
     StdRawInstance *instance;
     AnmVm *curQuadVm;
 
+#if defined(TH07_PSP)
+    instance = this->pspInstanceBucketsReady && zLevel >= 0 && zLevel < 4
+                   ? this->pspInstancesByZ[zLevel]
+                   : this->objectInstances;
+#else
     instance = this->objectInstances;
+#endif
     projectSrc.x = 0.0f;
     projectSrc.y = 0.0f;
     projectSrc.z = 0.0f;
     fogState = 255;
 
+#if defined(TH07_PSP)
+    // Adjacent Z passes share one camera. Other draw-chain jobs can switch
+    // back to the 2D camera between the high and low stage passes, so restore
+    // only at that boundary instead of issuing the same state twice per pair.
+    if (g_AnmManager->currentCameraMode != 1)
+    {
+        UpdateCamera();
+    }
+#else
     UpdateCamera();
+#endif
+
+#if defined(TH07_PSP)
+    // The view matrix is shared by every auto-facing quad in this pass. The
+    // decompiled loop normalized this identical vector once per quad. It is
+    // now also shared by all four Z passes in the frame.
+    viewDir = this->pspBillboardViewDir;
+    const bool pspFogRangeValid = this->skyFog.nearPlane >= 0.0f &&
+                                  this->skyFog.farPlane > this->skyFog.nearPlane;
+    const f32 pspFogNearSq = this->skyFog.nearPlane * this->skyFog.nearPlane;
+    const f32 pspFogFarSq = this->skyFog.farPlane * this->skyFog.farPlane;
+#endif
 
     AnmManager::SetCameraModeStatic(g_AnmManager, 1);
 
@@ -923,7 +1062,13 @@ i32 Stage::RenderObjects(i32 zLevel)
             else
             {
                 dotProd = quadPos.Dot(&this->cam.lookAtDir);
+#if defined(TH07_PSP)
+                radius = this->pspObjectCullRadii
+                             ? this->pspObjectCullRadii[instance->id]
+                             : obj->size.Length() * 0.5f + 880.0f;
+#else
                 radius = obj->size.Length() / 2.0f + 880.0f;
+#endif
 
                 if (dotProd > radius || dotProd < 60.0f)
                 {
@@ -965,10 +1110,12 @@ i32 Stage::RenderObjects(i32 zLevel)
                                                 &g_Supervisor.projectionMatrix,
                                                 &g_Supervisor.viewMatrix, &worldMatrix);
 
+#if !defined(TH07_PSP)
                                 viewDir.x = g_Supervisor.viewMatrix.m[0][0];
                                 viewDir.y = g_Supervisor.viewMatrix.m[0][1];
                                 viewDir.z = g_Supervisor.viewMatrix.m[0][2];
                                 viewDir.Normalize(&viewDir);
+#endif
 
                                 if (curQuad->size.x != 0.0f)
                                 {
@@ -994,11 +1141,35 @@ i32 Stage::RenderObjects(i32 zLevel)
 
                                 diffPos = curQuadVm->pos - this->cam.pos;
 
-                                var_98 = diffPos.Length();
                                 origColor = curQuadVm->color;
 
+#if defined(TH07_PSP)
+                                const f32 fogDistanceSq = diffPos.LengthSq();
+                                bool needsFogBlend = false;
+                                if (pspFogRangeValid)
+                                {
+                                    if (fogDistanceSq >= pspFogFarSq)
+                                    {
+                                        goto skip_draw;
+                                    }
+                                    if (fogDistanceSq > pspFogNearSq)
+                                    {
+                                        var_98 = sqrtf(fogDistanceSq);
+                                        needsFogBlend = true;
+                                    }
+                                }
+                                else
+                                {
+                                    var_98 = sqrtf(fogDistanceSq);
+                                    needsFogBlend = this->skyFog.nearPlane < var_98;
+                                }
+                                if (needsFogBlend)
+                                {
+#else
+                                var_98 = diffPos.Length();
                                 if (this->skyFog.nearPlane < var_98)
                                 {
+#endif
                                     var_98 = (this->skyFog.nearPlane - var_98) /
                                              (this->skyFog.nearPlane - this->skyFog.farPlane);
                                     if (var_98 >= 1.0f)
@@ -1064,6 +1235,9 @@ i32 Stage::RenderObjects(i32 zLevel)
         }
         instance++;
     }
+#if defined(TH07_PSP_PERF_DIAG)
+    Th07PspPerfAddStageTime(sceKernelGetSystemTimeWide() - pspStageStartUs);
+#endif
     return 0;
 }
 
@@ -1078,39 +1252,84 @@ void Stage::SetupCameraStageBackground()
     f32 centerY;
     f32 eyeZ;
 
-    centerX = (f32)g_Supervisor.viewport.width / 2.0f;
-    centerY = (f32)g_Supervisor.viewport.height / 2.0f;
-    aspectRatio = (f32)g_Supervisor.viewport.width / (f32)g_Supervisor.viewport.height;
-    fov = ZUN_PI / 10.0f;
-    eyeZ = centerY / tanf(fov / 2.0f);
+#if defined(TH07_PSP)
+    // This camera is constant for a given logical viewport but the original
+    // path rebuilt it (including tanf and two normalizations) every frame.
+    static u32 cachedWidth = 0;
+    static u32 cachedHeight = 0;
+    static ZunMatrix cachedView;
+    static ZunMatrix cachedProjection;
+    if (cachedWidth != g_Supervisor.viewport.width ||
+        cachedHeight != g_Supervisor.viewport.height)
+    {
+#endif
+        centerX = (f32)g_Supervisor.viewport.width / 2.0f;
+        centerY = (f32)g_Supervisor.viewport.height / 2.0f;
+        aspectRatio = (f32)g_Supervisor.viewport.width / (f32)g_Supervisor.viewport.height;
+        fov = ZUN_PI / 10.0f;
+        eyeZ = centerY / tanf(fov / 2.0f);
 
-    upVec.x = 0.0f;
-    upVec.y = -1.0f;
-    upVec.z = 0.0f;
+        upVec.x = 0.0f;
+        upVec.y = -1.0f;
+        upVec.z = 0.0f;
 
-    atVec.x = centerX;
-    atVec.y = centerY;
-    atVec.z = 0.0f;
+        atVec.x = centerX;
+        atVec.y = centerY;
+        atVec.z = 0.0f;
 
-    eyeVec.x = centerX;
-    eyeVec.y = centerY;
-    eyeVec.z = eyeZ;
+        eyeVec.x = centerX;
+        eyeVec.y = centerY;
+        eyeVec.z = eyeZ;
 
-    g_Supervisor.viewMatrix.LookAtLH(&eyeVec, &atVec, &upVec);
-    g_Supervisor.projectionMatrix.PerspectiveFovLH(fov, aspectRatio, 1.0f, 10000.0f);
+        g_Supervisor.viewMatrix.LookAtLH(&eyeVec, &atVec, &upVec);
+        g_Supervisor.projectionMatrix.PerspectiveFovLH(fov, aspectRatio, 1.0f, 10000.0f);
+#if defined(TH07_PSP)
+        cachedWidth = g_Supervisor.viewport.width;
+        cachedHeight = g_Supervisor.viewport.height;
+        cachedView = g_Supervisor.viewMatrix;
+        cachedProjection = g_Supervisor.projectionMatrix;
+    }
+    else
+    {
+        g_Supervisor.viewMatrix = cachedView;
+        g_Supervisor.projectionMatrix = cachedProjection;
+    }
+#endif
     g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_VIEW, g_Supervisor.viewMatrix);
     g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_PROJECTION, g_Supervisor.projectionMatrix);
 }
 
 void Stage::UpdateCamera()
 {
-    ZunVec3 at = this->cam.lookAt + this->cam.pos;
-    g_Supervisor.viewMatrix.LookAtLH(&this->cam.pos, &at, &this->cam.up);
-    g_Supervisor.projectionMatrix.PerspectiveFovLH(
-        this->cam.fov, (f32)g_Supervisor.viewport.width / (f32)g_Supervisor.viewport.height, 30.0f,
-        1800.0f);
+#if defined(TH07_PSP)
+    if (this->pspCameraMatrixFrame != this->stageFrameCounter)
+    {
+#endif
+        ZunVec3 at = this->cam.lookAt + this->cam.pos;
+        g_Supervisor.viewMatrix.LookAtLH(&this->cam.pos, &at, &this->cam.up);
+        g_Supervisor.projectionMatrix.PerspectiveFovLH(
+            this->cam.fov, (f32)g_Supervisor.viewport.width / (f32)g_Supervisor.viewport.height,
+            30.0f, 1800.0f);
+        this->cam.right.Cross(&this->cam.lookAt, &this->cam.up);
+        this->cam.right.Normalize(&this->cam.right);
+#if defined(TH07_PSP)
+        this->pspBillboardViewDir.x = g_Supervisor.viewMatrix.m[0][0];
+        this->pspBillboardViewDir.y = g_Supervisor.viewMatrix.m[0][1];
+        this->pspBillboardViewDir.z = g_Supervisor.viewMatrix.m[0][2];
+        this->pspBillboardViewDir.Normalize(&this->pspBillboardViewDir);
+        this->pspCameraViewMatrix = g_Supervisor.viewMatrix;
+        this->pspCameraProjectionMatrix = g_Supervisor.projectionMatrix;
+        this->pspCameraMatrixFrame = this->stageFrameCounter;
+    }
+    else
+    {
+        // SetupCameraStageBackground changes the Supervisor copies during the
+        // 2D portion of the draw chain. Restore the already-computed stage
+        // camera without repeating LookAt/Perspective work.
+        g_Supervisor.viewMatrix = this->pspCameraViewMatrix;
+        g_Supervisor.projectionMatrix = this->pspCameraProjectionMatrix;
+    }
+#endif
     g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_VIEW, g_Supervisor.viewMatrix);
     g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_PROJECTION, g_Supervisor.projectionMatrix);
-    this->cam.right.Cross(&this->cam.lookAt, &this->cam.up);
-    this->cam.right.Normalize(&this->cam.right);
 }

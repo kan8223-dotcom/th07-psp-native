@@ -232,6 +232,7 @@ struct Bullet
     // Cache the render sin/cos so the PSP does not run one VFPU trig pair per
     // visible bullet on every draw.  Gameplay continues to use angle exactly
     // as before; these values are render-only and are refreshed on a change.
+    f32 pspRenderSourceAngle;
     f32 pspRenderAngle;
     f32 pspRenderSin;
     f32 pspRenderCos;
@@ -274,6 +275,28 @@ struct BulletManager
     Bullet *bulletsPtrs[6];
     Bullet *bulletsStart;
     ItemType itemType;
+#if defined(TH07_PSP)
+    // Bullet embeds five AnmVm instances. Reading state from every slot walks
+    // roughly 3.5 MiB per frame even when most slots are empty, evicting the
+    // active bullets from Allegrex's small cache. Keep the original array and
+    // update order, but consult this compact occupancy map first.
+    u32 pspActiveBulletBits[32];
+
+    bool PspIsBulletSlotTracked(i32 index) const
+    {
+        return (pspActiveBulletBits[index >> 5] & (1u << (index & 31))) != 0;
+    }
+
+    void PspTrackBulletSlot(i32 index)
+    {
+        pspActiveBulletBits[index >> 5] |= 1u << (index & 31);
+    }
+
+    void PspForgetBulletSlot(i32 index)
+    {
+        pspActiveBulletBits[index >> 5] &= ~(1u << (index & 31));
+    }
+#endif
 };
 
 extern BulletManager g_BulletManager;

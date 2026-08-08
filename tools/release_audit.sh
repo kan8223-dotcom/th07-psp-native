@@ -3,7 +3,7 @@ set -eu
 
 fail=0
 debug_eboot_pattern='TH07 PSP stage debug|TH07 PSP perf diag|direct game|direct transition test|text render [0-9]|se_power0 caller|PERF S[0-9]'
-forbidden_pattern='(^|/)(th07\.dat|thbgm\.dat|msgothic\.ttc|score\.dat|th07\.cfg)$|\.rpy$'
+forbidden_pattern='(^|/)(th07\.dat|thbgm\.dat|music_bg\.rgb565|msgothic\.ttc|score\.dat|th07\.cfg)$|\.rpy$'
 
 tracked_forbidden=$(git ls-files | tr '\\' '/' | grep -Ei "$forbidden_pattern" || true)
 if [ -n "$tracked_forbidden" ]; then

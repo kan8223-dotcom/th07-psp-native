@@ -22,6 +22,7 @@
 #include "dxutil.hpp"
 #if defined(TH07_PSP)
 #include "fileio.hpp"
+#include "graphics/PspGuGraphics.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -112,7 +113,7 @@ void MainMenu::SetGameState(GameState gameState)
 u32 MainMenu::OnUpdate(MainMenu *arg)
 {
     u32 result;
-#if defined(TH07_PSP_DIRECT_GAME)
+#if defined(TH07_PSP_PERF_DIAG)
     static u32 updateCount;
     static i32 lastState = -1;
     static i32 lastSubState = -1;
@@ -308,6 +309,21 @@ u32 MainMenu::OnUpdatePreInput()
         {
             break;
         }
+#if defined(TH07_PSP_DIRECT_MUSIC)
+        // Profiler-only deterministic route.  Waiting until normal title
+        // initialization completes exercises its real resource teardown and
+        // avoids the misleading low-memory state caused by registering the
+        // music room directly from Supervisor startup.
+        g_Supervisor.curState = 8;
+        this->cursorVm->SetInterrupt(2);
+        th07_psp_boot_note("direct music title transition");
+        return CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB;
+#elif defined(TH07_PSP_DIRECT_GAME)
+        g_Supervisor.curState = 2;
+        this->cursorVm->SetInterrupt(2);
+        th07_psp_boot_note("direct game title transition");
+        return CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB;
+#endif
         if (WAS_PRESSED_RAW(TH_BUTTON_SELECTMENU))
         {
             g_SoundPlayer.PlaySoundByIdx(SOUND_SELECT, 0);
@@ -1783,6 +1799,12 @@ u32 MainMenu::OnUpdateSelectPracticeStage()
         }
         break;
     case 1:
+#if defined(TH07_PSP_PERF_DIAG)
+        // Diagnostic EBOOTs are for rapid real-hardware coverage.  Bypass
+        // only the menu's clear-count gate; do not modify clrd/pscr or the
+        // on-disk score, so release builds and player progress stay intact.
+        local_8 = 6;
+#else
         local_8 = g_GameManager.clrd[g_GameManager.character * 2 + g_GameManager.shotType]
                       .difficultyClearedWithoutRetries[g_Supervisor.cfg.defaultDifficulty];
         if (local_8 < 0)
@@ -1793,6 +1815,7 @@ u32 MainMenu::OnUpdateSelectPracticeStage()
         {
             local_8 = 6;
         }
+#endif
         if (this->cursor >= local_8)
         {
             this->cursor = 0;
@@ -1803,6 +1826,13 @@ u32 MainMenu::OnUpdateSelectPracticeStage()
             g_SoundPlayer.PlaySoundByIdx(SOUND_SELECT, 0);
             g_GameManager.difficulty = g_Supervisor.cfg.defaultDifficulty;
             g_GameManager.currentStage = this->cursor;
+#if defined(TH07_PSP_PERF_DIAG)
+            char practiceMessage[80];
+            std::snprintf(practiceMessage, sizeof(practiceMessage),
+                          "practice debug start stage %d of 6",
+                          g_GameManager.currentStage + 1);
+            th07_psp_boot_note(practiceMessage);
+#endif
             g_Supervisor.curState = 2;
 
             i32 idk = 0;
@@ -2213,8 +2243,12 @@ i32 MainMenu::DrawPracticeMenu()
     AsciiManager::AddFormatText(&g_AsciiManager, &vm->pos, "Stage    HI-Score");
     local_1c = vm->pos;
     local_1c.y += 16.0f;
+#if defined(TH07_PSP_PERF_DIAG)
+    local_10 = 6;
+#else
     local_10 = g_GameManager.clrd[g_GameManager.character * 2 + g_GameManager.shotType]
                    .difficultyClearedWithoutRetries[g_Supervisor.cfg.defaultDifficulty];
+#endif
 
     for (i = 0; i < 6; i++)
     {
@@ -2560,13 +2594,23 @@ ZunResult MainMenu::Release()
 
 ZunResult MainMenu::DeletedCallback(MainMenu *arg)
 {
+    g_Chain.Cut(arg->drawChain);
+    arg->drawChain = NULL;
     for (i32 i = 32; i <= 41; i++)
     {
         g_AnmManager->ReleaseAnm(i);
     }
     g_AnmManager->ReleaseSurface(0);
-    g_Chain.Cut(arg->drawChain);
-    arg->drawChain = NULL;
+#if defined(TH07_PSP)
+    if (g_Supervisor.curState == 8)
+    {
+        const unsigned int releasedBytes = Th07PspTrimTextureCache();
+        char message[80];
+        std::snprintf(message, sizeof(message), "menu to music trim %uK",
+                      releasedBytes / 1024u);
+        th07_psp_boot_note(message);
+    }
+#endif
     arg->Release();
     delete arg;
     arg = NULL;
@@ -2585,6 +2629,10 @@ ZunResult MainMenu::RegisterChain()
     mgr->calcChain->deletedCallback = (ChainLifecycleCallback)DeletedCallback;
     if (g_Chain.AddToCalcChain(mgr->calcChain, 3))
     {
+        // AddToCalcChain links the element before invoking AddedCallback.
+        // Unlink it on a partial resource failure so callers can safely trim
+        // and retry instead of leaving a dead menu job in the chain.
+        g_Chain.Cut(mgr->calcChain);
         return ZUN_ERROR;
     }
 
