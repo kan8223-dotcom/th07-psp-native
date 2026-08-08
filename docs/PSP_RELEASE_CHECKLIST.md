@@ -86,6 +86,8 @@ is not a release candidate until every item passes without the debug route.
 
 ## Full route
 
+- On stage 4, hold the dialogue-skip button through the Prismriver encounter dialogue. The three
+  nested boss spawns must retain separate enemy slots, and the first attack must begin after dialogue.
 - Start from the title, clear stages 1 through 6, enter the ending and return
   to the title.
 - At the stage 5 -> 6 boundary, the log must contain `replay compact stage 5`
