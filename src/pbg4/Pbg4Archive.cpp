@@ -7,6 +7,9 @@
 #include "Pbg4File.hpp"
 #include "Supervisor.hpp"
 #include "dxutil.hpp"
+#if defined(TH07_PSP_1000)
+#include "../../psp/psp1000_arena.hpp"
+#endif
 
 Pbg4Archive g_UnusedPbg4ArchiveArray[20];
 
@@ -90,6 +93,17 @@ u8 *Pbg4Archive::ReadDecompressEntry(const char *filename, u8 *buf)
 
     dwBytes = entry[1].dataOffset - entry->dataOffset;
     dstLen = entry->decompressedSize;
+#if defined(TH07_PSP_1000)
+    if (th07_psp_1000_arena_owns(buf))
+    {
+        if (!this->fileAbstraction->Seek(entry->dataOffset, g_SeekModes[0]))
+        {
+            goto err;
+        }
+        return Lzss::DecompressFile(this->fileAbstraction, static_cast<u32>(dwBytes), buf,
+                                    static_cast<u32>(dstLen));
+    }
+#endif
     srcBuf = (u8 *)malloc(dwBytes);
     if (!srcBuf)
     {
@@ -106,7 +120,11 @@ u8 *Pbg4Archive::ReadDecompressEntry(const char *filename, u8 *buf)
     }
 
     dstBuf = Lzss::Decompress(srcBuf, dwBytes, buf, dstLen);
-    if (srcBuf)
+    if (srcBuf
+#if defined(TH07_PSP_1000)
+        && !th07_psp_1000_arena_owns(srcBuf)
+#endif
+    )
     {
         free(srcBuf);
         srcBuf = NULL;
@@ -114,7 +132,11 @@ u8 *Pbg4Archive::ReadDecompressEntry(const char *filename, u8 *buf)
     return dstBuf;
 err:
     Supervisor::DebugPrint("info : %s error\n", this->filename);
-    if (srcBuf)
+    if (srcBuf
+#if defined(TH07_PSP_1000)
+        && !th07_psp_1000_arena_owns(srcBuf)
+#endif
+    )
     {
         free(srcBuf);
         srcBuf = NULL;

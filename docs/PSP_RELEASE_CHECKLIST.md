@@ -116,10 +116,9 @@ is not a release candidate until every item passes without the debug route.
 - PPSSPP is only the first gate.  Repeat boot, audio overlap, stage transition,
   save/reload, suspend/resume, ending and title return on a PSP-3000-class real
   device and at least one independent CFW/Memory Stick setup.
-- PSP-1000 has only the 32 MiB memory model.  It remains explicitly unsupported
-  until peak memory through stage transitions, bosses and ending is measured
-  and brought below that limit; a PSP-2000/3000 success is not evidence of
-  PSP-1000 support.
+- PSP-1000 has only the 32 MiB memory model and uses its own tester EBOOT.
+  Verify stage transitions, bosses, Result and ending independently; a
+  PSP-2000/3000 success is not evidence that the PSP-1000 profile is safe.
 - Record CPU work, GE wait, VBlank wait, audio fallback and I/O duration when a
   scene drops from 60 to 30 fps.  Merely using GU/GUM or enabling a VFPU thread
   flag does not prove the hot path uses VFPU or meets the frame deadline.

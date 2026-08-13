@@ -8,6 +8,9 @@
 #if defined(TH07_PSP)
 #include "fileio.hpp"
 #endif
+#if defined(TH07_PSP_1000)
+#include "../psp/psp1000_arena.hpp"
+#endif
 
 u32 g_LastFileSize;
 
@@ -49,7 +52,26 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
         if (fsize != 0)
         {
             Supervisor::DebugPrint("%s Decode ... \n", filename);
-            buf = (u8 *)malloc(fsize);
+            buf = NULL;
+#if defined(TH07_PSP_1000)
+            const char *extension = strrchr(filename, '.');
+            // Small/non-embedded ANMs may intentionally retain their source
+            // buffer for the lifetime of the texture.  Reserve the shared
+            // scratch block only for the large embedded archives that the PSP
+            // compaction path releases immediately after upload.
+            // All embedded archives observed at 128 KiB or larger compact and
+            // release their source immediately.  Routing stage backgrounds as
+            // well as portraits through the arena prevents 1 MiB allocations
+            // from failing after the first stage transition.
+            if (fsize >= 128u * 1024u && extension && strcmp(extension, ".anm") == 0)
+            {
+                buf = static_cast<u8 *>(th07_psp_1000_acquire_anm(fsize));
+            }
+#endif
+            if (!buf)
+            {
+                buf = (u8 *)malloc(fsize);
+            }
             if (!buf)
             {
 #if defined(TH07_PSP)
@@ -64,7 +86,7 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
 #if defined(TH07_PSP)
                 th07_psp_boot_notef("ARC DECODE NG %s %uK", filename, fsize / 1024u);
 #endif
-                free(buf);
+                FileSystem::ReleaseFile(buf);
                 return NULL;
             }
             return buf;
@@ -105,6 +127,17 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
     g_LastFileSize = fsize;
     fclose(file);
     return buf;
+}
+
+void FileSystem::ReleaseFile(void *buffer)
+{
+    if (!buffer)
+        return;
+#if defined(TH07_PSP_1000)
+    if (th07_psp_1000_release_anm(buffer))
+        return;
+#endif
+    free(buffer);
 }
 
 i32 FileSystem::CheckFileExists(const char *file)

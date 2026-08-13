@@ -52,9 +52,15 @@ constexpr u32 kSfxVoiceCount = 16;
 constexpr int kBgmIoUrgentPriority = 0x1c;
 constexpr int kBgmIoBackgroundPriority = 0x21;
 
+#if defined(TH07_PSP_1000)
+using PspSfxSample = u8;
+#else
+using PspSfxSample = i16;
+#endif
+
 struct PspSfxBuffer
 {
-    i16 *samples;
+    PspSfxSample *samples;
     u32 frames;
     // 16.16 source frames advanced by each 44.1 kHz output frame.  Compute it
     // once while loading; 64-bit division in the priority-0x10 output thread
@@ -149,6 +155,29 @@ u32 ReadLe32(const u8 *bytes)
     return static_cast<u32>(bytes[0]) | (static_cast<u32>(bytes[1]) << 8) |
            (static_cast<u32>(bytes[2]) << 16) | (static_cast<u32>(bytes[3]) << 24);
 }
+
+#if defined(TH07_PSP_1000)
+u8 EncodeMuLaw8(i32 sample)
+{
+    constexpr i32 kBias = 0x84;
+    constexpr i32 kClip = 32635;
+    const u32 sign = sample < 0 ? 0x80u : 0u;
+    if (sample < 0)
+    {
+        sample = -sample;
+    }
+    sample = std::min(sample, kClip) + kBias;
+
+    u32 exponent = 7;
+    for (u32 mask = 0x4000u; exponent != 0 &&
+                                 (static_cast<u32>(sample) & mask) == 0;
+         mask >>= 1, --exponent)
+    {
+    }
+    const u32 mantissa = (static_cast<u32>(sample) >> (exponent + 3u)) & 0x0fu;
+    return static_cast<u8>(~(sign | (exponent << 4) | mantissa));
+}
+#endif
 
 void ResetSfxVoices()
 {
@@ -258,6 +287,7 @@ __attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames)
     background.stepFixed = 65536u;
     background.gainQ16 = 65536u;
     background.needsWriteback = 1;
+    background.sampleFormat = TH07_PSP_MIX_S16;
 
     bool mixed = false;
     for (PspSfxVoice &voice : gSfxVoices)
@@ -294,6 +324,11 @@ __attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames)
             input.sourceFraction = voice.positionFraction;
             input.stepFixed = sound.stepFixed;
             input.gainQ16 = static_cast<u32>(gSfxGainQ15[voice.logicalIdx]) << 1;
+#if defined(TH07_PSP_1000)
+            input.sampleFormat = TH07_PSP_MIX_MULAW8;
+#else
+            input.sampleFormat = TH07_PSP_MIX_S16;
+#endif
             mixed = true;
         }
 
@@ -804,7 +839,17 @@ ZunResult SoundPlayer::LoadSound(i32 idx, const char *path)
         free(wav);
         return ZUN_ERROR;
     }
-    i16 *samples = new (std::nothrow) i16[sourceFrames];
+#if defined(TH07_PSP_1000)
+    // Keep every original source frame. G.711 mu-law uses one byte per mono
+    // frame, the same RAM as the old half-rate s16 path, without throwing away
+    // the upper half of the SFX frequency range.
+    const u32 storedFrames = sourceFrames;
+    const u32 storedSampleRate = sampleRate;
+#else
+    const u32 storedFrames = sourceFrames;
+    const u32 storedSampleRate = sampleRate;
+#endif
+    PspSfxSample *samples = new (std::nothrow) PspSfxSample[storedFrames];
     if (!samples)
     {
         free(wav);
@@ -831,18 +876,22 @@ ZunResult SoundPlayer::LoadSound(i32 idx, const char *path)
         return value;
     };
 
-    for (u32 frame = 0; frame < sourceFrames; ++frame)
+    for (u32 frame = 0; frame < storedFrames; ++frame)
     {
+#if defined(TH07_PSP_1000)
+        samples[frame] = EncodeMuLaw8(readMono(frame));
+#else
         samples[frame] = static_cast<i16>(readMono(frame));
+#endif
     }
     free(wav);
 
     delete[] gSfxBuffers[idx].samples;
     gSfxBuffers[idx].samples = samples;
-    gSfxBuffers[idx].frames = sourceFrames;
+    gSfxBuffers[idx].frames = storedFrames;
     gSfxBuffers[idx].stepFixed = std::max<u32>(
-        1, static_cast<u32>((static_cast<unsigned long long>(sampleRate) << 16) / 44100u));
-    sceKernelDcacheWritebackRange(samples, sourceFrames * sizeof(i16));
+        1, static_cast<u32>((static_cast<unsigned long long>(storedSampleRate) << 16) / 44100u));
+    sceKernelDcacheWritebackRange(samples, storedFrames * sizeof(PspSfxSample));
     return ZUN_SUCCESS;
 }
 
@@ -1018,10 +1067,16 @@ ZunResult SoundPlayer::InitSoundBuffers()
             std::max(0, std::min(32768, static_cast<int>(gain * 32768.0f + 0.5f))));
     }
     char message[80];
-    std::snprintf(message, sizeof(message), "sfx ready %lu/%lu pcm %luKB",
+#if defined(TH07_PSP_1000)
+    constexpr const char *storageName = "mulaw";
+#else
+    constexpr const char *storageName = "pcm";
+#endif
+    std::snprintf(message, sizeof(message), "sfx ready %lu/%lu %s %luKB",
                   static_cast<unsigned long>(loaded),
                   static_cast<unsigned long>(kSfxBufferCount),
-                  static_cast<unsigned long>(totalFrames * sizeof(i16) / 1024u));
+                  storageName,
+                  static_cast<unsigned long>(totalFrames * sizeof(PspSfxSample) / 1024u));
     th07_psp_boot_note(message);
     return ZUN_SUCCESS;
 }

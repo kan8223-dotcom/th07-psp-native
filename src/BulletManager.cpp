@@ -16,6 +16,13 @@
 #if defined(TH07_PSP)
 #include <pspmath.h>
 
+#if defined(TH07_PSP_1000)
+#include "../psp/fileio.hpp"
+#include "../psp/psp1000_arena.hpp"
+
+#include <cstdlib>
+#endif
+
 namespace
 {
 inline void PspBulletRenderSinCos(float angle, float *outSin, float *outCos)
@@ -65,16 +72,77 @@ ChainElem g_BulletManagerCalcChain;
 
 void BulletManager::Initialize()
 {
+#if defined(TH07_PSP_1000)
+    Bullet *chunks[kBulletChunkCount];
+    memcpy(chunks, this->bulletChunks, sizeof(chunks));
+#endif
     memset(this, 0, sizeof(BulletManager));
+#if defined(TH07_PSP_1000)
+    memcpy(this->bulletChunks, chunks, sizeof(chunks));
+    for (i32 i = 0; i < kBulletChunkCount; i++)
+    {
+        if (this->bulletChunks[i])
+        {
+            memset(this->bulletChunks[i], 0,
+                   sizeof(Bullet) * static_cast<size_t>(kBulletChunkCapacity));
+        }
+    }
+    this->pspNextBulletIndex = 0;
+#else
     this->bulletsStart = this->bullets;
-    this->bullets[1024].state = BULLET_END_ARRAY;
+    this->bullets[kBulletCapacity].state = BULLET_END_ARRAY;
+#endif
     this->itemType = ITEM_POINT_BULLET;
 }
 
 BulletManager::BulletManager()
 {
+#if defined(TH07_PSP_1000)
+    memset(this->bulletChunks, 0, sizeof(this->bulletChunks));
+#endif
     Initialize();
 }
+
+#if defined(TH07_PSP_1000)
+bool BulletManager::PspEnsureBulletPool()
+{
+    for (i32 i = 0; i < kBulletChunkCount; i++)
+    {
+        if (!this->bulletChunks[i])
+        {
+            this->bulletChunks[i] = static_cast<Bullet *>(th07_psp_1000_alloc_pool(
+                sizeof(Bullet) * static_cast<size_t>(kBulletChunkCapacity)));
+            if (this->bulletChunks[i])
+            {
+                memset(this->bulletChunks[i], 0,
+                       sizeof(Bullet) * static_cast<size_t>(kBulletChunkCapacity));
+            }
+        }
+        if (!this->bulletChunks[i])
+        {
+            th07_psp_boot_notef("PSP1000 bullet chunk %d/%d allocation failed", i + 1,
+                                kBulletChunkCount);
+            PspReleaseBulletPool();
+            return false;
+        }
+    }
+    this->pspNextBulletIndex = 0;
+    th07_psp_boot_notef("PSP1000 bullet pool %d slots in %d chunks %uK", kBulletCapacity,
+                        kBulletChunkCount,
+                        static_cast<unsigned int>(sizeof(Bullet) * kBulletCapacity / 1024u));
+    return true;
+}
+
+void BulletManager::PspReleaseBulletPool()
+{
+    for (i32 i = 0; i < kBulletChunkCount; i++)
+    {
+        this->bulletChunks[i] = nullptr;
+    }
+    this->pspNextBulletIndex = 0;
+    memset(this->pspActiveBulletBits, 0, sizeof(this->pspActiveBulletBits));
+}
+#endif
 
 void BulletManager::SetActiveSpriteByResolution(AnmVm *sprite, AnmVm *bulletTypeTemplate,
                                                 Bullet *bullet, i32 spriteOffset)
@@ -109,10 +177,16 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
     i32 i;
     f32 bulletSpeed;
 
-    for (bullet = this->bulletsStart, i = 0; i < 1024; i++)
+    i32 bulletIndex =
+#if defined(TH07_PSP_1000)
+        this->pspNextBulletIndex;
+#else
+        static_cast<i32>(this->bulletsStart - this->bullets);
+#endif
+    for (i = 0; i < kBulletCapacity; i++)
     {
+        bullet = this->BulletAt(bulletIndex);
 #if defined(TH07_PSP)
-        const i32 bulletIndex = static_cast<i32>(bullet - this->bullets);
         if (!this->PspIsBulletSlotTracked(bulletIndex))
         {
             break;
@@ -128,13 +202,11 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
             break;
         }
 #endif
-        bullet++;
-        if (bullet->state == BULLET_END_ARRAY)
-        {
-            bullet = this->bullets;
-        }
+        bulletIndex++;
+        if (bulletIndex >= kBulletCapacity)
+            bulletIndex = 0;
     }
-    if (i >= 1024)
+    if (i >= kBulletCapacity)
     {
         return 1;
     }
@@ -202,7 +274,7 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
     }
     bullet->state = BULLET_NORMAL;
 #if defined(TH07_PSP)
-    this->PspTrackBulletSlot(static_cast<i32>(bullet - this->bullets));
+    this->PspTrackBulletSlot(bulletIndex);
 #endif
     bullet->spawned = 1;
     bullet->grazed = 0;
@@ -305,15 +377,14 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
     {
         bullet->state = BULLET_DESPAWN;
     }
-    bullet++;
-    if (bullet->state == BULLET_END_ARRAY)
-    {
-        this->bulletsStart = this->bullets;
-    }
-    else
-    {
-        this->bulletsStart = bullet;
-    }
+    bulletIndex++;
+    if (bulletIndex >= kBulletCapacity)
+        bulletIndex = 0;
+#if defined(TH07_PSP_1000)
+    this->pspNextBulletIndex = bulletIndex;
+#else
+    this->bulletsStart = this->BulletAt(bulletIndex);
+#endif
     return 0;
 }
 
@@ -420,9 +491,9 @@ void BulletManager::RemoveAllBullets(i32 param_1)
     i32 i;
     ZunVec3 local_10;
 
-    bullet = g_BulletManager.bullets;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
 #if defined(TH07_PSP)
         if (!this->PspIsBulletSlotTracked(i))
         {
@@ -515,10 +586,11 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
     // for a full second.  Score, point items and bullet state are independent;
     // cap only these redundant labels, matching the proven TH06 PSP policy.
     unsigned int activeBullets = 0;
-    for (unsigned int bulletIdx = 0; bulletIdx < 1024; ++bulletIdx)
+    for (unsigned int bulletIdx = 0; bulletIdx < static_cast<unsigned int>(kBulletCapacity);
+         ++bulletIdx)
     {
         if (g_BulletManager.PspIsBulletSlotTracked(static_cast<i32>(bulletIdx)) &&
-            g_BulletManager.bullets[bulletIdx].state != BULLET_INACTIVE)
+            g_BulletManager.BulletAt(static_cast<i32>(bulletIdx))->state != BULLET_INACTIVE)
         {
             ++activeBullets;
         }
@@ -530,9 +602,9 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
             : 1u;
     unsigned int popupIndex = 0;
 #endif
-    bullet = g_BulletManager.bullets;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
 #if defined(TH07_PSP)
         if (!this->PspIsBulletSlotTracked(i))
         {
@@ -599,10 +671,10 @@ void BulletManager::RemoveBulletsInRadius(ZunVec3 *centerPos, f32 radius)
     Bullet *bullet;
     i32 i;
 
-    bullet = g_BulletManager.bullets;
     radius *= radius;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
 #if defined(TH07_PSP)
         if (!this->PspIsBulletSlotTracked(i))
         {
@@ -635,7 +707,7 @@ i32 BulletManager::SpawnBulletPattern(EnemyBulletShooter *bulletProps)
     i32 x;
     i32 y;
 
-    if (g_BulletManager.bulletCount >= 1024)
+    if (g_BulletManager.bulletCount >= kBulletCapacity)
     {
         return 0;
     }
@@ -903,7 +975,6 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
     bool bombCollisionChecked;
 
     blockIdx = 0;
-    bullet = arg->bullets;
     if (g_GameManager.isTimeStopped)
     {
         return CHAIN_CALLBACK_RESULT_CONTINUE;
@@ -918,8 +989,9 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
     arg->bulletsPtrs[1] = NULL;
     arg->bulletsPtrs[0] = NULL;
 
-    for (i = 0; i < 1024; i++)
+    for (i = 0; i < kBulletCapacity; i++)
     {
+        bullet = arg->BulletAt(blockIdx);
 #if defined(TH07_PSP)
         if (!arg->PspIsBulletSlotTracked(blockIdx))
         {
@@ -1115,10 +1187,8 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
         blockIdx--;
         if (blockIdx < 0)
         {
-            blockIdx = 1023;
-            bullet += 1024;
+            blockIdx = kBulletCapacity - 1;
         }
-        bullet--;
     }
 
     laser = arg->lasers;
@@ -1484,14 +1554,12 @@ ZunResult BulletManager::AddedCallback(BulletManager *arg)
             }
         }
     }
-    memset(&g_ItemManager, 0, sizeof(ItemManager));
+    g_ItemManager.Reset();
     return ZUN_SUCCESS;
 }
 
 ZunResult BulletManager::DeletedCallback(BulletManager *arg)
 {
-    (void)arg;
-
     if ((u32)(g_Supervisor.curState != 3 && g_Supervisor.curState != 11 &&
               g_Supervisor.curState != 12))
     {
@@ -1500,6 +1568,12 @@ ZunResult BulletManager::DeletedCallback(BulletManager *arg)
         g_AnmManager->ReleaseAnm(13);
         g_AnmManager->ReleaseAnm(14);
     }
+#if defined(TH07_PSP_1000)
+    g_ItemManager.PspReleaseItemPool();
+    arg->PspReleaseBulletPool();
+#else
+    (void)arg;
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -1532,7 +1606,7 @@ void BulletManager::CutChain()
 {
     g_Chain.Cut(&g_BulletManagerCalcChain);
     g_Chain.Cut(&g_BulletManagerDrawChain);
-    memset(&g_BulletManager, 0, sizeof(BulletManager));
+    g_BulletManager.Initialize();
 }
 
 void BulletManager::StopBulletMovement()
@@ -1540,9 +1614,9 @@ void BulletManager::StopBulletMovement()
     Bullet *bullet;
     i32 i;
 
-    bullet = g_BulletManager.bullets;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
 #if defined(TH07_PSP)
         if (!this->PspIsBulletSlotTracked(i))
         {

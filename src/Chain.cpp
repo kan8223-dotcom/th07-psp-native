@@ -1,5 +1,7 @@
 #include "Chain.hpp"
 
+#include <new>
+
 #include <stddef.h>
 
 #if defined(TH07_PSP_PERF_DIAG)
@@ -303,7 +305,11 @@ void Chain::Release()
 
 ChainElem *Chain::CreateElem(ChainCallback callback)
 {
-    ChainElem *elem = new ChainElem;
+    ChainElem *elem = new (std::nothrow) ChainElem;
+    if (!elem)
+    {
+        return NULL;
+    }
     elem->callback = callback;
     elem->addedCallback = NULL;
     elem->deletedCallback = NULL;

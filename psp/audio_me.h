@@ -7,15 +7,18 @@ extern "C" {
 enum
 {
     TH07_PSP_ME_MAX_MIX_INPUTS = 64,
-    TH07_PSP_ME_MAX_MIX_FRAMES = 1024
+    TH07_PSP_ME_MAX_MIX_FRAMES = 1024,
+    TH07_PSP_MIX_S16 = 0,
+    TH07_PSP_MIX_MULAW8 = 1
 };
 
 typedef struct Th07PspMixInput
 {
-    const short *samples;
-    // Total source frames.  TH07 keeps its short 11/22/44.1 kHz effects in
-    // their native rate, so ME performs the same 16.16 nearest-neighbour
-    // stepping as the old SC output thread.
+    const void *samples;
+    // Total source frames.  Effects remain at their native sample rate, so ME
+    // performs the same 16.16 nearest-neighbour stepping as the SC fallback.
+    // PSP-1000 stores mono SFX as full-rate G.711 mu-law; BGM and the standard
+    // PSP build use signed 16-bit PCM.
     unsigned int frames;
     unsigned int destinationFrame;
     unsigned int channels;
@@ -26,6 +29,7 @@ typedef struct Th07PspMixInput
     // Set only for mutable input (the freshly assembled BGM block).  Loaded
     // SFX are immutable and are written back once by LoadSound().
     unsigned int needsWriteback;
+    unsigned int sampleFormat;
 } Th07PspMixInput;
 
 typedef struct Th07PspMixJob

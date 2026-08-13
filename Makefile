@@ -2,7 +2,9 @@ export PATH := /usr/local/pspdev/bin:$(PATH)
 export PSPDEV := /usr/local/pspdev
 
 TARGET := TH07PSP
-PSP_RELEASE_VERSION := v0.1.3-beta
+PSP_RELEASE_VERSION := v0.1.4-beta
+PSP_RELEASE_1000_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION)-psp1000.zip
+PSP_RELEASE_2000PLUS_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION)-psp2000plus.zip
 MECC_DIR := psp/third_party/me-custom-core
 MECC_BUILD_DIR := $(MECC_DIR)/build
 MECC_LIB := $(MECC_BUILD_DIR)/libme-core.a
@@ -47,12 +49,12 @@ ENGINE_SRCS := \
     src/pbg4/Pbg4File.cpp \
     src/utils.cpp
 
-SRCS := psp/platform.cpp psp/fileio.cpp psp/SoundPlayerPsp.cpp psp/audio_me.c \
-        psp/graphics/PspGuGraphics.cpp $(ENGINE_SRCS)
+SRCS := psp/platform.cpp psp/fileio.cpp psp/psp1000_arena.cpp psp/psp1000_title_cache.cpp psp/SoundPlayerPsp.cpp psp/audio_me.c \
+        psp/sdl_renderer_stub.cpp psp/graphics/PspGuGraphics.cpp $(ENGINE_SRCS)
 OBJS := $(patsubst %.cpp,%.o,$(SRCS))
 OBJS := $(patsubst %.c,%.o,$(OBJS))
 
-PSP_EBOOT_TITLE := Touhou 7 PSP Native Beta
+PSP_EBOOT_TITLE := Touhou 7 PSP-2000+ Beta
 PSP_FW_VERSION := 660
 BUILD_PRX := 0
 EXTRA_TARGETS := EBOOT.PBP
@@ -80,6 +82,11 @@ PSP_DIRECT_GAME ?= 0
 PSP_DIRECT_MUSIC ?= 0
 PSP_DIRECT_STAGE ?= 3
 PSP_DIRECT_TRANSITION_TEST ?= 0
+PSP_1000 ?= 0
+ifeq ($(PSP_1000),1)
+CXXFLAGS += -DTH07_PSP_1000
+PSP_EBOOT_TITLE := Touhou 7 PSP-1000 Beta
+endif
 ifeq ($(PSP_DIRECT_GAME),1)
 CXXFLAGS += -DTH07_PSP_DIRECT_GAME -DTH07_PSP_DIRECT_STAGE=$(PSP_DIRECT_STAGE)
 PSP_EBOOT_TITLE := TH07 PSP stage debug
@@ -118,24 +125,35 @@ $(TARGET).elf: $(MECC_LIB)
 
 # Changing a Make variable does not normally invalidate existing .o files.
 # Keep release and debug objects from ever being silently mixed.
-PROFILE_STAMP := .build-profile-$(PSP_DIRECT_GAME)-$(PSP_DIRECT_MUSIC)-$(PSP_PERF_DIAG)-$(PSP_DIRECT_STAGE)-$(PSP_DIRECT_TRANSITION_TEST)
+PROFILE_STAMP := .build-profile-$(PSP_DIRECT_GAME)-$(PSP_DIRECT_MUSIC)-$(PSP_PERF_DIAG)-$(PSP_DIRECT_STAGE)-$(PSP_DIRECT_TRANSITION_TEST)-$(PSP_1000)
 .PHONY: FORCE_PROFILE
 $(PROFILE_STAMP): FORCE_PROFILE
 	@if [ ! -f "$@" ]; then rm -f .build-profile-*; touch "$@"; fi
 $(OBJS): $(PROFILE_STAMP)
 
-.PHONY: release-build release release-audit
+.PHONY: psp1000-build psp2000plus-build release-build release-psp1000 \
+	release-psp2000plus release release-audit
+psp1000-build:
+	$(MAKE) clean
+	rm -f .build-profile-*
+	$(MAKE) PSP_1000=1 PSP_DIRECT_GAME=0 PSP_DIRECT_MUSIC=0 PSP_PERF_DIAG=0 \
+		PSP_DIRECT_TRANSITION_TEST=0 all
+
+psp2000plus-build:
+	$(MAKE) clean
+	rm -f .build-profile-*
+	$(MAKE) PSP_1000=0 PSP_DIRECT_GAME=0 PSP_DIRECT_MUSIC=0 PSP_PERF_DIAG=0 \
+		PSP_DIRECT_TRANSITION_TEST=0 all
+
 release-audit:
 	./tools/release_audit.sh
 
-release-build:
-	$(MAKE) clean
-	rm -f .build-profile-*
-	$(MAKE) PSP_DIRECT_GAME=0 PSP_PERF_DIAG=0 all
-	./tools/release_audit.sh
+release-build: psp2000plus-build
 
-release: release-build psp/assets/NotoSansJP-Regular.ttf
-	@stage_root=$$(mktemp -d); \
+release-psp2000plus: psp/assets/NotoSansJP-Regular.ttf
+	$(MAKE) psp2000plus-build
+	@eboot_hash=$$(sha256sum EBOOT.PBP | awk '{print $$1}'); \
+	stage_root=$$(mktemp -d); \
 	stage="$$stage_root/TH07PSP"; \
 	mkdir -p "$$stage/docs" "$$stage/licenses/NotoSansJP" "$$stage/licenses/MECC" dist; \
 	cp EBOOT.PBP psp/assets/NotoSansJP-Regular.ttf README.md CREDITS.md CHANGELOG.md LICENSE "$$stage/"; \
@@ -143,9 +161,37 @@ release: release-build psp/assets/NotoSansJP-Regular.ttf
 	cp licenses/NotoSansJP/OFL.txt "$$stage/licenses/NotoSansJP/"; \
 	cp psp/third_party/me-custom-core/LICENSE.md "$$stage/licenses/MECC/"; \
 	stage_win=$$(wslpath -w "$$stage"); \
-	zip_win=$$(wslpath -w "$$stage_root/th07-psp-native-$(PSP_RELEASE_VERSION).zip"); \
+	zip_win=$$(wslpath -w "$$stage_root/$(PSP_RELEASE_2000PLUS_ZIP)"); \
 	powershell.exe -NoProfile -Command "Compress-Archive -LiteralPath '$$stage_win' -DestinationPath '$$zip_win' -Force"; \
-	mv "$$stage_root/th07-psp-native-$(PSP_RELEASE_VERSION).zip" dist/th07-psp-native-$(PSP_RELEASE_VERSION).zip
+	mv "$$stage_root/$(PSP_RELEASE_2000PLUS_ZIP)" "dist/$(PSP_RELEASE_2000PLUS_ZIP)"; \
+	printf '%s  %s\n' "$$eboot_hash" EBOOT.PBP > "dist/$(PSP_RELEASE_2000PLUS_ZIP).EBOOT.sha256"
+	./tools/release_audit.sh
+
+release-psp1000: psp/assets/NotoSansJP-Regular.ttf
+	$(MAKE) psp1000-build
+	@eboot_hash=$$(sha256sum EBOOT.PBP | awk '{print $$1}'); \
+	stage_root=$$(mktemp -d); \
+	stage="$$stage_root/TH07PSP"; \
+	mkdir -p "$$stage/docs" "$$stage/licenses/NotoSansJP" "$$stage/licenses/MECC" dist; \
+	cp EBOOT.PBP psp/assets/NotoSansJP-Regular.ttf README.md CREDITS.md CHANGELOG.md LICENSE "$$stage/"; \
+	cp docs/KNOWN_ISSUES.md "$$stage/docs/"; \
+	cp licenses/NotoSansJP/OFL.txt "$$stage/licenses/NotoSansJP/"; \
+	cp psp/third_party/me-custom-core/LICENSE.md "$$stage/licenses/MECC/"; \
+	stage_win=$$(wslpath -w "$$stage"); \
+	zip_win=$$(wslpath -w "$$stage_root/$(PSP_RELEASE_1000_ZIP)"); \
+	powershell.exe -NoProfile -Command "Compress-Archive -LiteralPath '$$stage_win' -DestinationPath '$$zip_win' -Force"; \
+	mv "$$stage_root/$(PSP_RELEASE_1000_ZIP)" "dist/$(PSP_RELEASE_1000_ZIP)"; \
+	printf '%s  %s\n' "$$eboot_hash" EBOOT.PBP > "dist/$(PSP_RELEASE_1000_ZIP).EBOOT.sha256"
+	./tools/release_audit.sh
+
+release:
+	rm -f "dist/$(PSP_RELEASE_1000_ZIP)" "dist/$(PSP_RELEASE_2000PLUS_ZIP)" \
+		"dist/$(PSP_RELEASE_1000_ZIP).EBOOT.sha256" \
+		"dist/$(PSP_RELEASE_2000PLUS_ZIP).EBOOT.sha256"
+	$(MAKE) release-psp2000plus
+	$(MAKE) release-psp1000
+	test -f "dist/$(PSP_RELEASE_1000_ZIP)"
+	test -f "dist/$(PSP_RELEASE_2000PLUS_ZIP)"
 	./tools/release_audit.sh
 
 # build.mak does not otherwise notice title-only changes.  The profile stamp is

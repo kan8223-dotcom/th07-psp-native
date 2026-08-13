@@ -70,11 +70,11 @@ void EnemyEclInstr::ExInsAliceCurveBullets(Enemy *enemy, EclRawInstr *instr)
     Bullet *bullet;
     i32 i;
 
-    bullet = g_BulletManager.bullets;
     BombEffects::RegisterChain(1, 30, 12, 0, 0);
     BombEffects::RegisterChain(3, 4, 3, 0x80ffcfcf, 0);
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
@@ -126,7 +126,7 @@ void EnemyEclInstr::ExInsAliceCurveBullets(Enemy *enemy, EclRawInstr *instr)
 
 void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy, EclRawInstr *instr)
 {
-    Bullet *bullet = g_BulletManager.bullets;
+    Bullet *bullet;
     f32 distance;
     f32 local_e4;
     i32 i;
@@ -148,8 +148,9 @@ void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy, EclRawInstr *
     case 3:
         local_e4 = 999.0;
     }
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
@@ -192,13 +193,14 @@ void EnemyEclInstr::ExInsDespawnLargeBulletAndSavePos(Enemy *enemy, EclRawInstr 
 {
     (void)instr;
 
-    Bullet *bullet = g_BulletManager.bullets;
+    Bullet *bullet;
     i32 i;
     EnemyBulletShooter bulletProps;
 
     enemy->currentContext.eclContextArgs.floatVars1[0] = -999.0f;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
@@ -230,12 +232,13 @@ void EnemyEclInstr::ExInsSplitBulletsOrShootBackwards(Enemy *enemy, EclRawInstr 
 {
     (void)enemy;
 
-    Bullet *bullet = g_BulletManager.bullets;
+    Bullet *bullet;
     i32 i;
     EnemyBulletShooter bulletProps;
 
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
@@ -380,9 +383,9 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy, EclRawInstr *ins
                 (laser->endOffset - laser->startOffset) / 2.0f + laser->startOffset + laser->pos.x;
             center.y = laser->pos.y;
             sincosf(&sine, &cosine, laser->angle);
-            bullet = g_BulletManager.bullets;
-            for (j = 0; j < 1024; j++, bullet++)
+            for (j = 0; j < BulletManager::kBulletCapacity; j++)
             {
+                bullet = g_BulletManager.BulletAt(j);
                 PSP_ECL_SKIP_UNTRACKED_BULLET(j);
                 if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
                 {
@@ -466,9 +469,9 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy, EclRawInstr *instr
             sincosf(&sine, &cosine, laser->angle);
             dirX = -sine;
             dirY = cosine;
-            bullet = g_BulletManager.bullets;
-            for (j = 0; j < 1024; j++, bullet++)
+            for (j = 0; j < BulletManager::kBulletCapacity; j++)
             {
+                bullet = g_BulletManager.BulletAt(j);
                 PSP_ECL_SKIP_UNTRACKED_BULLET(j);
                 if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
                 {
@@ -537,9 +540,9 @@ void EnemyEclInstr::ExInsYoumuSetGameSpeed(Enemy *enemy, EclRawInstr *instr)
     g_Supervisor.effectiveFramerateMultiplier = 1.0f / (f32)instr->args[1].i;
     g_Stage.spellcardVms[0].pendingInterrupt = 2;
     g_Stage.spellcardVms[1].pendingInterrupt = 2;
-    bullet = g_BulletManager.bullets;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -564,10 +567,10 @@ void EnemyEclInstr::ExInsYoumuRestoreGameSpeed(Enemy *enemy, EclRawInstr *instr)
     f32 fps;
     i32 i;
 
-    bullet = g_BulletManager.bullets;
     fps = 1.0f / g_Supervisor.effectiveFramerateMultiplier;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -595,7 +598,7 @@ void EnemyEclInstr::ExInsYoumuRestoreGameSpeed(Enemy *enemy, EclRawInstr *instr)
 void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
 {
     i32 j;
-    Bullet *bullet = g_BulletManager.bullets;
+    Bullet *bullet;
     i32 i;
     i32 numBullets;
     EnemyBulletShooter bulletProps;
@@ -606,8 +609,9 @@ void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
                  : g_GameManager.difficulty == DIFF_NORMAL ? 18
                  : g_GameManager.difficulty == DIFF_HARD   ? 22
                                                            : 25;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -674,9 +678,9 @@ void EnemyEclInstr::ExInsYoumuCurveBulletsBelow(Enemy *enemy, EclRawInstr *instr
     Bullet *bullet;
     i32 i;
 
-    bullet = g_BulletManager.bullets;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -701,10 +705,10 @@ void EnemyEclInstr::ExInsYoumuRedirectBulletsToPlayer(Enemy *enemy, EclRawInstr 
     Bullet *bullet;
     i32 i;
 
-    bullet = g_BulletManager.bullets;
     BombEffects::RegisterChain(3, 16, 1, 0x50cfcfff, 0);
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -732,12 +736,13 @@ void EnemyEclInstr::ExInsYuyukoTransformButterflyBullets(Enemy *enemy, EclRawIns
 {
     (void)instr;
 
-    Bullet *bullet = g_BulletManager.bullets;
+    Bullet *bullet;
     EnemyBulletShooter bulletProps;
     i32 i;
 
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -770,12 +775,12 @@ void EnemyEclInstr::ExInsYuyukoButterflySpawnEnemy(Enemy *enemy, EclRawInstr *in
     Bullet *bullet;
     i32 i;
 
-    bullet = g_BulletManager.bullets;
     args = enemy->currentContext.eclContextArgs;
     angleOffset = -ZUN_PI;
     BombEffects::RegisterChain(3, 12, 1, 0x80cfcfff, 0);
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -806,10 +811,10 @@ void EnemyEclInstr::ExInsYuyukoCountButterflyBullets(Enemy *enemy, EclRawInstr *
     Bullet *bullet;
     i32 i;
 
-    bullet = g_BulletManager.bullets;
     enemy->currentContext.eclContextArgs.intVars1[0] = 0;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -825,15 +830,16 @@ void EnemyEclInstr::ExInsYuyukoCountButterflyBullets(Enemy *enemy, EclRawInstr *
 void EnemyEclInstr::ExInsBurstLargeBullets2(Enemy *enemy, EclRawInstr *instr)
 {
     i32 j;
-    Bullet *bullet = g_BulletManager.bullets;
+    Bullet *bullet;
     i32 i;
     EnemyBulletShooter bulletProps;
     f32 triggerHeight;
 
     triggerHeight = g_GameManager.difficulty == DIFF_HARD ? 128.0f : 180.0f;
     BombEffects::RegisterChain(3, 8, 1, 0x50cfcfff, 0);
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -911,7 +917,7 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange(Enemy *enemy, EclRawInstr *in
 {
     (void)instr;
 
-    Bullet *bullet = g_BulletManager.bullets;
+    Bullet *bullet;
     u32 timerMod2;
     EnemyBulletShooter bulletProps;
     i32 i;
@@ -922,8 +928,9 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange(Enemy *enemy, EclRawInstr *in
     }
 
     timerMod2 = enemy->timer.current % 2;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {
@@ -979,7 +986,7 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange2(Enemy *enemy, EclRawInstr *i
 {
     (void)instr;
 
-    Bullet *bullet = g_BulletManager.bullets;
+    Bullet *bullet;
     i32 timerMod3;
     EnemyBulletShooter bulletProps;
     i32 i;
@@ -990,8 +997,9 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange2(Enemy *enemy, EclRawInstr *i
     }
 
     timerMod3 = enemy->timer.current % 3;
-    for (i = 0; i < 1024; i++, bullet++)
+    for (i = 0; i < BulletManager::kBulletCapacity; i++)
     {
+        bullet = g_BulletManager.BulletAt(i);
         PSP_ECL_SKIP_UNTRACKED_BULLET(i);
         if (bullet->state == BULLET_INACTIVE)
         {

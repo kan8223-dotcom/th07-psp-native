@@ -5,10 +5,14 @@
 #include "AnmManager.hpp"
 #include "Chain.hpp"
 #include "Controller.hpp"
+#include "BulletManager.hpp"
+#include "EffectManager.hpp"
+#include "EnemyManager.hpp"
 #include "FileSystem.hpp"
 #include "GameErrorContext.hpp"
 #include "GameManager.hpp"
 #include "GameWindow.hpp"
+#include "ItemManager.hpp"
 #include "ResultScreen.hpp"
 #include "SoundPlayer.hpp"
 #include "Supervisor.hpp"
@@ -17,6 +21,10 @@
 
 #if defined(TH07_PSP)
 #include "fileio.hpp"
+#if defined(TH07_PSP_1000)
+#include "psp1000_arena.hpp"
+#endif
+#include <pspkernel.h>
 extern "C" void th07_psp_platform_init();
 extern "C" int th07_psp_platform_running();
 #endif
@@ -37,8 +45,18 @@ int main(int argc, char *argv[])
 #if defined(TH07_PSP)
     th07_psp_fileio_set_launch_path(argc > 0 ? argv[0] : nullptr);
     th07_psp_fileio_init();
+#if defined(TH07_PSP_1000)
+    if (!th07_psp_1000_arena_init())
+        return 1;
+#endif
     th07_psp_platform_init();
     th07_psp_boot_note("platform initialized");
+#if defined(TH07_PSP_1000)
+    th07_psp_boot_notef("BUILD PSP1000 pools E%d B%d I%d F%d FREE%uK",
+                        EnemyManager::kEnemyCapacity, BulletManager::kBulletCapacity,
+                        ItemManager::kItemCapacity, EffectManager::kNormalEffectCapacity,
+                        static_cast<unsigned int>(sceKernelTotalFreeMemSize() / 1024u));
+#endif
 #endif
     (void)argc;
     (void)argv;

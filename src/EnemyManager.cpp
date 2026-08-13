@@ -16,6 +16,13 @@
 #include <cmath>
 #include <pspmath.h>
 
+#if defined(TH07_PSP_1000)
+#include "../psp/fileio.hpp"
+#include "../psp/psp1000_arena.hpp"
+
+#include <cstdlib>
+#endif
+
 namespace
 {
 inline void PspEnemyRenderSinCos(f32 angle, f32 *outSin, f32 *outCos)
@@ -77,8 +84,22 @@ void EnemyManager::Initialize()
     Enemy *enemy;
     i32 i;
 
-    enemy = &this->enemies[0];
+#if defined(TH07_PSP_1000)
+    Enemy *chunks[kEnemyChunkCount];
+    memcpy(chunks, this->enemyChunks, sizeof(chunks));
+#endif
     memset(this, 0, sizeof(EnemyManager));
+#if defined(TH07_PSP_1000)
+    memcpy(this->enemyChunks, chunks, sizeof(chunks));
+    for (i = 0; i < kEnemyChunkCount; i++)
+    {
+        if (this->enemyChunks[i])
+        {
+            memset(this->enemyChunks[i], 0,
+                   sizeof(Enemy) * static_cast<size_t>(kEnemyChunkCapacity));
+        }
+    }
+#endif
     enemy = &this->enemyTemplate;
     memset(enemy, 0, sizeof(Enemy));
     for (i = 0; i < 2; i++)
@@ -142,8 +163,50 @@ void EnemyManager::Initialize()
 
 EnemyManager::EnemyManager()
 {
+#if defined(TH07_PSP_1000)
+    memset(this->enemyChunks, 0, sizeof(this->enemyChunks));
+#endif
     Initialize();
 }
+
+#if defined(TH07_PSP_1000)
+bool EnemyManager::PspEnsureEnemyPool()
+{
+    for (i32 i = 0; i < kEnemyChunkCount; i++)
+    {
+        if (!this->enemyChunks[i])
+        {
+            this->enemyChunks[i] = static_cast<Enemy *>(th07_psp_1000_alloc_pool(
+                sizeof(Enemy) * static_cast<size_t>(kEnemyChunkCapacity)));
+            if (this->enemyChunks[i])
+            {
+                memset(this->enemyChunks[i], 0,
+                       sizeof(Enemy) * static_cast<size_t>(kEnemyChunkCapacity));
+            }
+        }
+        if (!this->enemyChunks[i])
+        {
+            th07_psp_boot_notef("PSP1000 enemy chunk %d/%d allocation failed", i + 1,
+                                kEnemyChunkCount);
+            PspReleaseEnemyPool();
+            return false;
+        }
+    }
+    th07_psp_boot_notef("PSP1000 enemy pool %d slots in %d chunks %uK", kEnemyCapacity,
+                        kEnemyChunkCount,
+                        static_cast<unsigned int>(sizeof(Enemy) * kEnemyCapacity / 1024u));
+    return true;
+}
+
+void EnemyManager::PspReleaseEnemyPool()
+{
+    for (i32 i = 0; i < kEnemyChunkCount; i++)
+    {
+        this->enemyChunks[i] = nullptr;
+    }
+    memset(this->pspActiveEnemyBits, 0, sizeof(this->pspActiveEnemyBits));
+}
+#endif
 
 Enemy::Enemy()
 {
@@ -159,9 +222,9 @@ Enemy *EnemyManager::SpawnEnemy(i32 eclSubId, ZunVec3 *pos, i32 life, i32 itemDr
     Enemy *enemy;
     i32 i;
 
-    enemy = this->enemies;
-    for (i = 0; i < 480; i++, enemy++)
+    for (i = 0; i < kEnemyCapacity; i++)
     {
+        enemy = this->EnemyAt(i);
 #if defined(TH07_PSP)
         if (this->PspIsEnemySlotTracked(i))
         {
@@ -219,9 +282,9 @@ Enemy *EnemyManager::SpawnEnemyEx(i32 eclSubId, ZunVec3 *pos, i32 life, i32 item
     Enemy *enemy;
     i32 i;
 
-    enemy = this->enemies;
-    for (i = 0; i < 480; i++, enemy++)
+    for (i = 0; i < kEnemyCapacity; i++)
     {
+        enemy = this->EnemyAt(i);
 #if defined(TH07_PSP)
         if (this->PspIsEnemySlotTracked(i))
         {
@@ -502,7 +565,6 @@ i32 Enemy::HandleLifeCallback()
     i32 i;
     Enemy *enemy;
 
-    enemy = g_EnemyManager.enemies;
     for (i = 0; i < 4; i++)
     {
         if (this->lifeCallbackThreshold[i] < 0)
@@ -526,8 +588,9 @@ i32 Enemy::HandleLifeCallback()
             this->stackDepth = 0;
             this->bulletProps = g_EnemyManager.enemyTemplate.bulletProps;
             this->shootInterval = 0;
-            for (j = 0; j < 480; j++, enemy++)
+            for (j = 0; j < EnemyManager::kEnemyCapacity; j++)
             {
+                enemy = g_EnemyManager.EnemyAt(j);
 #if defined(TH07_PSP)
                 if (!g_EnemyManager.PspIsEnemySlotTracked(j))
                 {
@@ -609,9 +672,9 @@ i32 Enemy::HandleTimerCallback()
             cherryPenalty -= (i32)cherryPenalty % 10;
             g_GameManager.cherry -= cherryPenalty;
         }
-        enemy = g_EnemyManager.enemies;
-        for (j = 0; j < 480; j++, enemy++)
+        for (j = 0; j < EnemyManager::kEnemyCapacity; j++)
         {
+            enemy = g_EnemyManager.EnemyAt(j);
 #if defined(TH07_PSP)
             if (!g_EnemyManager.PspIsEnemySlotTracked(j))
             {
@@ -765,10 +828,10 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
         RunEclTimeline(&arg->timelines[i]);
     }
 
-    enemy = arg->enemies;
     arg->enemyCountReal = 0;
-    for (i = 0; i < 480; i++, enemy++)
+    for (i = 0; i < kEnemyCapacity; i++)
     {
+        enemy = arg->EnemyAt(i);
 #if defined(TH07_PSP)
         if (!arg->PspIsEnemySlotTracked(i))
         {
@@ -1513,10 +1576,13 @@ ZunResult EnemyManager::AddedCallback(EnemyManager *arg)
 
 ZunResult EnemyManager::DeletedCallback(EnemyManager *arg)
 {
-    (void)arg;
-
     g_AnmManager->ReleaseAnm(16);
     g_AnmManager->ReleaseAnm(15);
+#if defined(TH07_PSP_1000)
+    arg->PspReleaseEnemyPool();
+#else
+    (void)arg;
+#endif
     ZunVec3 vec = ZunVec3(-999.0f, -999.0f, -999.0f);
     g_AsciiManager.GetBossMarker(0)->pos = vec;
     g_AsciiManager.GetBossMarker(1)->pos = vec;
@@ -1578,11 +1644,11 @@ i32 EnemyManager::RemoveAllEnemies(i32 scoreMax, i32 scoreMin)
     i32 totalScore;
     i32 popupScore;
 
-    enemy = this->enemies;
     totalScore = scoreMin;
     popupScore = 2000;
-    for (i = 0; i < 480; i++, enemy++)
+    for (i = 0; i < kEnemyCapacity; i++)
     {
+        enemy = this->EnemyAt(i);
 #if defined(TH07_PSP)
         if (!this->PspIsEnemySlotTracked(i))
         {

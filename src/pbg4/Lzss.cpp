@@ -1,6 +1,11 @@
 #include "Lzss.hpp"
 
+#include "Pbg4File.hpp"
+
 #include <cstdlib>
+#if defined(TH07_PSP)
+#include "../../psp/fileio.hpp"
+#endif
 
 #define LZSS_LOOKAHEAD_SIZE ((1 << LZSS_LENGTH_BITS) + 2)
 #define LZSS_DICTSIZE_MASK (LZSS_DICTSIZE - 1)
@@ -266,6 +271,122 @@ u8 *Lzss::Decompress(u8 *src, i32 srcLen, u8 *dst, u32 decompressedSize)
         DEC_READ_FLAG_BIT();
     }
 
+    return dst;
+}
+
+u8 *Lzss::DecompressFile(Pbg4File *file, u32 srcLen, u8 *dst, u32 decompressedSize)
+{
+    if (!file || !dst)
+        return NULL;
+
+    u32 remaining = srcLen;
+    u8 inputBuffer[4096];
+    u32 inputOffset = 0;
+    u32 inputSize = 0;
+    u8 currentByte = 0;
+    u8 bitMask = 0;
+    u8 *dstCursor = dst;
+    u32 dictHead = 1;
+
+    const auto fail = [&](const char *reason) -> u8 * {
+#if defined(TH07_PSP)
+        th07_psp_boot_notef("LZSS STREAM NG %s src%u/%u out%u/%u", reason,
+                            srcLen - remaining - inputSize + inputOffset, srcLen,
+                            static_cast<u32>(dstCursor - dst), decompressedSize);
+#else
+        (void)reason;
+#endif
+        return NULL;
+    };
+
+    const auto readBit = [&]() -> i32 {
+        if (bitMask == 0)
+        {
+            if (inputOffset >= inputSize)
+            {
+                if (remaining == 0)
+                {
+                    // The original memory decoder supplies zero bits after
+                    // the compressed entry ends.  Several archive entries
+                    // rely on those implicit zeros for the final offset-0
+                    // marker after producing the declared output size.
+                    currentByte = 0;
+                    bitMask = 0x80;
+                    const i32 bit = 0;
+                    bitMask >>= 1;
+                    return bit;
+                }
+                else
+                {
+                    const u32 request =
+                        remaining < sizeof(inputBuffer) ? remaining : sizeof(inputBuffer);
+                    inputSize = file->Read(inputBuffer, request);
+                    if (inputSize == 0 || inputSize > remaining)
+                        return -1;
+                    remaining -= inputSize;
+                    inputOffset = 0;
+                }
+            }
+            if (bitMask == 0)
+            {
+                currentByte = inputBuffer[inputOffset++];
+                bitMask = 0x80;
+            }
+        }
+        const i32 bit = (currentByte & bitMask) != 0;
+        bitMask >>= 1;
+        return bit;
+    };
+    const auto readBits = [&](i32 count, u32 *value) -> bool {
+        *value = 0;
+        for (i32 i = count - 1; i >= 0; --i)
+        {
+            const i32 bit = readBit();
+            if (bit < 0)
+                return false;
+            if (bit)
+                *value |= 1u << i;
+        }
+        return true;
+    };
+    const auto writeByte = [&](u8 value) -> bool {
+        if (static_cast<u32>(dstCursor - dst) >= decompressedSize)
+            return false;
+        *dstCursor++ = value;
+        g_LzssDictionary[dictHead] = value;
+        dictHead = LZSS_DICTPOS_MOD(dictHead, 1);
+        return true;
+    };
+
+    for (;;)
+    {
+        const i32 literal = readBit();
+        if (literal < 0)
+            return fail("flag");
+        u32 value;
+        if (literal)
+        {
+            if (!readBits(8, &value) || !writeByte(static_cast<u8>(value)))
+                return fail("literal");
+            continue;
+        }
+
+        if (!readBits(13, &value))
+            return fail("offset");
+        const u32 matchOffset = value;
+        if (matchOffset == 0)
+            break;
+        if (!readBits(4, &value))
+            return fail("length");
+        const i32 matchLength = static_cast<i32>(value) + 3;
+        for (i32 i = 0; i < matchLength; ++i)
+        {
+            if (!writeByte(g_LzssDictionary[LZSS_DICTPOS_MOD(matchOffset, i)]))
+                return fail("output");
+        }
+    }
+    if (static_cast<u32>(dstCursor - dst) != decompressedSize)
+        return fail("size");
     return dst;
 }
 

@@ -171,6 +171,16 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
         case 0:
         CASE_0:
             arg->curState = 1;
+#if defined(TH07_PSP_1000)
+            // TH06's decisive PSP-1000 fix was to retire detached texture
+            // blocks at registration boundaries. Do it before the large
+            // title archive asks libc for one contiguous 5.4 MiB block.
+            {
+                const unsigned int releasedBytes = Th07PspTrimTextureCache();
+                th07_psp_boot_notef("PSP1000 title boundary trim %uK",
+                                    releasedBytes / 1024u);
+            }
+#endif
             if (MainMenu::RegisterChain() != ZUN_SUCCESS)
             {
 #if defined(TH07_PSP)
@@ -195,6 +205,15 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
             case -1:
                 return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
             case 2:
+#if defined(TH07_PSP_1000)
+                // MainMenu has just released its atlases. Return those cached
+                // blocks now so stage/portrait archives see a coalesced heap.
+                {
+                    const unsigned int releasedBytes = Th07PspTrimTextureCache();
+                    th07_psp_boot_notef("PSP1000 game boundary trim %uK",
+                                        releasedBytes / 1024u);
+                }
+#endif
                 if (GameManager::RegisterChain() != ZUN_SUCCESS)
                 {
 #if defined(TH07_PSP)
@@ -261,9 +280,50 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                 break;
             case 6:
                 GameManager::CutChain();
+#if defined(TH07_PSP_1000)
+                // ResultScreen expands a 640x480 RGB24 JPEG immediately after
+                // gameplay has released its stage atlases.  The PSP backend
+                // keeps those detached texture blocks in a recycle cache, so
+                // return them to libc before the JPEG needs one large block.
+                {
+                    const unsigned int releasedBytes = Th07PspTrimTextureCache();
+                    th07_psp_boot_notef("PSP1000 result boundary trim %uK",
+                                        releasedBytes / 1024u);
+                }
+#endif
                 if (ResultScreen::RegisterChain(1) != ZUN_SUCCESS)
                 {
+#if defined(TH07_PSP)
+                    // RegisterChain rolls a partially initialized result
+                    // screen back.  Trim once more and retry from a clean
+                    // lifecycle; if memory is still unavailable, preserve the
+                    // running application and return to the title instead of
+                    // reporting a successful process exit to the XMB.
+                    th07_psp_boot_note("result init failed; trim and retry");
+                    {
+                        const unsigned int releasedBytes = Th07PspTrimTextureCache();
+                        th07_psp_boot_notef("result retry after trim %uK",
+                                            releasedBytes / 1024u);
+                    }
+                    if (ResultScreen::RegisterChain(1) == ZUN_SUCCESS)
+                    {
+                        break;
+                    }
+                    th07_psp_boot_note("result retry failed; return title");
+                    if (ResultScreen::RegisterChain(2) != ZUN_SUCCESS)
+                    {
+                        th07_psp_boot_note("result fallback score flush failed");
+                    }
+                    else
+                    {
+                        th07_psp_boot_note("result fallback score flush ready");
+                    }
+                    ReplayManager::SaveReplay(NULL, NULL);
+                    arg->curState = 0;
+                    goto CASE_0;
+#else
                     return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
+#endif
                 }
                 break;
             case 10:

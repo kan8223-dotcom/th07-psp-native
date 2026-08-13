@@ -41,7 +41,14 @@ constexpr unsigned int kFrameBytes = kBufferWidth * kScreenHeight * kFrameBytesP
 constexpr unsigned int kDepthOffset = kFrameBytes * 2;
 constexpr unsigned int kDepthBytes = kBufferWidth * kScreenHeight * 2;
 constexpr unsigned int kEdramBytes = kDepthOffset + kDepthBytes;
+// PSP-1000 traces across every TH07 stage peak below 64 KiB.  Keep four times
+// that measured high-water mark while avoiding a permanently resident 1 MiB
+// list on the 32 MiB model.
+#if defined(TH07_PSP_1000)
+constexpr unsigned int kListBytes = 256 * 1024;
+#else
 constexpr unsigned int kListBytes = 1024 * 1024;
+#endif
 constexpr unsigned int kListReserve = 16 * 1024;
 constexpr unsigned int kMaxTextures = 256;
 constexpr unsigned int kCachedQuadIndexCount = 2048;
@@ -755,8 +762,27 @@ class PspGuGraphics final : public ZunGraphics
 
         texture.logicalWidth = static_cast<unsigned int>(width);
         texture.logicalHeight = static_cast<unsigned int>(height);
-        texture.storageWidth = NextPowerOfTwo(std::min(texture.logicalWidth, 512u));
-        texture.storageHeight = NextPowerOfTwo(std::min(texture.logicalHeight, 512u));
+        const bool fullScreenSurface =
+            data && width == 640 && height >= 480 &&
+            ((fmt == PIXEL_RGBA && (type == PIXEL_UNSIGNED_BYTE ||
+                                    type == PIXEL_UNSIGNED_SHORT_5_6_5)) ||
+             (fmt == PIXEL_RGB && type == PIXEL_UNSIGNED_BYTE));
+#if defined(TH07_PSP_1000)
+        // Static 512px ANM atlases consume 512 KiB each in 16-bit form, while
+        // the PSP LCD is only 480x272.  A 256px ceiling saves several MiB in
+        // portrait-heavy later stages. Dynamic glyph atlases and full-screen
+        // JPEG surfaces retain their established paths.
+        const bool allowStatic512 = mAllowNextStaticTexture512;
+        mAllowNextStaticTexture512 = false;
+        const unsigned int textureLimit =
+            data && !fullScreenSurface && !allowStatic512 ? 256u : 512u;
+#else
+        const unsigned int textureLimit = 512u;
+#endif
+        texture.storageWidth =
+            NextPowerOfTwo(std::min(texture.logicalWidth, textureLimit));
+        texture.storageHeight =
+            NextPowerOfTwo(std::min(texture.logicalHeight, textureLimit));
         texture.contentWidth = std::min(texture.logicalWidth, texture.storageWidth);
         texture.contentHeight = std::min(texture.logicalHeight, texture.storageHeight);
         texture.sampleScaleX = static_cast<float>(texture.contentWidth) / texture.storageWidth;
@@ -766,10 +792,7 @@ class PspGuGraphics final : public ZunGraphics
         // down inside title.anm registration.  Use the previously proven
         // allocation formats here; dynamic text is promoted independently by
         // MarkTextTexture after boot.
-        const bool surfaceCandidate = data && fmt == PIXEL_RGBA && width == 640 &&
-                                      height >= 480 &&
-                                      (type == PIXEL_UNSIGNED_BYTE ||
-                                       type == PIXEL_UNSIGNED_SHORT_5_6_5);
+        const bool surfaceCandidate = fullScreenSurface;
         if (surfaceCandidate)
         {
             texture.contentWidth = std::min(
@@ -1180,6 +1203,11 @@ class PspGuGraphics final : public ZunGraphics
         th07_psp_boot_note(message);
     }
 
+    void AllowNextStaticTexture512()
+    {
+        mAllowNextStaticTexture512 = true;
+    }
+
     void CompactTextTexture(GfxTextureHandle handle)
     {
         if (handle.id == 0 || handle.id >= kMaxTextures)
@@ -1478,9 +1506,9 @@ class PspGuGraphics final : public ZunGraphics
             for (int column = 0; column < width; ++column)
             {
                 const int logicalX = x + column;
-            const int contentWidth = g_Supervisor.cfg.windowed ? kFitWidth : kScreenWidth;
-            const int contentLeft = g_Supervisor.cfg.windowed ? kFitLeft : 0;
-            const int sourceX = contentLeft + logicalX * contentWidth / kLogicalWidth;
+                const int contentWidth = g_Supervisor.cfg.windowed ? kFitWidth : kScreenWidth;
+                const int contentLeft = g_Supervisor.cfg.windowed ? kFitLeft : 0;
+                const int sourceX = contentLeft + logicalX * contentWidth / kLogicalWidth;
                 u16 color = 0;
                 if (sourceX >= 0 && sourceX < kScreenWidth && sourceY >= 0 &&
                     sourceY < kScreenHeight)
@@ -1497,6 +1525,144 @@ class PspGuGraphics final : public ZunGraphics
                 out[3] = 0xff;
             }
         }
+    }
+
+    bool CaptureFramebufferToTexture(GfxTextureHandle handle, int srcLeft, int srcTop,
+                                     int srcWidth, int srcHeight, int dstLeft, int dstTop,
+                                     int dstWidth, int dstHeight)
+    {
+        if (handle.id == 0 || handle.id >= kMaxTextures ||
+            !mTextures[handle.id].used || srcWidth <= 0 || srcHeight <= 0 ||
+            dstWidth <= 0 || dstHeight <= 0)
+        {
+            return false;
+        }
+
+        GuTexture &texture = mTextures[handle.id];
+        if (!texture.pixels || texture.logicalWidth == 0 || texture.logicalHeight == 0 ||
+            texture.contentWidth == 0 || texture.contentHeight == 0 || dstLeft < 0 ||
+            dstTop < 0 || dstLeft + dstWidth > static_cast<int>(texture.logicalWidth) ||
+            dstTop + dstHeight > static_cast<int>(texture.logicalHeight))
+        {
+            return false;
+        }
+
+        // Pause/retry captures used to allocate a 384x448 RGBA readback plus
+        // an SDL scaling surface and an alternate texture.  That transient
+        // peak exceeds the fragmented heap late in a PSP-1000 run.  Stage the
+        // RGB565 playfield with GE in unused rows of the existing 512x512
+        // capture texture, then shrink it in place into the 128x128 sprite.
+        // This avoids both the transient heap and CPU reads from GPU-owned
+        // EDRAM, which are not coherent under every PPSSPP backend.
+        SubmitAndRestart();
+        const unsigned int edram = reinterpret_cast<unsigned int>(sceGeEdramGetAddr());
+        const int contentWidth = g_Supervisor.cfg.windowed ? kFitWidth : kScreenWidth;
+        const int contentLeft = g_Supervisor.cfg.windowed ? kFitLeft : 0;
+        const int sourcePhysicalLeft =
+            contentLeft + srcLeft * contentWidth / kLogicalWidth;
+        const int sourcePhysicalRight =
+            contentLeft + ((srcLeft + srcWidth) * contentWidth + kLogicalWidth - 1) /
+                              kLogicalWidth;
+        const int sourcePhysicalTop =
+            kScreenHeight - ((srcTop + srcHeight) * kScreenHeight + kLogicalHeight - 1) /
+                                kLogicalHeight;
+        const int sourcePhysicalBottom =
+            kScreenHeight - srcTop * kScreenHeight / kLogicalHeight;
+        const int sourcePhysicalWidth = sourcePhysicalRight - sourcePhysicalLeft;
+        const int sourcePhysicalHeight = sourcePhysicalBottom - sourcePhysicalTop;
+        const int textureLeft = static_cast<int>(
+            static_cast<unsigned long long>(dstLeft) * texture.contentWidth /
+            texture.logicalWidth);
+        const int textureTop = static_cast<int>(
+            static_cast<unsigned long long>(dstTop) * texture.contentHeight /
+            texture.logicalHeight);
+        const int textureRight = static_cast<int>(
+            (static_cast<unsigned long long>(dstLeft + dstWidth) * texture.contentWidth +
+             texture.logicalWidth - 1u) /
+            texture.logicalWidth);
+        const int textureBottom = static_cast<int>(
+            (static_cast<unsigned long long>(dstTop + dstHeight) * texture.contentHeight +
+             texture.logicalHeight - 1u) /
+            texture.logicalHeight);
+        if (texture.psm != GU_PSM_5650 || sourcePhysicalLeft < 0 ||
+            sourcePhysicalTop < 0 || sourcePhysicalRight > kScreenWidth ||
+            sourcePhysicalBottom > kScreenHeight || sourcePhysicalWidth <= 0 ||
+            sourcePhysicalHeight <= 0 ||
+            sourcePhysicalWidth > static_cast<int>(texture.storageWidth) ||
+            sourcePhysicalHeight > static_cast<int>(texture.storageHeight) ||
+            textureBottom > static_cast<int>(texture.storageHeight))
+        {
+            return false;
+        }
+
+        // The capture atlas begins empty and every useful output texel is
+        // replaced below, so its backing can stay linear for GE staging and
+        // subsequent texture sampling.
+        texture.swizzled = false;
+        const int stagingTop = static_cast<int>(texture.storageHeight) - sourcePhysicalHeight;
+        if (stagingTop < textureBottom)
+        {
+            return false;
+        }
+        sceKernelDcacheWritebackInvalidateRange(texture.pixels, texture.bytes);
+        auto *drawBuffer = reinterpret_cast<void *>(
+            edram + (mCurrentDrawBuffer ? kFrameBytes : 0u));
+        sceGuCopyImage(GU_PSM_5650, sourcePhysicalLeft, sourcePhysicalTop,
+                       sourcePhysicalWidth, sourcePhysicalHeight, kBufferWidth, drawBuffer,
+                       0, stagingTop, texture.storageWidth, texture.pixels);
+        sceGuTexSync();
+        SubmitAndRestart();
+        sceKernelDcacheInvalidateRange(texture.pixels, texture.bytes);
+        const auto *staging = static_cast<const u16 *>(texture.pixels) +
+                              stagingTop * texture.storageWidth;
+
+        for (int textureY = textureTop; textureY < textureBottom; ++textureY)
+        {
+            const int scaledY = std::min(
+                dstHeight - 1,
+                std::max(0, static_cast<int>(
+                    static_cast<unsigned long long>(textureY) * texture.logicalHeight /
+                        texture.contentHeight -
+                    dstTop)));
+            const int logicalY =
+                srcTop + static_cast<int>(static_cast<unsigned long long>(scaledY) * srcHeight /
+                                          dstHeight);
+            const int sourceY =
+                kScreenHeight - 1 - logicalY * kScreenHeight / kLogicalHeight;
+            for (int textureX = textureLeft; textureX < textureRight; ++textureX)
+            {
+                const int scaledX = std::min(
+                    dstWidth - 1,
+                    std::max(0, static_cast<int>(
+                        static_cast<unsigned long long>(textureX) * texture.logicalWidth /
+                            texture.contentWidth -
+                        dstLeft)));
+                const int logicalX =
+                    srcLeft + static_cast<int>(static_cast<unsigned long long>(scaledX) *
+                                               srcWidth / dstWidth);
+                const int sourceX = contentLeft + logicalX * contentWidth / kLogicalWidth;
+                u16 color = 0;
+                if (sourceX >= 0 && sourceX < kScreenWidth && sourceY >= 0 &&
+                    sourceY < kScreenHeight)
+                {
+                    color = staging[(sourceY - sourcePhysicalTop) * texture.storageWidth +
+                                    sourceX - sourcePhysicalLeft];
+                }
+                const unsigned int r = color & 0x1fu;
+                const unsigned int g = (color >> 5) & 0x3fu;
+                const unsigned int b = (color >> 11) & 0x1fu;
+                WriteTexturePixel(texture, textureY * texture.storageWidth + textureX,
+                                  (r << 3) | (r >> 2), (g << 2) | (g >> 4),
+                                  (b << 3) | (b >> 2), 0xffu);
+            }
+        }
+
+        sceKernelDcacheWritebackRange(texture.pixels, texture.bytes);
+        sceGuTexFlush();
+        mAppliedTexture = ~0u;
+        th07_psp_boot_notef("pause capture direct %dx%d", textureRight - textureLeft,
+                            textureBottom - textureTop);
+        return true;
     }
 
     void DrawPrimitive(PrimitiveType, i32, i32) override
@@ -2177,6 +2343,7 @@ class PspGuGraphics final : public ZunGraphics
     bool mInitialized = false;
     bool mError = false;
     bool mTextUploadBatchActive = false;
+    bool mAllowNextStaticTexture512 = false;
     GuVertexTexColor *mDeferredSpriteVertices = nullptr;
     unsigned int mDeferredSpriteVertexCount = 0;
     unsigned int mDeferredSpriteInputVertexCount = 0;
@@ -2716,9 +2883,9 @@ class PspGuGraphics final : public ZunGraphics
         if (type == PIXEL_UNSIGNED_BYTE)
         {
             const unsigned int components = fmt == PIXEL_RGB ? 3u : 4u;
-            r = bytes[index * components + 0];
+            r = bytes[index * components + (fmt == PIXEL_BGRA ? 2u : 0u)];
             g = bytes[index * components + 1];
-            b = bytes[index * components + 2];
+            b = bytes[index * components + (fmt == PIXEL_BGRA ? 0u : 2u)];
             if (components == 4)
             {
                 a = bytes[index * components + 3];
@@ -2823,6 +2990,14 @@ void Th07PspForgetSurface(const void *pixels)
     }
 }
 
+void Th07PspAllowNextStaticTexture512()
+{
+    if (gPspGuBackend)
+    {
+        gPspGuBackend->AllowNextStaticTexture512();
+    }
+}
+
 void Th07PspMarkTextTexture(GfxTextureHandle texture)
 {
     if (gPspGuBackend)
@@ -2858,6 +3033,16 @@ void Th07PspCompactTextTexture(GfxTextureHandle texture)
 unsigned int Th07PspTrimTextureCache()
 {
     return gPspGuBackend ? gPspGuBackend->TrimTextureCache() : 0;
+}
+
+bool Th07PspCaptureFramebufferToTexture(GfxTextureHandle texture, int srcLeft, int srcTop,
+                                        int srcWidth, int srcHeight, int dstLeft, int dstTop,
+                                        int dstWidth, int dstHeight)
+{
+    return gPspGuBackend &&
+           gPspGuBackend->CaptureFramebufferToTexture(texture, srcLeft, srcTop, srcWidth,
+                                                      srcHeight, dstLeft, dstTop, dstWidth,
+                                                      dstHeight);
 }
 
 #if defined(TH07_PSP_PERF_DIAG)

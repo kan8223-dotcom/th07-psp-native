@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <new>
 #include <time.h>
 
 #include "AnmIdx.hpp"
@@ -55,9 +56,14 @@ i32 ResultScreen::LinkScore(ScoreListNode *prevNode, Hscr *hscr)
         scoresAmount++;
     }
     nextNode = prevNode->next;
-    prevNode->next = (ScoreListNode *)malloc(sizeof(ScoreListNode));
-    prevNode->next->prev = prevNode;
-    prevNode = prevNode->next;
+    ScoreListNode *newNode = (ScoreListNode *)malloc(sizeof(ScoreListNode));
+    if (!newNode)
+    {
+        return -1;
+    }
+    prevNode->next = newNode;
+    newNode->prev = prevNode;
+    prevNode = newNode;
     prevNode->data = hscr;
     prevNode->next = nextNode;
     return scoresAmount;
@@ -424,7 +430,7 @@ void ResultScreen::ReleaseScoreDat(ScoreDat *scoreDat)
     delete scoreDat;
 }
 
-void ResultScreen::WriteScore()
+ZunResult ResultScreen::WriteScore()
 {
     ScoreDat *sd;
     u8 *bytes;
@@ -448,7 +454,22 @@ void ResultScreen::WriteScore()
 
     sizeOfFile = 0;
 
-    fileBuffer = (u8 *)malloc(0xa0000);
+    // The largest possible uncompressed score file is below 36 KiB.  The
+    // inherited 640 KiB staging allocation was especially hostile to a
+    // fragmented 32 MiB heap during emergency/title-boundary saves.
+    constexpr size_t kScoreWriteBufferSize = 64u * 1024u;
+    constexpr size_t kMaxUncompressedScoreSize =
+        sizeof(ScoreDatRaw) + sizeof(Th7k) + 6u * 6u * 10u * sizeof(Hscr) +
+        6u * sizeof(Clrd) + 141u * sizeof(Catk) + 6u * 6u * 4u * sizeof(Pscr) +
+        sizeof(Lsnm) + sizeof(Plst) + sizeof(Vrsm);
+    static_assert(kMaxUncompressedScoreSize <= kScoreWriteBufferSize,
+                  "score staging buffer is too small");
+
+    fileBuffer = (u8 *)malloc(kScoreWriteBufferSize);
+    if (!fileBuffer)
+    {
+        return ZUN_ERROR;
+    }
 
     ScoreDatRaw rawHead;
     memset(&rawHead, 0, sizeof(rawHead));
@@ -572,6 +593,14 @@ void ResultScreen::WriteScore()
     compressedBuffer = Lzss::Compress(fileBuffer + sizeof(ScoreDatRaw), scoreDat->raw.dstLen,
                                       &scoreDat->raw.srcLen);
 
+    if (!compressedBuffer ||
+        (size_t)scoreDat->raw.srcLen + sizeof(ScoreDatRaw) > kScoreWriteBufferSize)
+    {
+        free(compressedBuffer);
+        free(fileBuffer);
+        return ZUN_ERROR;
+    }
+
     memcpy(fileBuffer + sizeof(ScoreDatRaw), compressedBuffer, scoreDat->raw.srcLen);
     free(compressedBuffer);
     sizeOfFile = scoreDat->raw.srcLen + sizeof(ScoreDatRaw);
@@ -605,8 +634,9 @@ void ResultScreen::WriteScore()
         bytes++;
         remainingSize--;
     }
-    FileSystem::WriteDataToFile("score.dat", fileBuffer, sizeOfFile);
+    const i32 writeResult = FileSystem::WriteDataToFile("score.dat", fileBuffer, sizeOfFile);
     free(fileBuffer);
+    return writeResult == 0 ? ZUN_SUCCESS : ZUN_ERROR;
 }
 
 i32 ResultScreen::MoveCursor(ResultScreen *screen, i32 max)
@@ -2384,7 +2414,10 @@ ZunResult ResultScreen::AddedCallback(ResultScreen *arg)
                 arg->defaultScores[i][j][k].stage = 1;
                 arg->defaultScores[i][j][k].base.isPlayerScore = 0;
                 arg->defaultScores[i][j][k].numRetries = 0;
-                arg->LinkScoreEx(arg->defaultScores[i][j] + k, i, j);
+                if (arg->LinkScoreEx(arg->defaultScores[i][j] + k, i, j) < 0)
+                {
+                    return ZUN_ERROR;
+                }
                 strcpy(arg->defaultScores[i][j][k].name, "--------");
                 strcpy(arg->defaultScores[i][j][k].date, "--/--");
             }
@@ -2478,8 +2511,7 @@ ZunResult ResultScreen::AddedCallback(ResultScreen *arg)
     arg->leftArrowVm.activeSpriteIdx = -1;
     if (arg->resultScreenState == 19)
     {
-        DeletedCallback(arg);
-        return ZUN_ERROR;
+        return ZUN_SUCCESS;
     }
 
     return ZUN_SUCCESS;
@@ -2489,10 +2521,11 @@ ZunResult ResultScreen::DeletedCallback(ResultScreen *arg)
 {
     i32 i;
     i32 j;
+    ZunResult result = ZUN_SUCCESS;
 
     if (arg->scoreDat)
     {
-        arg->WriteScore();
+        result = arg->WriteScore();
         ReleaseScoreDat(arg->scoreDat);
     }
     arg->scoreDat = NULL;
@@ -2514,12 +2547,16 @@ ZunResult ResultScreen::DeletedCallback(ResultScreen *arg)
     delete arg;
     arg = NULL;
 
-    return ZUN_SUCCESS;
+    return result;
 }
 
 ZunResult ResultScreen::RegisterChain(u32 type)
 {
-    ResultScreen *resultScreen = new ResultScreen;
+    ResultScreen *resultScreen = new (std::nothrow) ResultScreen;
+    if (!resultScreen)
+    {
+        return ZUN_ERROR;
+    }
     Supervisor::DebugPrint("Stg.PlayTimeAll = %d\r\n", g_GameManager.playTimeAll);
     if (type == 1)
     {
@@ -2535,19 +2572,35 @@ ZunResult ResultScreen::RegisterChain(u32 type)
     else if (type == 2)
     {
         resultScreen->resultScreenState = 19;
-        AddedCallback(resultScreen);
-        return ZUN_SUCCESS;
+        const ZunResult addedResult = AddedCallback(resultScreen);
+        const ZunResult deletedResult = DeletedCallback(resultScreen);
+        return addedResult != ZUN_SUCCESS ? addedResult : deletedResult;
     }
     resultScreen->calcChain = g_Chain.CreateElem((ChainCallback)OnUpdate);
+    if (!resultScreen->calcChain)
+    {
+        delete resultScreen;
+        return ZUN_ERROR;
+    }
     resultScreen->calcChain->addedCallback = (ChainLifecycleCallback)AddedCallback;
     resultScreen->calcChain->deletedCallback = (ChainLifecycleCallback)DeletedCallback;
     resultScreen->calcChain->arg = resultScreen;
     if (g_Chain.AddToCalcChain(resultScreen->calcChain, 14))
     {
+        // AddToCalcChain links the element before AddedCallback runs.  If
+        // result assets fail to initialize, remove that linked element so its
+        // DeletedCallback releases the partial score lists, ANMs and surface.
+        // This also makes a clean retry or title fallback safe.
+        g_Chain.Cut(resultScreen->calcChain);
         return ZUN_ERROR;
     }
 
     resultScreen->drawChain = g_Chain.CreateElem((ChainCallback)OnDraw);
+    if (!resultScreen->drawChain)
+    {
+        g_Chain.Cut(resultScreen->calcChain);
+        return ZUN_ERROR;
+    }
     resultScreen->drawChain->arg = resultScreen;
     g_Chain.AddToDrawChain(resultScreen->drawChain, 13);
 

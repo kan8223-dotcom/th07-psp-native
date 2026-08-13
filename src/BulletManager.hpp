@@ -242,6 +242,13 @@ struct Bullet
 
 struct BulletManager
 {
+    static constexpr i32 kBulletCapacity =
+#if defined(TH07_PSP_1000)
+        640;
+#else
+        1024;
+#endif
+
     BulletManager();
 
     static ZunResult RegisterChain(const char *etamaAnmPath);
@@ -265,7 +272,29 @@ struct BulletManager
     void StopBulletMovement();
 
     BulletTypeSprites bulletTypeTemplates[16];
-    Bullet bullets[1025];
+#if defined(TH07_PSP_1000)
+    // Five AnmVm instances make every slot roughly 3.4 KiB. Keep the TH06
+    // proven 640-bullet ceiling and make the pool stage-local on PSP-1000.
+    // Allocate it in small chunks because multi-megabyte contiguous heap
+    // blocks are no longer available after several ANM archives have loaded.
+    static constexpr i32 kBulletChunkCapacity = 64;
+    static constexpr i32 kBulletChunkCount =
+        (kBulletCapacity + kBulletChunkCapacity - 1) / kBulletChunkCapacity;
+    Bullet *bulletChunks[kBulletChunkCount];
+    bool PspEnsureBulletPool();
+    void PspReleaseBulletPool();
+#else
+    Bullet bullets[kBulletCapacity + 1];
+#endif
+
+    Bullet *BulletAt(i32 index)
+    {
+#if defined(TH07_PSP_1000)
+        return bulletChunks[index / kBulletChunkCapacity] + index % kBulletChunkCapacity;
+#else
+        return &bullets[index];
+#endif
+    }
     Laser lasers[64];
     i32 bulletCount;
     i32 screenClearTime;
@@ -273,14 +302,18 @@ struct BulletManager
     i32 updateCount;
     const char *etamaAnmPath;
     Bullet *bulletsPtrs[6];
+#if defined(TH07_PSP_1000)
+    i32 pspNextBulletIndex;
+#else
     Bullet *bulletsStart;
+#endif
     ItemType itemType;
 #if defined(TH07_PSP)
     // Bullet embeds five AnmVm instances. Reading state from every slot walks
     // roughly 3.5 MiB per frame even when most slots are empty, evicting the
     // active bullets from Allegrex's small cache. Keep the original array and
     // update order, but consult this compact occupancy map first.
-    u32 pspActiveBulletBits[32];
+    u32 pspActiveBulletBits[(kBulletCapacity + 31) / 32];
 
     bool PspIsBulletSlotTracked(i32 index) const
     {

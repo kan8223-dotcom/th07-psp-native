@@ -21,6 +21,9 @@
 #if defined(TH07_PSP)
 #include "fileio.hpp"
 #endif
+#if defined(TH07_PSP_1000)
+#include "psp1000_arena.hpp"
+#endif
 
 i32 g_RankArray[6][3] = {
     {16, 12, 20}, {16, 10, 32}, {16, 10, 32}, {16, 10, 32}, {16, 15, 16}, {16, 15, 16},
@@ -345,10 +348,20 @@ u32 GameManager::OnUpdate(GameManager *arg)
     // Exercise the real between-stage CutChain/RegisterChain path without a
     // full boss clear.  This is compiled only into an explicit diagnostic
     // build and lets PPSSPP catch stage-specific resource lifetime failures.
+    // Stage 6 follows the real normal-game route into ResultScreen instead of
+    // artificially registering Extra as the next stage.
     if (arg->framesThisStage == 180)
     {
-        th07_psp_boot_note("direct transition test request next stage");
-        g_Supervisor.curState = 3;
+        if (g_GameManager.currentStage == 6)
+        {
+            th07_psp_boot_note("direct transition test request result");
+            g_Supervisor.curState = 6;
+        }
+        else
+        {
+            th07_psp_boot_note("direct transition test request next stage");
+            g_Supervisor.curState = 3;
+        }
         return CHAIN_CALLBACK_RESULT_BREAK;
     }
 #endif
@@ -832,6 +845,27 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     th07_psp_boot_note("game added gui ready");
 #endif
 
+#if defined(TH07_PSP_1000)
+    // ANM archives need their full decompressed source block only while they
+    // are parsed. Defer the large gameplay pools until all stage/GUI ANMs have
+    // compacted those sources; otherwise face_0x archives and the enemy pool
+    // compete for the same contiguous 32 MiB heap window.
+    th07_psp_boot_note("game added PSP1000 pools begin");
+    if (!th07_psp_1000_begin_pools() || !g_BulletManager.PspEnsureBulletPool() ||
+        !g_EnemyManager.PspEnsureEnemyPool() ||
+        !g_ItemManager.PspEnsureItemPool() ||
+        !g_EffectManager.PspEnsureEffectPool())
+    {
+        th07_psp_boot_note("game added PSP1000 pools failed");
+        return ZUN_ERROR;
+    }
+    th07_psp_boot_note("game added PSP1000 pools ready");
+    th07_psp_boot_notef("PSP1000 arena pools use %uK/%uK",
+                        static_cast<unsigned int>(th07_psp_1000_pool_bytes_used() / 1024u),
+                        static_cast<unsigned int>(th07_psp_1000_arena_capacity() / 1024u));
+    th07_psp_heap_note("PSP1000 pools");
+#endif
+
     if (!g_GameManager.replay)
     {
 #if defined(TH07_PSP)
@@ -951,6 +985,9 @@ ZunResult GameManager::DeletedCallback(GameManager *arg)
     g_AsciiManager.InitializeVms();
     g_GameManager.slowModeSlowActive = 0;
     g_GameManager.framesThisStage = 0;
+#if defined(TH07_PSP_1000)
+    th07_psp_1000_end_pools();
+#endif
 #if defined(TH07_PSP_PERF_DIAG)
     th07_psp_heap_note("game delete ready");
 #endif

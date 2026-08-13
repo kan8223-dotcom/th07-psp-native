@@ -83,6 +83,7 @@ typedef struct MeMixInput
     uint32_t sourceFraction;
     uint32_t stepFixed;
     uint32_t gainQ16;
+    uint32_t sampleFormat;
 } MeMixInput;
 
 typedef struct MeSharedMailbox
@@ -189,7 +190,15 @@ static int clamp_s16(int sample)
     return sample;
 }
 
-static int apply_gain_q16(short sample, uint32_t gainQ16)
+static int decode_mulaw8(unsigned char encoded)
+{
+    const unsigned int value = (unsigned int)(encoded ^ 0xffu);
+    int sample = (int)((((value & 0x0fu) << 3) + 0x84u)
+                       << ((value >> 4) & 7u)) - 0x84;
+    return (value & 0x80u) ? -sample : sample;
+}
+
+static int apply_gain_q16(int sample, uint32_t gainQ16)
 {
     if (gainQ16 == 65536u)
         return sample;
@@ -214,7 +223,9 @@ static void mix_on_sc(const Th07PspMixJob *job, short *output)
     {
         const Th07PspMixInput *input = &job->inputs[inputIndex];
         if (!input->samples || input->destinationFrame >= frames || input->frames == 0 ||
-            input->stepFixed == 0 || (input->channels != 1 && input->channels != 2))
+            input->stepFixed == 0 || (input->channels != 1 && input->channels != 2) ||
+            input->sampleFormat > TH07_PSP_MIX_MULAW8 ||
+            (input->sampleFormat == TH07_PSP_MIX_MULAW8 && input->channels != 1))
             continue;
         int *destination = gScWide + input->destinationFrame * 2;
         uint64_t sourceFixed = ((uint64_t)input->sourceFrame << 16) |
@@ -227,13 +238,17 @@ static void mix_on_sc(const Th07PspMixJob *job, short *output)
                 break;
             if (input->channels == 1)
             {
-                const int value = apply_gain_q16(input->samples[sourceFrame], input->gainQ16);
+                const int sourceValue = input->sampleFormat == TH07_PSP_MIX_MULAW8
+                                            ? decode_mulaw8(
+                                                  ((const unsigned char *)input->samples)[sourceFrame])
+                                            : ((const short *)input->samples)[sourceFrame];
+                const int value = apply_gain_q16(sourceValue, input->gainQ16);
                 destination[frame * 2] += value;
                 destination[frame * 2 + 1] += value;
             }
             else
             {
-                const short *source = input->samples + sourceFrame * 2;
+                const short *source = (const short *)input->samples + sourceFrame * 2;
                 destination[frame * 2] += apply_gain_q16(source[0], input->gainQ16);
                 destination[frame * 2 + 1] += apply_gain_q16(source[1], input->gainQ16);
             }
@@ -303,7 +318,9 @@ static void process_audio_on_me(volatile MeSharedMailbox *box, volatile int *wid
         {
             const MeMixInput *input = (const MeMixInput *)&box->audioInputs[inputIndex];
             if (!input->sourcePhys || input->destinationFrame >= frames || input->frames == 0 ||
-                input->stepFixed == 0 || (input->channels != 1 && input->channels != 2))
+                input->stepFixed == 0 || (input->channels != 1 && input->channels != 2) ||
+                input->sampleFormat > TH07_PSP_MIX_MULAW8 ||
+                (input->sampleFormat == TH07_PSP_MIX_MULAW8 && input->channels != 1))
                 continue;
             const uint32_t inputStart = input->destinationFrame;
             const uint32_t overlapStart = inputStart > chunkStart ? inputStart : chunkStart;
@@ -332,12 +349,16 @@ static void process_audio_on_me(volatile MeSharedMailbox *box, volatile int *wid
             }
             if (finalSourceFrame >= input->frames)
                 finalSourceFrame = input->frames - 1u;
-            const short *sourceBase = (const short *)(0x80000000u | input->sourcePhys);
-            const short *firstSource = sourceBase + firstSourceFrame * input->channels;
-            const short *lastSource = sourceBase + finalSourceFrame * input->channels;
+            const unsigned char *sourceBytes =
+                (const unsigned char *)(0x80000000u | input->sourcePhys);
+            const uint32_t sourceFrameBytes = input->sampleFormat == TH07_PSP_MIX_MULAW8
+                                                  ? 1u
+                                                  : input->channels * sizeof(short);
+            const unsigned char *firstSource = sourceBytes + firstSourceFrame * sourceFrameBytes;
+            const unsigned char *lastSource = sourceBytes + finalSourceFrame * sourceFrameBytes;
             const uint32_t sourceStart = (uint32_t)firstSource & ~63u;
             const uint32_t sourceEnd =
-                ((uint32_t)(lastSource + input->channels) + 63u) & ~63u;
+                ((uint32_t)(lastSource + sourceFrameBytes) + 63u) & ~63u;
             meLibDcacheInvalidateRange(sourceStart, sourceEnd - sourceStart);
             volatile int *destination = wide + (overlapStart - chunkStart) * 2;
             const uint32_t outputFrames = overlapEnd - overlapStart;
@@ -347,13 +368,16 @@ static void process_audio_on_me(volatile MeSharedMailbox *box, volatile int *wid
                     break;
                 if (input->channels == 1)
                 {
-                    const int value = apply_gain_q16(sourceBase[sourceFrame], input->gainQ16);
+                    const int sourceValue = input->sampleFormat == TH07_PSP_MIX_MULAW8
+                                                ? decode_mulaw8(sourceBytes[sourceFrame])
+                                                : ((const short *)sourceBytes)[sourceFrame];
+                    const int value = apply_gain_q16(sourceValue, input->gainQ16);
                     destination[frame * 2] += value;
                     destination[frame * 2 + 1] += value;
                 }
                 else
                 {
-                    const short *source = sourceBase + sourceFrame * 2;
+                    const short *source = (const short *)sourceBytes + sourceFrame * 2;
                     destination[frame * 2] += apply_gain_q16(source[0], input->gainQ16);
                     destination[frame * 2 + 1] += apply_gain_q16(source[1], input->gainQ16);
                 }
@@ -563,7 +587,9 @@ static int dispatch_audio(const Th07PspMixJob *job, short *output)
         const Th07PspMixInput *input = &job->inputs[index];
         if (input->needsWriteback)
         {
-            const uint32_t sampleBytes = input->channels * sizeof(short);
+            const uint32_t sampleBytes = input->sampleFormat == TH07_PSP_MIX_MULAW8
+                                             ? 1u
+                                             : input->channels * sizeof(short);
             sc_writeback_stream(input->samples, sampleBytes, input->frames, sampleBytes);
         }
         box->audioInputs[index].sourcePhys = (uint32_t)input->samples & 0x1fffffffu;
@@ -574,6 +600,7 @@ static int dispatch_audio(const Th07PspMixJob *job, short *output)
         box->audioInputs[index].sourceFraction = input->sourceFraction;
         box->audioInputs[index].stepFixed = input->stepFixed;
         box->audioInputs[index].gainQ16 = input->gainQ16;
+        box->audioInputs[index].sampleFormat = input->sampleFormat;
     }
     box->audioFrames = job->frames;
     box->audioInputCount = inputCount;
@@ -715,7 +742,7 @@ int th07_psp_me_audio_mix(const Th07PspMixJob *job, short *output)
 static int selftest_audio(void)
 {
     static short testStereo[TH07_PSP_ME_MAX_MIX_FRAMES * 2] __attribute__((aligned(64)));
-    static short testMono[TH07_PSP_ME_MAX_MIX_FRAMES] __attribute__((aligned(64)));
+    static unsigned char testMono[TH07_PSP_ME_MAX_MIX_FRAMES] __attribute__((aligned(64)));
     short expected[TH07_PSP_ME_MAX_MIX_FRAMES * 2] __attribute__((aligned(64)));
     short actual[TH07_PSP_ME_MAX_MIX_FRAMES * 2] __attribute__((aligned(64)));
     Th07PspMixJob test;
@@ -724,7 +751,7 @@ static int selftest_audio(void)
     {
         testStereo[frame * 2] = (short)((int)(frame % 127u) * 97 - 6000);
         testStereo[frame * 2 + 1] = (short)(5000 - (int)(frame % 113u) * 83);
-        testMono[frame] = (short)((int)(frame % 61u) * 71 - 2000);
+        testMono[frame] = (unsigned char)(frame * 37u + 11u);
     }
     memset(&test, 0, sizeof(test));
     test.frames = TH07_PSP_ME_MAX_MIX_FRAMES;
@@ -745,6 +772,7 @@ static int selftest_audio(void)
     test.inputs[1].stepFixed = 32768u;
     test.inputs[1].gainQ16 = 49152u;
     test.inputs[1].needsWriteback = 1;
+    test.inputs[1].sampleFormat = TH07_PSP_MIX_MULAW8;
     mix_on_sc(&test, expected);
     if (!dispatch_audio(&test, actual))
         return 0;

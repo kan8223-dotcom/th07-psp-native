@@ -56,9 +56,17 @@ void GameWindow::Present()
     char snapshotPath[252];
     i32 i;
 
+#if defined(TH07_PSP_1000)
+    // The low-memory pause capture reads the frame which has just been drawn.
+    // Doing this before the swap avoids a second readback buffer and also
+    // avoids depending on display-buffer latch timing in PPSSPP or real PSP.
+    g_AnmManager->TakeScreenshotIfRequested();
+    g_Supervisor.gfxDevice->SwapBuffers();
+#else
     g_Supervisor.gfxDevice->SwapBuffers();
 
     g_AnmManager->TakeScreenshotIfRequested();
+#endif
     if (WAS_PRESSED_RAW(TH_BUTTON_HOME))
     {
         std::filesystem::create_directory("snapshot");

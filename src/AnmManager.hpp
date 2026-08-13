@@ -140,8 +140,8 @@ struct AnmManager
     void DrawEndingRect(i32 surfaceIdx, i32 rectX, i32 rectY, i32 rectLeft, i32 rectTop, i32 width,
                         i32 height);
     ZunResult DrawFacingCamera(AnmVm *vm);
-    ZunResult DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipTop = -1000000.0f);
-    ZunResult DrawNoRotation(AnmVm *vm, f32 pspClipTop = -1000000.0f);
+    ZunResult DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipBottom = 1000000.0f);
+    ZunResult DrawNoRotation(AnmVm *vm, f32 pspClipBottom = 1000000.0f);
     ZunResult DrawProjected(AnmVm *vm);
     void DrawStringFormat(AnmVm *vm, u32 textColor, u32 outlineType, const char *text, ...);
     void DrawStringFormat2(AnmVm *vm, u32 textColor, u32 outlineType, const char *text, ...);

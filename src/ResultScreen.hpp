@@ -205,7 +205,7 @@ struct ResultScreen
     void FreeScore(i32 difficulty, i32 character);
     static void FreeAllScores(ScoreListNode *scores);
     static i32 ParseLsnm(ScoreDat *scoreDat, Lsnm *outLsnm);
-    void WriteScore();
+    ZunResult WriteScore();
 
     ScoreDat *scoreDat;
     i32 frameTimer;

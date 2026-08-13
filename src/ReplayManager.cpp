@@ -27,6 +27,12 @@ namespace
 // Stage-end timing stores one byte per 30 frames (and one overlapping byte).
 // 4096 bytes covers the full 115189-input stage capacity.
 constexpr size_t kPspReplayEndBytes = 4096u;
+#if defined(TH07_PSP_1000)
+// One record is written per frame. 192 KiB still covers more than thirteen
+// minutes at 60 fps and avoids reserving the PC format's 450 KiB maximum for
+// every live stage on a 32 MiB PSP.
+constexpr size_t kPspReplayInputBytes = 192u * 1024u;
+#endif
 }
 #endif
 
@@ -76,7 +82,20 @@ u32 ReplayManager::OnUpdate(ReplayManager *arg)
     }
     g_CurFrameGameInput = curInput =
         g_CurFrameRawInput & static_cast<u16>(~TH_BUTTON_FPS_TOGGLE);
-    arg->replayInputs++;
+    ReplayDataInput *nextInput = arg->replayInputs + 1;
+#if defined(TH07_PSP_1000)
+    // Keep one final record available for StopRecording()'s terminator even
+    // if a pathological stage runs beyond the reduced PSP-1000 capacity.
+    const u8 *recordingLimit =
+        reinterpret_cast<const u8 *>(arg->data->stageReplayData[stage]) +
+        arg->stageReplayDataSize[stage];
+    if (reinterpret_cast<const u8 *>(nextInput + 2) > recordingLimit)
+    {
+        arg->frameId++;
+        return CHAIN_CALLBACK_RESULT_CONTINUE;
+    }
+#endif
+    arg->replayInputs = nextInput;
     arg->replayInputsByStage[stage] = arg->replayInputs + 1;
     arg->replayInputs->frameNum = curInput;
     arg->replayInputs->inputKey = arg->replayEventFlags;
@@ -216,7 +235,11 @@ ZunResult ReplayManager::AddedCallback(ReplayManager *arg)
 #if defined(TH07_PSP)
     // Preserve the original input capacity.  The separate stage-end timing
     // stream is tiny and does not need another full StageReplayData object.
+#if defined(TH07_PSP_1000)
+    const size_t replayBytes = kPspReplayInputBytes;
+#else
     const size_t replayBytes = sizeof(StageReplayData);
+#endif
     const size_t endBytes = kPspReplayEndBytes;
 #else
     const size_t replayBytes = sizeof(StageReplayData);

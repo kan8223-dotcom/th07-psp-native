@@ -22,6 +22,11 @@
 #include "fileio.hpp"
 #include "graphics/PspGuGraphics.hpp"
 #endif
+#if defined(TH07_PSP_1000)
+#include "psp1000_arena.hpp"
+#include "psp1000_title_cache.hpp"
+#include "pbg4/Pbg4Archive.hpp"
+#endif
 #include "utils.hpp"
 
 AnmManager *g_AnmManager;
@@ -280,16 +285,26 @@ ZunResult AnmManager::LoadTextureEmbedded(u32 textureIdx, ZunImageInfoEmbedded *
     // wastes up to 1 MiB per 512x512 atlas and fragments title -> demo loads.
     const bool keepCpuCopy = textureIdx == ANM_FILE_FRONT ||
                              textureIdx == ANM_FILE_FRONT + 1;
-    if (!keepCpuCopy && (imageInfo->format == 3 || imageInfo->format == 5))
+    if (!keepCpuCopy &&
+        (imageInfo->format == 1 || imageInfo->format == 3 || imageInfo->format == 5))
     {
         this->textures[textureIdx] = g_Supervisor.gfxDevice->CreateTexture();
         g_Supervisor.gfxDevice->BindTexture(this->textures[textureIdx]);
-        g_Supervisor.gfxDevice->SetTextureImage(
-            imageInfo->width, imageInfo->height,
-            imageInfo->format == 3 ? PIXEL_RGB : PIXEL_RGBA,
-            imageInfo->format == 3 ? PIXEL_UNSIGNED_SHORT_5_6_5
-                                   : PIXEL_UNSIGNED_SHORT_4_4_4_4,
-            imageInfo->data);
+        const PixelFormat pixelFormat = imageInfo->format == 1   ? PIXEL_BGRA
+                                        : imageInfo->format == 3 ? PIXEL_RGB
+                                                                 : PIXEL_RGBA;
+        const PixelDataType pixelType =
+            imageInfo->format == 1   ? PIXEL_UNSIGNED_BYTE
+            : imageInfo->format == 3 ? PIXEL_UNSIGNED_SHORT_5_6_5
+                                     : PIXEL_UNSIGNED_SHORT_4_4_4_4;
+#if defined(TH07_PSP_1000)
+        if (imageInfo->unused_c == TH07_PSP_1000_TITLE_HIRES_IMAGE_MARKER)
+        {
+            Th07PspAllowNextStaticTexture512();
+        }
+#endif
+        g_Supervisor.gfxDevice->SetTextureImage(imageInfo->width, imageInfo->height, pixelFormat,
+                                                pixelType, imageInfo->data);
         this->imageDataArray[textureIdx] = nullptr;
         textureWidths[textureIdx] = imageInfo->width;
         textureHeights[textureIdx] = imageInfo->height;
@@ -462,7 +477,15 @@ ZunResult AnmManager::CreateEmptyTexture(i32 textureIdx, u32 width, u32 height,
     ReleaseTexture(textureIdx);
     this->textures[textureIdx] = g_Supervisor.gfxDevice->CreateTexture();
 
-    void *emptyData = calloc(width * height, 4);
+    void *emptyData = nullptr;
+#if defined(TH07_PSP_1000)
+    // capture.anm is written and sampled only by the PSP renderer.  Its old
+    // unused 512x512 RGBA CPU mirror cost 1 MiB for the entire game.
+    if (textureIdx != ANM_FILE_CAPTURE)
+#endif
+    {
+        emptyData = calloc(width * height, 4);
+    }
     g_Supervisor.gfxDevice->BindTexture(this->textures[textureIdx]);
 #if defined(TH07_PSP)
     // Keep an empty ANM atlas in its declared format during registration.
@@ -499,7 +522,24 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     u32 ownsMemory;
     AnmRawEntry *entry;
 
-    entry = (AnmRawEntry *)FileSystem::OpenFile(path, 0);
+    entry = nullptr;
+#if defined(TH07_PSP_1000)
+    const bool isTitleArchive = path && std::strcmp(path, "data/title01.anm") == 0;
+    bool loadedTitleCache = false;
+    if (isTitleArchive)
+    {
+        std::size_t cacheBytes = 0;
+        entry = reinterpret_cast<AnmRawEntry *>(th07_psp_1000_load_title_cache(
+            g_Pbg4Archive.GetEntrySize("title01.anm"), &cacheBytes));
+        if (entry)
+        {
+            g_LastFileSize = static_cast<u32>(cacheBytes);
+            loadedTitleCache = true;
+        }
+    }
+#endif
+    if (!entry)
+        entry = (AnmRawEntry *)FileSystem::OpenFile(path, 0);
     ownsMemory = 1;
     i32 startIdx = anmIdx;
     if (!entry)
@@ -523,6 +563,10 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     {
         AnmRawEntry *sourceBase = entry;
         const u32 sourceSize = g_LastFileSize;
+#if defined(TH07_PSP_1000)
+        if (isTitleArchive && !loadedTitleCache)
+            th07_psp_1000_build_title_cache(sourceBase, sourceSize);
+#endif
         u32 sourceOffset = 0;
         u32 compactSize = 0;
         u32 entryCount = 0;
@@ -599,7 +643,7 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
                     {
                         free(compactBase);
                     }
-                    free(sourceBase);
+                    FileSystem::ReleaseFile(sourceBase);
                     return res;
                 }
                 ++loadedCount;
@@ -612,7 +656,11 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
                 }
             }
             this->anmFiles[anmIdx].childCount = loadedCount;
-            free(sourceBase);
+            FileSystem::ReleaseFile(sourceBase);
+#if defined(TH07_PSP_1000)
+            if (isTitleArchive)
+                th07_psp_1000_trim_to_stage();
+#endif
 #if defined(TH07_PSP_PERF_DIAG)
             th07_psp_boot_notef("ANM OK %s SRC%uK META%uK N%u", path ? path : "?",
                                 sourceSize / 1024u, compactSize / 1024u, entryCount);
@@ -704,14 +752,36 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
     }
     else
     {
-        if (LoadTextureEmbedded(data->textureIdx,
-                                (ZunImageInfoEmbedded *)((u8 *)data + data->textureOffset)) !=
-            ZUN_SUCCESS)
+        auto *embeddedImage =
+            reinterpret_cast<ZunImageInfoEmbedded *>((u8 *)data + data->textureOffset);
+#if defined(TH07_PSP_1000)
+        // The first run still uploads the original ANM while it writes the
+        // compact cache for later boots.  Keep its title/menu lettering atlas
+        // at the same native resolution on that run as well.
+        const char *embeddedName = reinterpret_cast<const char *>((u8 *)data + data->nameOffset);
+        if (embeddedImage->unused_c != TH07_PSP_1000_TITLE_HIRES_IMAGE_MARKER &&
+            std::strcmp(embeddedName, "data/title/title02.png") == 0)
+        {
+            Th07PspAllowNextStaticTexture512();
+        }
+#endif
+        if (LoadTextureEmbedded(data->textureIdx, embeddedImage) != ZUN_SUCCESS)
         {
             g_GameErrorContext.Fatal(
                 "テクスチャが読み込めません。データが失われてるか壊れています\n");
             return ZUN_ERROR;
         }
+#if defined(TH07_PSP_1000)
+        // Runtime title cache pixels are already reduced to the exact 256px
+        // representation the GU backend would create.  Keep the original ANM
+        // logical dimensions for sprite geometry and UV normalization.
+        if (embeddedImage->unused_c == TH07_PSP_1000_TITLE_IMAGE_MARKER ||
+            embeddedImage->unused_c == TH07_PSP_1000_TITLE_HIRES_IMAGE_MARKER)
+        {
+            this->textureWidths[data->textureIdx] = data->width;
+            this->textureHeights[data->textureIdx] = data->height;
+        }
+#endif
     }
     this->textureNames[textureIdx] = (char *)((u8 *)data + data->nameOffset);
 
@@ -804,7 +874,7 @@ void AnmManager::ReleaseAnm(i32 anmIdx)
         ReleaseTexture(rawEntry->textureIdx);
         if (rawEntry->ownsMemory)
         {
-            free(rawEntry);
+            FileSystem::ReleaseFile(rawEntry);
         }
         this->anmFiles[anmIdx].raw = NULL;
         this->currentBlendMode = 255;
@@ -1003,7 +1073,7 @@ void AnmManager::SyncRenderState(AnmVm *vm)
     this->renderStateChangesThisFrame++;
 }
 
-ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipTop)
+ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipBottom)
 {
     ZunColor color;
     f32 triangleX1, triangleX2, triangleY1, triangleY2;
@@ -1046,27 +1116,27 @@ ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipTop)
         vm->sprite->uvEnd.y + vm->uvScrollPos.y;
 
 #if defined(TH07_PSP)
-    // Dialogue portraits can extend a fraction above the logical screen.  On
-    // the 480x272 output the clipped, linearly filtered edge then becomes a
-    // one-pixel-wide fragment across the physical top row.  Callers opt into
-    // this small geometry/UV clip; ordinary sprites retain original behavior.
+    // The PSP projection maps the logical bottom to the physical top.  A
+    // dialogue portrait extending below y=480 can therefore rasterize its
+    // bottom edge into the display's first row.  Callers opt into this small
+    // geometry/UV clip; ordinary sprites retain original behavior.
     const f32 top = g_QuadVertices[0].pos.y;
     const f32 bottom = g_QuadVertices[2].pos.y;
-    if (pspClipTop > -999999.0f && top < pspClipTop && bottom > top)
+    if (pspClipBottom < 999999.0f && bottom > pspClipBottom && bottom > top)
     {
-        if (bottom <= pspClipTop)
+        if (top >= pspClipBottom)
         {
             return ZUN_SUCCESS;
         }
-        const f32 ratio = (pspClipTop - top) / (bottom - top);
+        const f32 ratio = (pspClipBottom - top) / (bottom - top);
         const f32 clippedV = g_QuadVertices[0].textureUV.y +
                              (g_QuadVertices[2].textureUV.y -
                               g_QuadVertices[0].textureUV.y) * ratio;
-        g_QuadVertices[0].pos.y = g_QuadVertices[1].pos.y = pspClipTop;
-        g_QuadVertices[0].textureUV.y = g_QuadVertices[1].textureUV.y = clippedV;
+        g_QuadVertices[2].pos.y = g_QuadVertices[3].pos.y = pspClipBottom;
+        g_QuadVertices[2].textureUV.y = g_QuadVertices[3].textureUV.y = clippedV;
     }
 #else
-    (void)pspClipTop;
+    (void)pspClipBottom;
 #endif
 
     triangleX1 = std::max(g_QuadVertices[0].pos.x, g_QuadVertices[1].pos.x);
@@ -1193,7 +1263,7 @@ ZunResult AnmManager::PushSprite(VertexTex1DiffuseXyzrhw *spriteVertex)
     return ZUN_SUCCESS;
 }
 
-ZunResult AnmManager::DrawNoRotation(AnmVm *vm, f32 pspClipTop)
+ZunResult AnmManager::DrawNoRotation(AnmVm *vm, f32 pspClipBottom)
 {
     f32 centerY;
     f32 centerX;
@@ -1241,7 +1311,7 @@ ZunResult AnmManager::DrawNoRotation(AnmVm *vm, f32 pspClipTop)
     const f32 left = PspRenderFloor(rawLeft + this->offset.x + 0.5f);
     const f32 right = PspRenderFloor(rawRight + this->offset.x + 0.5f);
     f32 top = PspRenderFloor(rawTop + this->offset.y + 0.5f);
-    const f32 bottom = PspRenderFloor(rawBottom + this->offset.y + 0.5f);
+    f32 bottom = PspRenderFloor(rawBottom + this->offset.y + 0.5f);
 
     const f32 minX = std::min(left, right);
     const f32 maxX = std::max(left, right);
@@ -1257,16 +1327,16 @@ ZunResult AnmManager::DrawNoRotation(AnmVm *vm, f32 pspClipTop)
     f32 u0 = vm->sprite->uvStart.x + vm->uvScrollPos.x;
     const f32 u1 = vm->sprite->uvEnd.x + vm->uvScrollPos.x;
     f32 v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
-    const f32 v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
-    if (pspClipTop > -999999.0f && top < pspClipTop && bottom > top)
+    f32 v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
+    if (pspClipBottom < 999999.0f && bottom > pspClipBottom && bottom > top)
     {
-        if (bottom <= pspClipTop)
+        if (top >= pspClipBottom)
         {
             return ZUN_SUCCESS;
         }
-        const f32 ratio = (pspClipTop - top) / (bottom - top);
-        v0 += (v1 - v0) * ratio;
-        top = pspClipTop;
+        const f32 ratio = (pspClipBottom - top) / (bottom - top);
+        v1 = v0 + (v1 - v0) * ratio;
+        bottom = pspClipBottom;
     }
 
     const GfxTextureHandle texture = this->textures[vm->sprite->sourceFileIndex];
@@ -1343,7 +1413,7 @@ ZunResult AnmManager::DrawNoRotation(AnmVm *vm, f32 pspClipTop)
     g_QuadVertices[0].pos.z = g_QuadVertices[1].pos.z = g_QuadVertices[2].pos.z =
         g_QuadVertices[3].pos.z = vm->pos.z;
 
-    return DrawInner(vm, 1, pspClipTop);
+    return DrawInner(vm, 1, pspClipBottom);
 }
 
 void AnmManager::TranslateRotation(VertexTex1DiffuseXyzrhw *vertex, f32 width, f32 height, f32 sine,
@@ -2758,6 +2828,10 @@ ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
         ReleaseSurface(surfaceIdx);
     }
     SDL_Surface *converted = nullptr;
+#if defined(TH07_PSP_1000)
+    th07_psp_boot_notef("surface load %s", path ? path : "?");
+    th07_psp_heap_note("surface load begin");
+#endif
 #if defined(TH07_PSP)
     if (strcmp(path, "data/result/music.jpg") == 0)
     {
@@ -2769,6 +2843,9 @@ ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
         u8 *data = FileSystem::OpenFile(path, 0);
         if (!data)
         {
+#if defined(TH07_PSP_1000)
+            th07_psp_boot_note("surface source load failed");
+#endif
             g_GameErrorContext.Fatal("%sが読み込めないです。\n", path);
             return ZUN_ERROR;
         }
@@ -2776,11 +2853,37 @@ ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
         SDL_Surface *surf = IMG_Load_RW(rw, 1);
         if (!surf)
         {
+#if defined(TH07_PSP_1000)
+            th07_psp_boot_notef("surface decode failed %s", IMG_GetError());
+#endif
             free(data);
             return ZUN_ERROR;
         }
+#if defined(TH07_PSP_1000)
+        // SDL_image normally returns JPEGs as packed RGB24.  Keep that decoded
+        // image directly: converting it to PNG cannot restore information
+        // already lost in the original JPEG, while pre-quantizing it to RGB565
+        // before the 640x480 -> LCD reduction adds visible banding and edge
+        // noise.  The GU backend now downsamples RGB24 first and quantizes only
+        // once at the final LCD-sized texture.  If a decoder returns another
+        // layout, retain the low-memory RGB565 fallback rather than allocating
+        // a simultaneous 1.2 MiB RGBA copy on the 32 MiB model.
+        if (surf->format->format == SDL_PIXELFORMAT_RGB24)
+        {
+            converted = surf;
+            surf = nullptr;
+        }
+        else
+        {
+            converted = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGB565, 0);
+        }
+#else
         converted = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
-        SDL_FreeSurface(surf);
+#endif
+        if (surf)
+        {
+            SDL_FreeSurface(surf);
+        }
         free(data);
 #if defined(TH07_PSP)
         if (strcmp(path, "data/result/music.jpg") == 0)
@@ -2791,6 +2894,10 @@ ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
     }
     if (!converted)
     {
+#if defined(TH07_PSP_1000)
+        th07_psp_boot_note("surface conversion failed");
+        th07_psp_heap_note("surface conversion failed");
+#endif
         return ZUN_ERROR;
     }
 
@@ -2798,14 +2905,19 @@ ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
     this->surfaceSourceInfo[surfaceIdx].height = converted->h;
 
 #if defined(TH07_PSP)
-    // The portable reconstruction keeps two identical RGBA copies of every
-    // JPEG surface.  A 640x480 image costs about 1.2 MiB per copy; after the
-    // title ANM is resident, the second allocation can fail and the draw path
-    // silently returns because it only checks surfacesBis.  PSP never mutates
-    // either copy, so keep the single converted surface in the slot consumed
-    // by CopySurfaceToBackBuffer/DrawEndingRect.
+    // The portable reconstruction keeps two identical copies of every JPEG.
+    // PSP never mutates either copy, so keep only the surface consumed by
+    // CopySurfaceToBackBuffer/DrawEndingRect.  The standard 64 MiB profile
+    // retains its established RGBA32 representation; PSP-1000 keeps the
+    // decoder's packed RGB24 image (or an RGB565 fallback) to make the title
+    // -> selection decode fit 32 MiB without an extra quality-losing pass.
     this->surfaces[surfaceIdx] = nullptr;
     this->surfacesBis[surfaceIdx] = converted;
+#if defined(TH07_PSP_1000)
+    th07_psp_boot_notef("surface ready %dx%d %dbpp", converted->w, converted->h,
+                        static_cast<int>(converted->format->BytesPerPixel));
+    th07_psp_heap_note("surface ready");
+#endif
 #else
     this->surfaces[surfaceIdx] = converted;
     this->surfacesBis[surfaceIdx] =
@@ -2875,10 +2987,12 @@ GfxTextureHandle GetPersistentSurfaceTexture(AnmManager *manager, i32 surfaceIdx
 
     GfxTextureHandle texture = g_Supervisor.gfxDevice->CreateTexture();
     g_Supervisor.gfxDevice->BindTexture(texture);
-    const PixelDataType uploadType = surface->format->format == SDL_PIXELFORMAT_RGB565
-                                         ? PIXEL_UNSIGNED_SHORT_5_6_5
-                                         : PIXEL_UNSIGNED_BYTE;
-    g_Supervisor.gfxDevice->SetTextureImage(surface->w, surface->h, PIXEL_RGBA,
+    const bool rgb565 = surface->format->format == SDL_PIXELFORMAT_RGB565;
+    const PixelDataType uploadType = rgb565 ? PIXEL_UNSIGNED_SHORT_5_6_5
+                                            : PIXEL_UNSIGNED_BYTE;
+    const PixelFormat uploadFormat =
+        !rgb565 && surface->format->BytesPerPixel == 3 ? PIXEL_RGB : PIXEL_RGBA;
+    g_Supervisor.gfxDevice->SetTextureImage(surface->w, surface->h, uploadFormat,
                                             uploadType, surface->pixels);
     manager->pspSurfaceTextures[surfaceIdx] = texture;
     manager->pspSurfaceTextureSources[surfaceIdx] = surface->pixels;
@@ -3007,6 +3121,18 @@ void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcW
     }
 
     Flush();
+
+#if defined(TH07_PSP_1000)
+    if (!Th07PspCaptureFramebufferToTexture(this->textures[textureId], srcLeft, srcTop, srcWidth,
+                                            srcHeight, dstLeft, dstTop, dstWidth, dstHeight))
+    {
+        // A missing capture must never turn the pause button into a process
+        // exit on the 32 MiB model.  The menu remains usable without its
+        // animated background if the texture was unavailable.
+        th07_psp_boot_note("pause capture skipped");
+    }
+    return;
+#endif
 
     u32 *pixelData = new u32[srcWidth * srcHeight];
     g_Supervisor.gfxDevice->ReadPixels(srcLeft, srcTop, srcWidth, srcHeight, pixelData);

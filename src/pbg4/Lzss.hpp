@@ -6,10 +6,13 @@
 #define LZSS_LENGTH_BITS 4
 #define LZSS_DICTSIZE (1 << LZSS_OFFSET_BITS)
 
+struct Pbg4File;
+
 namespace Lzss
 {
 u8 *Compress(u8 *src, i32 dstLen, i32 *outSize);
 u8 *Decompress(u8 *src, i32 srcLen, u8 *dst, u32 dstLen);
+u8 *DecompressFile(Pbg4File *file, u32 srcLen, u8 *dst, u32 dstLen);
 void ContractNode(i32 firstNode, i32 secondNode);
 void DeleteNode(i32 node);
 i32 FindMinNode(i32 startNode);

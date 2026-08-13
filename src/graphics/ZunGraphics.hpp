@@ -93,7 +93,11 @@ enum ClearBits
 enum PixelFormat
 {
     PIXEL_RGBA,
-    PIXEL_RGB
+    PIXEL_RGB,
+    // PSP-only direct path for embedded D3DFMT_A8R8G8B8.  On little endian
+    // systems its bytes are B,G,R,A; accepting that layout avoids a second
+    // 1 MiB SDL conversion buffer for every 512x512 portrait.
+    PIXEL_BGRA
 };
 
 enum PixelDataType

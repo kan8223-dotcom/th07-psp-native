@@ -40,8 +40,21 @@ struct EffectTypeInfo
 
 struct EffectManager
 {
+    static constexpr i32 kNormalEffectCapacity =
+#if defined(TH07_PSP_1000)
+        256;
+#else
+        400;
+#endif
+    static constexpr i32 kSpecialEffectCapacity = 8;
+    static constexpr i32 kEffectCapacity = kNormalEffectCapacity + kSpecialEffectCapacity;
+
     EffectManager();
     void Reset();
+#if defined(TH07_PSP_1000)
+    bool PspEnsureEffectPool();
+    void PspReleaseEffectPool();
+#endif
 
     static ZunResult RegisterChain();
     static void CutChain();
@@ -89,7 +102,11 @@ struct EffectManager
     f32 globalColorMultiplierG;
     f32 globalColorMultiplierB;
     f32 globalColorMultiplierA;
-    Effect effects[409];
+#if defined(TH07_PSP_1000)
+    Effect *effects;
+#else
+    Effect effects[kEffectCapacity + 1];
+#endif
     Effect layer0;
     Effect layer1;
     Effect layer2;
@@ -97,10 +114,10 @@ struct EffectManager
     Effect *layerPtrs[4];
     i32 frameCounter;
 #if defined(TH07_PSP)
-    // Avoid touching all 408 AnmVm-heavy effect slots just to read their
+    // Avoid touching every AnmVm-heavy effect slot just to read its
     // in-use byte. External owners may retire an effect directly, so spawn
     // and update paths also repair stale bits when encountered.
-    u32 pspActiveEffectBits[13];
+    u32 pspActiveEffectBits[(kEffectCapacity + 31) / 32];
 
     bool PspIsEffectSlotTracked(i32 index) const
     {

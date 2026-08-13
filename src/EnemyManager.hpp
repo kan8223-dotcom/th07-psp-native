@@ -244,6 +244,13 @@ struct Enemy
 
 struct EnemyManager
 {
+    static constexpr i32 kEnemyCapacity =
+#if defined(TH07_PSP_1000)
+        64;
+#else
+        480;
+#endif
+
     EnemyManager();
 
     static ZunResult RegisterChain(const char *stgEnm1, const char *stgEnm2);
@@ -268,7 +275,29 @@ struct EnemyManager
     const char *stgEnmAnmFilename;
     const char *stgEnm2AnmFilename;
     Enemy enemyTemplate;
-    Enemy enemies[481];
+#if defined(TH07_PSP_1000)
+    // The original inline pool alone occupies about 9.8 MiB and prevents a
+    // 32 MiB PSP from loading the module.  ANM source buffers also fragment
+    // the heap while a stage is registered, so keep each allocation below
+    // 512 KiB instead of requiring one contiguous 1.9 MiB block afterwards.
+    static constexpr i32 kEnemyChunkCapacity = 16;
+    static constexpr i32 kEnemyChunkCount =
+        (kEnemyCapacity + kEnemyChunkCapacity - 1) / kEnemyChunkCapacity;
+    Enemy *enemyChunks[kEnemyChunkCount];
+    bool PspEnsureEnemyPool();
+    void PspReleaseEnemyPool();
+#else
+    Enemy enemies[kEnemyCapacity + 1];
+#endif
+
+    Enemy *EnemyAt(i32 index)
+    {
+#if defined(TH07_PSP_1000)
+        return enemyChunks[index / kEnemyChunkCapacity] + index % kEnemyChunkCapacity;
+#else
+        return &enemies[index];
+#endif
+    }
     Enemy *bosses[8];
     u16 randomItemSpawnIdx;
     u16 randomItemTableIdx;
@@ -283,10 +312,10 @@ struct EnemyManager
     Enemy *enemyHead[4];
 #if defined(TH07_PSP)
     // Enemy is about 22 KiB because it owns ECL state, history and trail
-    // vertices. A linear active-flag probe over 480 slots therefore has a
+    // vertices. A linear active-flag probe over the pool therefore has a
     // disproportionate cache cost. Keep source ordering while avoiding those
     // cold structure reads for empty slots.
-    u32 pspActiveEnemyBits[15];
+    u32 pspActiveEnemyBits[(kEnemyCapacity + 31) / 32];
 
     bool PspIsEnemySlotTracked(i32 index) const
     {

@@ -10,6 +10,13 @@
 #include "ZunResult.hpp"
 #include "utils.hpp"
 
+#if defined(TH07_PSP_1000)
+#include "../psp/fileio.hpp"
+#include "../psp/psp1000_arena.hpp"
+
+#include <cstdlib>
+#endif
+
 EffectTypeInfo g_EffectMapping[34] = {
     {0x2ab, NULL, NULL},
     {0x2ac, NULL, NULL},
@@ -55,6 +62,9 @@ ChainElem g_EffectManagerDrawChain;
 
 EffectManager::EffectManager()
 {
+#if defined(TH07_PSP_1000)
+    this->effects = nullptr;
+#endif
     Reset();
     this->globalColorMultiplierR = 1.0f;
     this->globalColorMultiplierG = 1.0f;
@@ -64,8 +74,48 @@ EffectManager::EffectManager()
 
 void EffectManager::Reset()
 {
+#if defined(TH07_PSP_1000)
+    Effect *pool = this->effects;
+#endif
     memset(this, 0, sizeof(EffectManager));
+#if defined(TH07_PSP_1000)
+    this->effects = pool;
+    if (pool)
+    {
+        memset(pool, 0, sizeof(Effect) * (kEffectCapacity + 1));
+    }
+#endif
 }
+
+#if defined(TH07_PSP_1000)
+bool EffectManager::PspEnsureEffectPool()
+{
+    if (!this->effects)
+    {
+        this->effects = static_cast<Effect *>(th07_psp_1000_alloc_pool(
+            sizeof(Effect) * static_cast<size_t>(kEffectCapacity + 1)));
+        if (this->effects)
+        {
+            memset(this->effects, 0, sizeof(Effect) * static_cast<size_t>(kEffectCapacity + 1));
+        }
+    }
+    if (!this->effects)
+    {
+        th07_psp_boot_note("PSP1000 effect pool allocation failed");
+        return false;
+    }
+    th07_psp_boot_notef("PSP1000 effect pool %d+%d slots %uK", kNormalEffectCapacity,
+                        kSpecialEffectCapacity,
+                        static_cast<unsigned int>(sizeof(Effect) * kEffectCapacity / 1024u));
+    return true;
+}
+
+void EffectManager::PspReleaseEffectPool()
+{
+    this->effects = nullptr;
+    memset(this->pspActiveEffectBits, 0, sizeof(this->pspActiveEffectBits));
+}
+#endif
 
 i32 EffectManager::InitDeceleratingBurstFast(Effect *effect)
 {
@@ -209,7 +259,7 @@ void EffectManager::DoSomethingWithEffects(ZunVec3 *param_1)
     Effect *effect;
 
     effect = g_EffectManager.effects;
-    for (i = 0; i < 400; i++, effect++)
+    for (i = 0; i < kNormalEffectCapacity; i++, effect++)
     {
         if (effect->effectId == 20 || effect->effectId == 31)
         {
@@ -224,7 +274,7 @@ void EffectManager::ModifyEffect1eAcceleration()
     Effect *effect;
 
     effect = g_EffectManager.effects;
-    for (i = 0; i < 400; i++, effect++)
+    for (i = 0; i < kNormalEffectCapacity; i++, effect++)
     {
         if (effect->effectId == 30)
         {
@@ -452,10 +502,10 @@ Effect *EffectManager::SpawnParticles(i32 effectId, ZunVec3 *pos, i32 numParticl
     Effect *effect;
 
     effect = &this->effects[this->nextIndex];
-    for (i = 0; i < 400; i++)
+    for (i = 0; i < kNormalEffectCapacity; i++)
     {
         this->nextIndex++;
-        if (this->nextIndex >= 400)
+        if (this->nextIndex >= kNormalEffectCapacity)
         {
             this->nextIndex = 0;
         }
@@ -518,7 +568,7 @@ Effect *EffectManager::SpawnParticles(i32 effectId, ZunVec3 *pos, i32 numParticl
         }
     }
 
-    return i >= 400 ? &this->effects[408] : effect;
+    return i >= kNormalEffectCapacity ? &this->effects[kEffectCapacity] : effect;
 }
 
 Effect *EffectManager::SpawnMovingParticles(i32 effectId, ZunVec3 *pos, ZunVec3 *velocity,
@@ -529,10 +579,10 @@ Effect *EffectManager::SpawnMovingParticles(i32 effectId, ZunVec3 *pos, ZunVec3 
 
     effect = &this->effects[this->nextIndex];
 
-    for (i = 0; i < 400; i++)
+    for (i = 0; i < kNormalEffectCapacity; i++)
     {
         this->nextIndex++;
-        if (this->nextIndex >= 400)
+        if (this->nextIndex >= kNormalEffectCapacity)
         {
             this->nextIndex = 0;
         }
@@ -594,7 +644,7 @@ Effect *EffectManager::SpawnMovingParticles(i32 effectId, ZunVec3 *pos, ZunVec3 
         }
     }
 
-    return i >= 400 ? &this->effects[408] : effect;
+    return i >= kNormalEffectCapacity ? &this->effects[kEffectCapacity] : effect;
 }
 
 Effect *EffectManager::SpawnEffect(i32 effectId, ZunVec3 *pos, i32 param_3, i32 param_4,
@@ -604,9 +654,9 @@ Effect *EffectManager::SpawnEffect(i32 effectId, ZunVec3 *pos, i32 param_3, i32 
 
     Effect *effect;
 
-    effect = &this->effects[param_3 + 400];
+    effect = &this->effects[param_3 + kNormalEffectCapacity];
 #if defined(TH07_PSP)
-    const i32 effectIndex = param_3 + 400;
+    const i32 effectIndex = param_3 + kNormalEffectCapacity;
 #endif
     effect->is2D = 0;
     effect->inUseFlag = 1;
@@ -651,7 +701,7 @@ u32 EffectManager::OnUpdate(EffectManager *arg)
     arg->layer1.next = NULL;
     arg->layer2.next = NULL;
     arg->layer3.next = NULL;
-    for (i = 0; i < 408; i++, effect++)
+    for (i = 0; i < kEffectCapacity; i++, effect++)
     {
 #if defined(TH07_PSP)
         if (!arg->PspIsEffectSlotTracked(i))
@@ -932,12 +982,15 @@ ZunResult EffectManager::AddedCallback(EffectManager *arg)
 
 ZunResult EffectManager::DeletedCallback(EffectManager *arg)
 {
-    (void)arg;
-
     g_AnmManager->ReleaseAnm(17);
     g_AnmManager->ReleaseAnm(18);
     g_AnmManager->ReleaseAnm(19);
     g_AnmManager->ReleaseAnm(20);
+#if defined(TH07_PSP_1000)
+    arg->PspReleaseEffectPool();
+#else
+    (void)arg;
+#endif
     return ZUN_SUCCESS;
 }
 

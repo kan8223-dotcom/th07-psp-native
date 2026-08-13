@@ -11,6 +11,13 @@
 #include "Rng.hpp"
 #include "SoundPlayer.hpp"
 
+#if defined(TH07_PSP_1000)
+#include "../psp/fileio.hpp"
+#include "../psp/psp1000_arena.hpp"
+
+#include <cstdlib>
+#endif
+
 i32 g_FullPowerScoreBonus[30] = {10,   20,   30,   40,   50,   60,   70,   80,    90,    100,
                                  200,  300,  400,  500,  600,  700,  800,  900,   1000,  2000,
                                  3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000};
@@ -40,7 +47,55 @@ void GameManager::AddCurrentPower(i32 amount)
 
 ItemManager::ItemManager()
 {
+#if defined(TH07_PSP_1000)
+    this->items = nullptr;
+#endif
+    Reset();
 }
+
+void ItemManager::Reset()
+{
+#if defined(TH07_PSP_1000)
+    Item *pool = this->items;
+#endif
+    memset(this, 0, sizeof(ItemManager));
+#if defined(TH07_PSP_1000)
+    this->items = pool;
+    if (pool)
+    {
+        memset(pool, 0, sizeof(Item) * (kItemCapacity + 1));
+    }
+#endif
+}
+
+#if defined(TH07_PSP_1000)
+bool ItemManager::PspEnsureItemPool()
+{
+    if (!this->items)
+    {
+        this->items = static_cast<Item *>(th07_psp_1000_alloc_pool(
+            sizeof(Item) * static_cast<size_t>(kItemCapacity + 1)));
+        if (this->items)
+        {
+            memset(this->items, 0, sizeof(Item) * static_cast<size_t>(kItemCapacity + 1));
+        }
+    }
+    if (!this->items)
+    {
+        th07_psp_boot_note("PSP1000 item pool allocation failed");
+        return false;
+    }
+    th07_psp_boot_notef("PSP1000 item pool %d slots %uK", kItemCapacity,
+                        static_cast<unsigned int>(sizeof(Item) * kItemCapacity / 1024u));
+    return true;
+}
+
+void ItemManager::PspReleaseItemPool()
+{
+    this->items = nullptr;
+    memset(this->pspActiveItemBits, 0, sizeof(this->pspActiveItemBits));
+}
+#endif
 
 Item::Item()
 {
@@ -59,7 +114,7 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
             itemType = ITEM_CHERRY;
         }
     }
-    for (i = 0; i < 1100; i++)
+    for (i = 0; i < kItemCapacity; i++)
     {
         this->nextIndex++;
 
@@ -69,7 +124,7 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
         {
             if (item->isInUse)
             {
-                if (this->nextIndex >= 1100)
+                if (this->nextIndex >= kItemCapacity)
                 {
                     this->nextIndex = 0;
                     item = this->items;
@@ -85,7 +140,7 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
 #else
         if (item->isInUse)
         {
-            if (this->nextIndex >= 1100)
+            if (this->nextIndex >= kItemCapacity)
             {
                 this->nextIndex = 0;
                 item = this->items;
@@ -97,7 +152,7 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
             continue;
         }
 #endif
-        if (this->nextIndex >= 1100)
+        if (this->nextIndex >= kItemCapacity)
         {
             this->nextIndex = 0;
         }
@@ -135,7 +190,7 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
         break;
     }
 
-    return i < 1100 ? item : &this->items[1100];
+    return i < kItemCapacity ? item : &this->items[kItemCapacity];
 }
 
 void ItemManager::OnUpdate()
@@ -159,7 +214,7 @@ void ItemManager::OnUpdate()
     this->listTail = &this->listHead;
     this->listHead.next = NULL;
 
-    for (i = 0; i < 1100; i++, item++)
+    for (i = 0; i < kItemCapacity; i++, item++)
     {
 #if defined(TH07_PSP)
         if (!this->PspIsItemSlotTracked(i))
@@ -557,7 +612,7 @@ void ItemManager::RemoveAllItems()
     i32 i;
 
     item = this->items;
-    for (i = 0; i < 1100; i++, item++)
+    for (i = 0; i < kItemCapacity; i++, item++)
     {
 #if defined(TH07_PSP)
         if (!this->PspIsItemSlotTracked(i))
@@ -581,7 +636,7 @@ void ItemManager::DespawnAllItems(i32 param_1)
     i32 i;
 
     item = this->items;
-    for (i = 0; i < 1100; i++, item++)
+    for (i = 0; i < kItemCapacity; i++, item++)
     {
 #if defined(TH07_PSP)
         if (!this->PspIsItemSlotTracked(i))
@@ -615,7 +670,7 @@ void ItemManager::ActivateAllItems()
     i32 i;
 
     item = this->items;
-    for (i = 0; i < 1100; i++, item++)
+    for (i = 0; i < kItemCapacity; i++, item++)
     {
 #if defined(TH07_PSP)
         if (!this->PspIsItemSlotTracked(i))

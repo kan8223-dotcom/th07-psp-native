@@ -1111,17 +1111,17 @@ ZunResult GuiImpl::DrawDialogue()
     dialogueBg[2].diffuse.color = dialogueBg[3].diffuse.color = 0x90000000;
     dialogueBg[0].w = dialogueBg[1].w = dialogueBg[2].w = dialogueBg[3].w = 1.0f;
 #if defined(TH07_PSP)
-    // Keep dialogue artwork off the physical display's topmost row.  The
-    // logical 640x480 canvas maps 1.765 pixels to one PSP output pixel.
-    constexpr f32 kPortraitClipTop = 2.0f;
-    g_AnmManager->DrawNoRotation(&this->msg.portraits[0], kPortraitClipTop);
+    // The logical bottom maps to the PSP's physical top.  Keep the artwork
+    // about one physical row inside that edge (480 / 272 = 1.765).
+    constexpr f32 kPortraitClipBottom = 478.0f;
+    g_AnmManager->DrawNoRotation(&this->msg.portraits[0], kPortraitClipBottom);
 #else
     g_AnmManager->DrawNoRotation(&this->msg.portraits[0]);
 #endif
     oldPos = this->msg.portraits[1].pos;
     this->msg.portraits[1].pos += this->msg.portraits[1].offset;
 #if defined(TH07_PSP)
-    g_AnmManager->DrawNoRotation(&this->msg.portraits[1], kPortraitClipTop);
+    g_AnmManager->DrawNoRotation(&this->msg.portraits[1], kPortraitClipBottom);
 #else
     g_AnmManager->DrawNoRotation(&this->msg.portraits[1]);
 #endif

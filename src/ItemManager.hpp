@@ -57,7 +57,20 @@ struct Item
 
 struct ItemManager
 {
+    static constexpr i32 kItemCapacity =
+#if defined(TH07_PSP_1000)
+        512;
+#else
+        1100;
+#endif
+
     ItemManager();
+
+    void Reset();
+#if defined(TH07_PSP_1000)
+    bool PspEnsureItemPool();
+    void PspReleaseItemPool();
+#endif
 
     void ActivateAllItems();
     void DespawnAllItems(i32 param_1);
@@ -66,15 +79,19 @@ struct ItemManager
     void RemoveAllItems();
     Item *SpawnItem(ZunVec3 *heading, i32 itemType, i32 state);
 
-    struct Item items[1101];
+#if defined(TH07_PSP_1000)
+    struct Item *items;
+#else
+    struct Item items[kItemCapacity + 1];
+#endif
     i32 nextIndex;
     i32 activeItemCount;
     struct Item listHead;
     struct Item *listTail;
 #if defined(TH07_PSP)
-    // Item embeds an AnmVm; probing 1100 empty slots costs far more cache
+    // Item embeds an AnmVm; probing empty slots costs far more cache
     // traffic than walking this 140-byte map first.
-    u32 pspActiveItemBits[35];
+    u32 pspActiveItemBits[(kItemCapacity + 31) / 32];
 
     bool PspIsItemSlotTracked(i32 index) const
     {
