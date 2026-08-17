@@ -1,5 +1,7 @@
 # th07-psp-native
 
+**日本語** | [English](README_EN.md)
+
 東方妖々夢 ～ Perfect Cherry Blossom 1.00bをPSP上でネイティブ動作させる、
 非公式・開発途中の移植です。Windows版をエミュレーションするものではありません。
 
