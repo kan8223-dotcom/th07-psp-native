@@ -119,6 +119,38 @@ void ScanDeviceRoot(const char *device)
     sceIoDclose(directory);
 }
 
+void ScanSiblingGameInstalls(const char *device)
+{
+    if (!device || !device[0]) return;
+
+    char gameRoot[64];
+    const int rootLength = std::snprintf(gameRoot, sizeof(gameRoot), "%s/PSP/GAME", device);
+    if (rootLength < 0 || static_cast<std::size_t>(rootLength) >= sizeof(gameRoot)) return;
+
+    const SceUID directory = sceIoDopen(gameRoot);
+    if (directory < 0) return;
+    SceIoDirent entry{};
+    while (sceIoDread(directory, &entry) > 0)
+    {
+        if (entry.d_name[0] && std::strcmp(entry.d_name, ".") != 0 &&
+            std::strcmp(entry.d_name, "..") != 0 && FIO_S_ISDIR(entry.d_stat.st_mode))
+        {
+            char installDir[sizeof(gDataDir)];
+            char nestedDataDir[sizeof(gDataDir)];
+            if (JoinPath(installDir, sizeof(installDir), gameRoot, entry.d_name) &&
+                JoinPath(nestedDataDir, sizeof(nestedDataDir), installDir, "th7"))
+            {
+                // This lets PSP-1000 and PSP-2000+ EBOOT folders coexist
+                // without duplicating the user's roughly 469 MiB original
+                // DAT files. Local data remains first priority.
+                AddDataCandidate(nestedDataDir);
+            }
+        }
+        std::memset(&entry, 0, sizeof(entry));
+    }
+    sceIoDclose(directory);
+}
+
 bool IsAbsolutePath(const char *path)
 {
     if (!path || !path[0])
@@ -185,8 +217,11 @@ extern "C" void th07_psp_fileio_init()
         AddDataCandidate(nestedDataDir);
     }
     AddDataCandidate(gGameDir); // legacy flat development layout
+    ScanSiblingGameInstalls(gLaunchDevice);
     ScanDeviceRoot(gLaunchDevice);
-    ScanDeviceRoot(std::strcmp(gLaunchDevice, "ef0:") == 0 ? "ms0:" : "ef0:");
+    const char *otherDevice = std::strcmp(gLaunchDevice, "ef0:") == 0 ? "ms0:" : "ef0:";
+    ScanSiblingGameInstalls(otherDevice);
+    ScanDeviceRoot(otherDevice);
     if (gDataCandidateCount > 0)
     {
         std::snprintf(gDataDir, sizeof(gDataDir), "%s", gDataCandidates[0]);

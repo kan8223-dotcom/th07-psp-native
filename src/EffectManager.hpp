@@ -40,12 +40,9 @@ struct EffectTypeInfo
 
 struct EffectManager
 {
-    static constexpr i32 kNormalEffectCapacity =
-#if defined(TH07_PSP_1000)
-        256;
-#else
-        400;
-#endif
+    // Effect slot reuse and init-callback RNG consumption are replay-visible.
+    // Keep the original 400 normal slots on PSP-1000 as well.
+    static constexpr i32 kNormalEffectCapacity = 400;
     static constexpr i32 kSpecialEffectCapacity = 8;
     static constexpr i32 kEffectCapacity = kNormalEffectCapacity + kSpecialEffectCapacity;
 
@@ -135,5 +132,10 @@ struct EffectManager
     }
 #endif
 };
+
+#if defined(TH07_PSP_1000)
+static_assert(sizeof(Effect) == 728,
+              "PSP-1000 Effect growth requires re-auditing the stage pool arena");
+#endif
 
 extern EffectManager g_EffectManager;

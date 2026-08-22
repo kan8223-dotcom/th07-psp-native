@@ -16,7 +16,7 @@ namespace
 constexpr char kCacheName[] = "title01.psp1000.cache";
 constexpr char kTempName[] = "title01.psp1000.tmp";
 constexpr char kMagic[8] = {'T', 'H', '0', '7', '1', 'K', 'A', '7'};
-constexpr u32 kVersion = 5;
+constexpr u32 kVersion = 6;
 constexpr u32 kFnvOffset = 2166136261u;
 constexpr u32 kFnvPrime = 16777619u;
 
@@ -220,18 +220,33 @@ bool th07_psp_1000_build_title_cache(const void *source, std::size_t sourceBytes
         }
 
         const std::size_t metadataBytes = static_cast<std::size_t>(sourceEntry->textureOffset);
-        // title02 contains the title logo and the small English main-menu
-        // labels.  Keeping this one atlas native-size costs only 128 KiB.
-        // Promoting the other selection atlases as well crosses the real
-        // PSP-1000 title -> select00.jpg decode limit.
-        const bool keepNativeUiAtlas = entryCount == 0 && sourceImage->width <= 512 &&
-                                       sourceImage->height <= 256;
-        const u32 cacheWidth = keepNativeUiAtlas
+        const bool imageNameInMetadata =
+            sourceEntry->nameOffset >= 0 &&
+            static_cast<std::size_t>(sourceEntry->nameOffset) < metadataBytes;
+        const char *imageName = imageNameInMetadata
+                                    ? reinterpret_cast<const char *>(
+                                          sourceBase + sourceOffset +
+                                          static_cast<std::size_t>(sourceEntry->nameOffset))
+                                    : "";
+        const bool imageNameTerminated =
+            imageNameInMetadata &&
+            std::memchr(imageName, '\0',
+                        metadataBytes - static_cast<std::size_t>(sourceEntry->nameOffset));
+        // Preserve horizontal detail in the three atlases visible in the
+        // title and difficulty screenshots.  512x256 costs only 128 KiB more
+        // than the old 256x256 copy; retaining full 512x512 selection atlases
+        // exceeds the measured PSP-1000 JPEG-decode headroom.
+        const bool keepWideUiAtlas =
+            imageNameTerminated &&
+            (std::strcmp(imageName, "data/title/title02.png") == 0 ||
+             std::strcmp(imageName, "data/title/title01.png") == 0 ||
+             std::strcmp(imageName, "data/title/select01.png") == 0) &&
+            sourceImage->width <= 512;
+        const u32 cacheWidth = keepWideUiAtlas
                                    ? static_cast<u32>(sourceImage->width)
                                    : (sourceImage->width > 256 ? 256u : sourceImage->width);
-        const u32 cacheHeight = keepNativeUiAtlas
-                                    ? static_cast<u32>(sourceImage->height)
-                                    : (sourceImage->height > 256 ? 256u : sourceImage->height);
+        const u32 cacheHeight =
+            sourceImage->height > 256 ? 256u : static_cast<u32>(sourceImage->height);
         const std::size_t cachePixelCount =
             static_cast<std::size_t>(cacheWidth) * static_cast<std::size_t>(cacheHeight);
         const std::size_t cacheSpan =
@@ -253,7 +268,7 @@ bool th07_psp_1000_build_title_cache(const void *source, std::size_t sourceBytes
         cacheImage.format = 5;
         cacheImage.width = static_cast<i16>(cacheWidth);
         cacheImage.height = static_cast<i16>(cacheHeight);
-        cacheImage.unused_c = keepNativeUiAtlas
+        cacheImage.unused_c = keepWideUiAtlas
                                   ? TH07_PSP_1000_TITLE_HIRES_IMAGE_MARKER
                                   : TH07_PSP_1000_TITLE_IMAGE_MARKER;
         ok = ok && WritePayload(file, &cacheImage, sizeof(cacheImage), &checksum);

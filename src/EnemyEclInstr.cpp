@@ -418,7 +418,7 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy, EclRawInstr *ins
                         AngleToVector(&bullet->velocity, bullet->angle,
                                       g_Supervisor.effectiveFramerateMultiplier * bullet->speed);
                         bullet->state2 = 10;
-                        bullet->sprites = g_BulletManager.bulletTypeTemplates[5];
+                        bullet->AssignTypeSprites(g_BulletManager.bulletTypeTemplates[5]);
                         g_AnmManager->SetActiveSprite(
                             &bullet->sprites.spriteBullet,
                             (i32)bullet->sprites.spriteBullet.activeSpriteIdx +
@@ -501,7 +501,7 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy, EclRawInstr *instr
                         bullet->velocity.x = -dirX;
                         bullet->velocity.y = -dirY;
                     }
-                    bullet->sprites = g_BulletManager.bulletTypeTemplates[5];
+                    bullet->AssignTypeSprites(g_BulletManager.bulletTypeTemplates[5]);
                     g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet,
                                                   bullet->sprites.spriteBullet.activeSpriteIdx +
                                                       bullet->spriteOffset);

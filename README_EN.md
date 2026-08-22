@@ -12,10 +12,10 @@ An unofficial, work-in-progress native PSP port of *Touhou Youyoumu ~ Perfect Ch
 
 ## Before you install
 
-The current release is v0.1.4-beta and is intended for testing. There are two separate downloads:
+The current release is v0.1.5-beta and is intended for testing. There are two separate downloads:
 
 - **PSP-1000:** use the archive whose name ends in `-psp1000.zip`. This is a special 32 MiB tester
-  build with reduced object limits.
+  build with a reduced enemy limit.
 - **PSP-2000, PSP-3000, and PSP Go:** use the archive whose name ends in `-psp2000plus.zip`.
   This is the 64 MiB build.
 
@@ -79,12 +79,17 @@ folder inside `TH07PSP`, you may instead place it directly under `ms0:/`, or und
 The port checks the device root and folders one level below it for a matching `th07.dat` and
 `thbgm.dat` pair.
 
+The 32 MiB and 64 MiB builds may coexist in differently named folders such as `TH07PSP` and
+`TH07PSP3000`. Each EBOOT also checks sibling folders under `PSP/GAME/`, so both builds can share one
+`th7` directory instead of duplicating roughly 469 MiB of DAT files. Settings, scores, replays, and the
+PSP-1000 title cache remain separate beside the EBOOT that created them.
+
 ### Files created by the port
 
 Settings, scores, and new replays are stored beside `EBOOT.PBP`, not in your copied original-game
 folder. These include `th07.cfg`, `score.dat`, and the `replay/` directory.
 
-On its first title-screen load, the PSP-1000 build creates an approximately 1.4 MiB file named
+On its first title-screen load, the PSP-1000 build creates an approximately 1.7 MiB file named
 `title01.psp1000.cache` beside the EBOOT. It is a 16-bit cache derived from your `th07.dat` and is used
 when returning to the title. It can be deleted and will be rebuilt on the next launch. Because it is
 derived from the original game, do not redistribute it or attach it to a bug report.
@@ -111,9 +116,12 @@ option is treated as `FULL STRETCH` (480x272).
   files before testing a new build.
 - PPSSPP is useful for testing, but a successful PPSSPP run does not prove that the same path works on
   real PSP hardware. Memory Stick I/O, CFW, Media Engine audio, and memory limits can behave differently.
-- The PSP-1000 build lowers the maximum numbers of enemies, bullets, items, and effects to fit 32 MiB
-  of RAM. That can change object-slot reuse and game state, so recorded replays commonly desynchronize.
-  Testers have also reported desynchronization in the built-in title-screen demos.
+- The PSP-1000 build now stores all 1,024 original bullet slots after compacting their mutually
+  exclusive spawn-animation VMs, all 1,100 original item slots, and all 400 normal effect slots. The
+  same built-in demo matched the 64 MiB build at all 136 sampled points through frame 8160 in PPSSPP.
+  The reduced enemy limit can still change game state, so replay synchronization remains unverified on
+  real hardware and with external replays. Testers reported desynchronization in the built-in
+  title-screen demos on older builds.
 - The PSP-1000 v0.1.4-beta Normal route has been tested on hardware from stage 1 through stage 6,
   Yuyuko, the ending, staff roll, and return to the title. Easy, Hard, Lunatic, Extra, and Phantasm
   clears have not been verified on that build.

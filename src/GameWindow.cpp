@@ -56,10 +56,11 @@ void GameWindow::Present()
     char snapshotPath[252];
     i32 i;
 
-#if defined(TH07_PSP_1000)
-    // The low-memory pause capture reads the frame which has just been drawn.
-    // Doing this before the swap avoids a second readback buffer and also
-    // avoids depending on display-buffer latch timing in PPSSPP or real PSP.
+#if defined(TH07_PSP)
+    // PSP pause capture reads the complete frame which has just been drawn.
+    // Doing this before the swap avoids depending on display-buffer latch
+    // timing. The old 64 MiB path captured after the swap and sampled the new
+    // draw target, producing a black pause background.
     g_AnmManager->TakeScreenshotIfRequested();
     g_Supervisor.gfxDevice->SwapBuffers();
 #else

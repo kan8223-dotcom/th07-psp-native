@@ -300,7 +300,7 @@ ZunResult AnmManager::LoadTextureEmbedded(u32 textureIdx, ZunImageInfoEmbedded *
 #if defined(TH07_PSP_1000)
         if (imageInfo->unused_c == TH07_PSP_1000_TITLE_HIRES_IMAGE_MARKER)
         {
-            Th07PspAllowNextStaticTexture512();
+            Th07PspAllowNextWideStaticTexture();
         }
 #endif
         g_Supervisor.gfxDevice->SetTextureImage(imageInfo->width, imageInfo->height, pixelFormat,
@@ -478,9 +478,10 @@ ZunResult AnmManager::CreateEmptyTexture(i32 textureIdx, u32 width, u32 height,
     this->textures[textureIdx] = g_Supervisor.gfxDevice->CreateTexture();
 
     void *emptyData = nullptr;
-#if defined(TH07_PSP_1000)
-    // capture.anm is written and sampled only by the PSP renderer.  Its old
-    // unused 512x512 RGBA CPU mirror cost 1 MiB for the entire game.
+#if defined(TH07_PSP)
+    // capture.anm is written and sampled only by the PSP renderer. Its old
+    // unused 512x512 RGBA CPU mirror cost 1 MiB for the entire game, including
+    // the 64 MiB profile now that both PSP paths use direct GE capture.
     if (textureIdx != ANM_FILE_CAPTURE)
 #endif
     {
@@ -756,13 +757,15 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
             reinterpret_cast<ZunImageInfoEmbedded *>((u8 *)data + data->textureOffset);
 #if defined(TH07_PSP_1000)
         // The first run still uploads the original ANM while it writes the
-        // compact cache for later boots.  Keep its title/menu lettering atlas
-        // at the same native resolution on that run as well.
+        // compact cache for later boots. Keep the horizontal detail of the
+        // title, main-menu and difficulty lettering on that run as well.
         const char *embeddedName = reinterpret_cast<const char *>((u8 *)data + data->nameOffset);
         if (embeddedImage->unused_c != TH07_PSP_1000_TITLE_HIRES_IMAGE_MARKER &&
-            std::strcmp(embeddedName, "data/title/title02.png") == 0)
+            (std::strcmp(embeddedName, "data/title/title02.png") == 0 ||
+             std::strcmp(embeddedName, "data/title/title01.png") == 0 ||
+             std::strcmp(embeddedName, "data/title/select01.png") == 0))
         {
-            Th07PspAllowNextStaticTexture512();
+            Th07PspAllowNextWideStaticTexture();
         }
 #endif
         if (LoadTextureEmbedded(data->textureIdx, embeddedImage) != ZUN_SUCCESS)
@@ -788,6 +791,20 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
     u32 texWidth = this->textureWidths[textureIdx] ? this->textureWidths[textureIdx] : data->width;
     u32 texHeight =
         this->textureHeights[textureIdx] ? this->textureHeights[textureIdx] : data->height;
+#if defined(TH07_PSP)
+    // The PSP-1000 backend may store a 512px ANM atlas at 256px.  Sprite
+    // geometry must stay in the original logical size, but its half-texel UV
+    // inset must use the actual stored dimensions.  The existing cols/rows
+    // conversion below supplies exactly that split when given content size.
+    unsigned int contentWidth = 0;
+    unsigned int contentHeight = 0;
+    if (Th07PspGetTextureContentSize(this->textures[data->textureIdx], &contentWidth,
+                                     &contentHeight))
+    {
+        texWidth = contentWidth;
+        texHeight = contentHeight;
+    }
+#endif
 
     data->spriteIdxOffset = spriteIdxOffset;
     curSprite = data->dataOffsets;
@@ -1497,7 +1514,7 @@ ZunResult AnmManager::DrawPspFastSprite(AnmVm *vm)
     {
         return Draw(vm);
     }
-    this->pspPreferSpritePairs = 1;
+    this->pspPreferSpritePairs = vm->scale.x >= 0.0f && vm->scale.y >= 0.0f;
     const ZunResult result = DrawNoRotation(vm);
     this->pspPreferSpritePairs = 0;
     return result;
@@ -1608,7 +1625,7 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
     const float v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
     const float v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
     const float z = vm->pos.z;
-    const bool usePairs = vm->rotation.z == 0.0f;
+    const bool usePairs = vm->rotation.z == 0.0f && x[0] <= x[3] && y[0] <= y[3];
     if (this->pspSpriteBatchUsesPairs != usePairs)
     {
         this->Flush();
@@ -3122,13 +3139,13 @@ void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcW
 
     Flush();
 
-#if defined(TH07_PSP_1000)
+#if defined(TH07_PSP)
     if (!Th07PspCaptureFramebufferToTexture(this->textures[textureId], srcLeft, srcTop, srcWidth,
                                             srcHeight, dstLeft, dstTop, dstWidth, dstHeight))
     {
         // A missing capture must never turn the pause button into a process
-        // exit on the 32 MiB model.  The menu remains usable without its
-        // animated background if the texture was unavailable.
+        // exit. The menu remains usable without its animated background if
+        // the texture was unavailable.
         th07_psp_boot_note("pause capture skipped");
     }
     return;

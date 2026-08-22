@@ -45,6 +45,14 @@ if [ -d dist ]; then
             ;;
         esac
         case "$archive_name" in
+        th07-psp-native-v0.1.5-beta*.zip)
+            if ! printf '%s\n' "$archive_entries" | grep -q '^TH07PSP/README_EN.md$'; then
+                echo "[FAIL] $archive does not contain TH07PSP/README_EN.md"
+                fail=1
+            fi
+            ;;
+        esac
+        case "$archive_name" in
         th07-psp-native-v*-beta-psp1000.zip)
             if ! unzip -p "$archive" '*EBOOT.PBP' 2>/dev/null | strings | grep -q 'BUILD PSP1000 pools'; then
                 echo "[FAIL] PSP-1000 profile marker missing from $archive"

@@ -126,9 +126,10 @@ bool BulletManager::PspEnsureBulletPool()
             return false;
         }
     }
+    memset(this->pspActiveBulletBits, 0, sizeof(this->pspActiveBulletBits));
     this->pspNextBulletIndex = 0;
-    th07_psp_boot_notef("PSP1000 bullet pool %d slots in %d chunks %uK", kBulletCapacity,
-                        kBulletChunkCount,
+    th07_psp_boot_notef("PSP1000 bullet pool %d slots in %d chunks %uK",
+                        kBulletCapacity, kBulletChunkCount,
                         static_cast<unsigned int>(sizeof(Bullet) * kBulletCapacity / 1024u));
     return true;
 }
@@ -143,6 +144,55 @@ void BulletManager::PspReleaseBulletPool()
     memset(this->pspActiveBulletBits, 0, sizeof(this->pspActiveBulletBits));
 }
 #endif
+
+AnmVm *Bullet::SpawnEffectVm(u16 spawnState)
+{
+#if defined(TH07_PSP_1000)
+    (void)spawnState;
+    return &this->sprites.spriteSpawnEffect;
+#else
+    switch (spawnState)
+    {
+    case BULLET_SPAWNING_NORMAL:
+        return &this->sprites.spriteSpawnEffectNormal;
+    case BULLET_SPAWNING_SLOW:
+        return &this->sprites.spriteSpawnEffectSlow;
+    case BULLET_SPAWNING_FAST:
+    default:
+        return &this->sprites.spriteSpawnEffectFast;
+    }
+#endif
+}
+
+void Bullet::AssignTypeSprites(const BulletTypeSprites &source)
+{
+#if defined(TH07_PSP_1000)
+    // ECL instructions can retheme an already-active bullet. Preserve the VM
+    // which corresponds to its current mutually-exclusive spawn state; the
+    // common runtime VM is irrelevant once the bullet reaches NORMAL.
+    this->sprites.spriteBullet = source.spriteBullet;
+    this->sprites.spriteSpawnEffectDonut = source.spriteSpawnEffectDonut;
+    switch (this->state)
+    {
+    case BULLET_SPAWNING_NORMAL:
+        this->sprites.spriteSpawnEffect = source.spriteSpawnEffectNormal;
+        break;
+    case BULLET_SPAWNING_SLOW:
+        this->sprites.spriteSpawnEffect = source.spriteSpawnEffectSlow;
+        break;
+    case BULLET_SPAWNING_FAST:
+    default:
+        this->sprites.spriteSpawnEffect = source.spriteSpawnEffectFast;
+        break;
+    }
+    this->sprites.grazeSize = source.grazeSize;
+    this->sprites.unused_b88 = source.unused_b88;
+    this->sprites.bulletHeight = source.bulletHeight;
+    this->sprites.collisionType = source.collisionType;
+#else
+    this->sprites = source;
+#endif
+}
 
 void BulletManager::SetActiveSpriteByResolution(AnmVm *sprite, AnmVm *bulletTypeTemplate,
                                                 Bullet *bullet, i32 spriteOffset)
@@ -340,9 +390,13 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
 
     if (bulletProps->flags & 2)
     {
-        AnmVm::AssignVm(&bullet->sprites.spriteSpawnEffectFast,
-                        &bulletProps->sprites->spriteSpawnEffectFast);
-        SetActiveSpriteByResolution(&bullet->sprites.spriteSpawnEffectFast,
+        AnmVm *spawnEffect = bullet->SpawnEffectVm(BULLET_SPAWNING_FAST);
+#if defined(TH07_PSP_1000)
+        *spawnEffect = bulletProps->sprites->spriteSpawnEffectFast;
+#else
+        AnmVm::AssignVm(spawnEffect, &bulletProps->sprites->spriteSpawnEffectFast);
+#endif
+        SetActiveSpriteByResolution(spawnEffect,
                                     &bulletProps->sprites->spriteSpawnEffectFast, bullet,
                                     bulletProps->spriteOffset);
         bullet->state = BULLET_SPAWNING_FAST;
@@ -350,9 +404,13 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
     }
     else if (bulletProps->flags & 4)
     {
-        AnmVm::AssignVm(&bullet->sprites.spriteSpawnEffectNormal,
-                        &bulletProps->sprites->spriteSpawnEffectNormal);
-        SetActiveSpriteByResolution(&bullet->sprites.spriteSpawnEffectNormal,
+        AnmVm *spawnEffect = bullet->SpawnEffectVm(BULLET_SPAWNING_NORMAL);
+#if defined(TH07_PSP_1000)
+        *spawnEffect = bulletProps->sprites->spriteSpawnEffectNormal;
+#else
+        AnmVm::AssignVm(spawnEffect, &bulletProps->sprites->spriteSpawnEffectNormal);
+#endif
+        SetActiveSpriteByResolution(spawnEffect,
                                     &bulletProps->sprites->spriteSpawnEffectNormal, bullet,
                                     (i32)bulletProps->spriteOffset);
         bullet->state = BULLET_SPAWNING_NORMAL;
@@ -360,9 +418,13 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
     }
     else if (bulletProps->flags & 8)
     {
-        AnmVm::AssignVm(&bullet->sprites.spriteSpawnEffectSlow,
-                        &bulletProps->sprites->spriteSpawnEffectSlow);
-        SetActiveSpriteByResolution(&bullet->sprites.spriteSpawnEffectSlow,
+        AnmVm *spawnEffect = bullet->SpawnEffectVm(BULLET_SPAWNING_SLOW);
+#if defined(TH07_PSP_1000)
+        *spawnEffect = bulletProps->sprites->spriteSpawnEffectSlow;
+#else
+        AnmVm::AssignVm(spawnEffect, &bulletProps->sprites->spriteSpawnEffectSlow);
+#endif
+        SetActiveSpriteByResolution(spawnEffect,
                                     &bulletProps->sprites->spriteSpawnEffectSlow, bullet,
                                     (i32)bulletProps->spriteOffset);
         bullet->state = BULLET_SPAWNING_SLOW;
@@ -1134,7 +1196,8 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
         case BULLET_SPAWNING_FAST:
             bullet->timer2--;
             bullet->pos += bullet->velocity / 2.0f;
-            if (!g_AnmManager->ExecuteScript(&bullet->sprites.spriteSpawnEffectFast))
+            if (!g_AnmManager->ExecuteScript(
+                    bullet->SpawnEffectVm(BULLET_SPAWNING_FAST)))
             {
                 goto update_timers;
             }
@@ -1143,7 +1206,8 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
         case BULLET_SPAWNING_NORMAL:
             bullet->timer2--;
             bullet->pos += bullet->velocity / 2.5f;
-            if (!g_AnmManager->ExecuteScript(&bullet->sprites.spriteSpawnEffectNormal))
+            if (!g_AnmManager->ExecuteScript(
+                    bullet->SpawnEffectVm(BULLET_SPAWNING_NORMAL)))
             {
                 goto update_timers;
             }
@@ -1152,7 +1216,8 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
         case BULLET_SPAWNING_SLOW:
             bullet->timer2--;
             bullet->pos += bullet->velocity / 3.0f;
-            if (!g_AnmManager->ExecuteScript(&bullet->sprites.spriteSpawnEffectSlow))
+            if (!g_AnmManager->ExecuteScript(
+                    bullet->SpawnEffectVm(BULLET_SPAWNING_SLOW)))
             {
                 goto update_timers;
             }
@@ -1341,13 +1406,13 @@ void Bullet::Draw()
     switch (this->state)
     {
     case BULLET_SPAWNING_FAST:
-        vm = &this->sprites.spriteSpawnEffectFast;
+        vm = this->SpawnEffectVm(BULLET_SPAWNING_FAST);
         break;
     case BULLET_SPAWNING_NORMAL:
-        vm = &this->sprites.spriteSpawnEffectNormal;
+        vm = this->SpawnEffectVm(BULLET_SPAWNING_NORMAL);
         break;
     case BULLET_SPAWNING_SLOW:
-        vm = &this->sprites.spriteSpawnEffectSlow;
+        vm = this->SpawnEffectVm(BULLET_SPAWNING_SLOW);
         break;
     case BULLET_DESPAWN:
         vm = &this->sprites.spriteSpawnEffectDonut;

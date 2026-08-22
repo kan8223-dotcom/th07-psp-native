@@ -48,6 +48,25 @@ struct BulletTypeSprites
     // pad 1
 };
 
+#if defined(TH07_PSP_1000)
+// Fast, normal, and slow spawn animations are mutually exclusive states of a
+// bullet. Keeping three complete AnmVm instances in every PSP-1000 payload
+// wastes over 1 MiB at the original 1,024-slot capacity, so the low-memory
+// runtime stores only the selected spawn animation. The 16 type templates
+// above remain unchanged and provide the appropriate source VM at spawn time.
+struct Psp1000BulletSprites
+{
+    AnmVm spriteBullet;
+    AnmVm spriteSpawnEffect;
+    AnmVm spriteSpawnEffectDonut;
+    ZunVec3 grazeSize;
+    u8 unused_b88;
+    u8 bulletHeight;
+    u8 collisionType;
+    // pad 1
+};
+#endif
+
 struct BulletCommand
 {
     f32 speed;
@@ -185,6 +204,8 @@ struct Bullet
     void UpdateBulletBounce();
 
     void Draw();
+    AnmVm *SpawnEffectVm(u16 spawnState);
+    void AssignTypeSprites(const BulletTypeSprites &source);
 
     void Initialize()
     {
@@ -198,7 +219,11 @@ struct Bullet
         this->commands[idx].type = 0;
     }
 
+#if defined(TH07_PSP_1000)
+    Psp1000BulletSprites sprites;
+#else
     BulletTypeSprites sprites;
+#endif
     ZunVec3 pos;
     ZunVec3 velocity;
     ZunVec3 unused_ba4;
@@ -240,14 +265,17 @@ struct Bullet
 #endif
 };
 
+#if defined(TH07_PSP_1000)
+static_assert(sizeof(Bullet) == 2276,
+              "PSP-1000 Bullet growth requires re-auditing the stage pool arena");
+#endif
+
 struct BulletManager
 {
-    static constexpr i32 kBulletCapacity =
-#if defined(TH07_PSP_1000)
-        640;
-#else
-        1024;
-#endif
+    // Replay state depends on the original 1,024 slot IDs, including the
+    // next-slot cursor and reverse update order. PSP-1000 compacts each
+    // payload but preserves the complete logical and physical slot space.
+    static constexpr i32 kBulletCapacity = 1024;
 
     BulletManager();
 
@@ -273,10 +301,10 @@ struct BulletManager
 
     BulletTypeSprites bulletTypeTemplates[16];
 #if defined(TH07_PSP_1000)
-    // Five AnmVm instances make every slot roughly 3.4 KiB. Keep the TH06
-    // proven 640-bullet ceiling and make the pool stage-local on PSP-1000.
-    // Allocate it in small chunks because multi-megabyte contiguous heap
-    // blocks are no longer available after several ANM archives have loaded.
+    // The compact PSP-1000 runtime payload keeps only the one active spawn VM,
+    // allowing all 1,024 original logical slots to have stable physical
+    // storage. Allocate it in small chunks because a multi-megabyte contiguous
+    // block is unavailable after several ANM archives have loaded.
     static constexpr i32 kBulletChunkCapacity = 64;
     static constexpr i32 kBulletChunkCount =
         (kBulletCapacity + kBulletChunkCapacity - 1) / kBulletChunkCapacity;
@@ -309,10 +337,10 @@ struct BulletManager
 #endif
     ItemType itemType;
 #if defined(TH07_PSP)
-    // Bullet embeds five AnmVm instances. Reading state from every slot walks
-    // roughly 3.5 MiB per frame even when most slots are empty, evicting the
-    // active bullets from Allegrex's small cache. Keep the original array and
-    // update order, but consult this compact occupancy map first.
+    // Even the compact PSP-1000 Bullet payload is large. Avoid reading state
+    // from every empty slot and evicting active bullets from Allegrex's small
+    // cache; keep the original update order but consult this occupancy map
+    // first.
     u32 pspActiveBulletBits[(kBulletCapacity + 31) / 32];
 
     bool PspIsBulletSlotTracked(i32 index) const

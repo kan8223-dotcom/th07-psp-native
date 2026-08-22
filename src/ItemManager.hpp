@@ -55,14 +55,16 @@ struct Item
     struct Item *next;
 };
 
+#if defined(TH07_PSP_1000)
+static_assert(sizeof(Item) == 648,
+              "PSP-1000 Item growth requires re-auditing the stage pool arena");
+#endif
+
 struct ItemManager
 {
-    static constexpr i32 kItemCapacity =
-#if defined(TH07_PSP_1000)
-        512;
-#else
-        1100;
-#endif
+    // The item index parity is gameplay-visible, and replay-compatible spawn
+    // order requires all 1,100 original slots even on PSP-1000.
+    static constexpr i32 kItemCapacity = 1100;
 
     ItemManager();
 
@@ -80,10 +82,27 @@ struct ItemManager
     Item *SpawnItem(ZunVec3 *heading, i32 itemType, i32 state);
 
 #if defined(TH07_PSP_1000)
+    // Keep the full original slot space in the shared stage arena. The extra
+    // payload is the inherited spawn-failure sentinel.
     struct Item *items;
 #else
     struct Item items[kItemCapacity + 1];
 #endif
+    Item *ItemAt(i32 logicalIndex)
+    {
+#if defined(TH07_PSP_1000)
+        if (logicalIndex < 0 || logicalIndex >= kItemCapacity)
+        {
+            return nullptr;
+        }
+#endif
+        return &items[logicalIndex];
+    }
+
+    Item *ItemFailureSentinel()
+    {
+        return &items[kItemCapacity];
+    }
     i32 nextIndex;
     i32 activeItemCount;
     struct Item listHead;

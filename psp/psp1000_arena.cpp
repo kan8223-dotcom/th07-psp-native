@@ -10,11 +10,14 @@
 namespace
 {
 // title01.anm is roughly 5.29 MiB and is the largest decompressed ANM in the
-// original archive.  After it is compacted the block shrinks to 4 MiB + 128
+// original archive. After it is compacted the block shrinks to 4 MiB + 512
 // KiB, enough for face_08_00.anm (slightly over 4 MiB) and the reduced
 // PSP-1000 gameplay pools.
 constexpr std::size_t kInitialArenaBytes = 5u * 1024u * 1024u + 512u * 1024u;
-constexpr std::size_t kStageArenaBytes = 4u * 1024u * 1024u + 128u * 1024u;
+// Compact bullet payloads allow all 1,024 original bullets to fit. Keep all
+// 1,100 Items and 400 normal Effects too: their slot reuse and update order are
+// gameplay-visible in replays. This leaves roughly 76 KiB of pool headroom.
+constexpr std::size_t kStageArenaBytes = 4u * 1024u * 1024u + 512u * 1024u;
 
 enum class ArenaMode
 {

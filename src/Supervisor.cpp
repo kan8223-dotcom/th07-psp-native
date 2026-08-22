@@ -420,15 +420,60 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                 break;
             }
             case 7:
+            {
+#if defined(TH07_PSP)
+                th07_psp_boot_note("replay return begin");
+#endif
                 GameManager::CutChain();
                 arg->curState = 0;
                 ReplayManager::SaveReplay(NULL, NULL);
                 arg->curState = 1;
+#if defined(TH07_PSP)
+                // A completed replay returns through a separate state from the
+                // normal gameplay-to-title path, so it previously skipped the
+                // texture-cache trim and retry used at other PSP registration
+                // boundaries.  Retire detached stage blocks before title01.anm
+                // asks the fragmented heap for its large contiguous source.
+                {
+                    const unsigned int releasedBytes = Th07PspTrimTextureCache();
+                    th07_psp_boot_notef("replay return boundary trim %uK",
+                                        releasedBytes / 1024u);
+                }
+#endif
                 if (MainMenu::RegisterChain() != ZUN_SUCCESS)
                 {
+#if defined(TH07_PSP)
+                    // RegisterChain rolls its partial menu lifecycle back, so
+                    // one trim-and-retry is safe.  If replay selection still
+                    // cannot be restored, clear replay mode and use the normal
+                    // title fallback instead of reporting success to the XMB.
+                    th07_psp_boot_note("replay return menu failed; trim and retry");
+                    {
+                        const unsigned int releasedBytes = Th07PspTrimTextureCache();
+                        th07_psp_boot_notef("replay return retry after trim %uK",
+                                            releasedBytes / 1024u);
+                    }
+                    if (MainMenu::RegisterChain() == ZUN_SUCCESS)
+                    {
+                        th07_psp_boot_note("replay return menu ready after retry");
+                        break;
+                    }
+
+                    th07_psp_boot_note("replay return retry failed; return title");
+                    g_GameManager.SetReplay(0);
+                    g_GameManager.demo = 0;
+                    arg->prevState = 2;
+                    arg->curState = 0;
+                    goto CASE_0;
+#else
                     return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
+#endif
                 }
+#if defined(TH07_PSP)
+                th07_psp_boot_note("replay return menu ready");
+#endif
                 break;
+            }
             case 9:
                 g_GameManager.plst.playDataByDifficulty[g_GameManager.difficulty]
                     .noContinueClearCount =

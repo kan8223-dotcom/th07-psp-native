@@ -16,7 +16,9 @@ ZunGraphics *Th07CreatePspGuBackend();
 void Th07PspDrawSpriteQuads(const Th07PspSpriteVertex *vertices, unsigned int spriteCount);
 void Th07PspDrawSpritePairs(const Th07PspSpriteVertex *vertices, unsigned int spriteCount);
 void Th07PspForgetSurface(const void *pixels);
-void Th07PspAllowNextStaticTexture512();
+void Th07PspAllowNextWideStaticTexture();
+bool Th07PspGetTextureContentSize(GfxTextureHandle texture, unsigned int *width,
+                                  unsigned int *height);
 void Th07PspMarkTextTexture(GfxTextureHandle texture);
 void Th07PspBeginTextUploadBatch();
 void Th07PspEndTextUploadBatch();

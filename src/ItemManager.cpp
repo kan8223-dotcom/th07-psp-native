@@ -77,7 +77,8 @@ bool ItemManager::PspEnsureItemPool()
             sizeof(Item) * static_cast<size_t>(kItemCapacity + 1)));
         if (this->items)
         {
-            memset(this->items, 0, sizeof(Item) * static_cast<size_t>(kItemCapacity + 1));
+            memset(this->items, 0,
+                   sizeof(Item) * static_cast<size_t>(kItemCapacity + 1));
         }
     }
     if (!this->items)
@@ -85,6 +86,7 @@ bool ItemManager::PspEnsureItemPool()
         th07_psp_boot_note("PSP1000 item pool allocation failed");
         return false;
     }
+    memset(this->pspActiveItemBits, 0, sizeof(this->pspActiveItemBits));
     th07_psp_boot_notef("PSP1000 item pool %d slots %uK", kItemCapacity,
                         static_cast<unsigned int>(sizeof(Item) * kItemCapacity / 1024u));
     return true;
@@ -103,10 +105,11 @@ Item::Item()
 
 Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
 {
-    Item *item;
+    Item *item = nullptr;
     i32 i;
+    i32 itemIndex = this->nextIndex;
+    bool spawned = false;
 
-    item = &this->items[this->nextIndex];
     if ((i32)g_GameManager.globals->currentPower >= 128)
     {
         if (itemType == ITEM_POWER_SMALL || itemType == ITEM_POWER_BIG)
@@ -116,49 +119,35 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
     }
     for (i = 0; i < kItemCapacity; i++)
     {
-        this->nextIndex++;
-
-#if defined(TH07_PSP)
-        const i32 itemIndex = static_cast<i32>(item - this->items);
-        if (this->PspIsItemSlotTracked(itemIndex))
-        {
-            if (item->isInUse)
-            {
-                if (this->nextIndex >= kItemCapacity)
-                {
-                    this->nextIndex = 0;
-                    item = this->items;
-                }
-                else
-                {
-                    item++;
-                }
-                continue;
-            }
-            this->PspForgetItemSlot(itemIndex);
-        }
-#else
-        if (item->isInUse)
-        {
-            if (this->nextIndex >= kItemCapacity)
-            {
-                this->nextIndex = 0;
-                item = this->items;
-            }
-            else
-            {
-                item++;
-            }
-            continue;
-        }
-#endif
+        this->nextIndex = itemIndex + 1;
         if (this->nextIndex >= kItemCapacity)
         {
             this->nextIndex = 0;
         }
+
+#if defined(TH07_PSP)
+        if (this->PspIsItemSlotTracked(itemIndex))
+        {
+            item = this->ItemAt(itemIndex);
+            if (item && item->isInUse)
+            {
+                itemIndex = this->nextIndex;
+                continue;
+            }
+            this->PspForgetItemSlot(itemIndex);
+        }
+        item = this->ItemAt(itemIndex);
+#else
+        item = this->ItemAt(itemIndex);
+        if (item->isInUse)
+        {
+            itemIndex = this->nextIndex;
+            continue;
+        }
+#endif
         item->isInUse = 1;
 #if defined(TH07_PSP)
-        this->PspTrackItemSlot(static_cast<i32>(item - this->items));
+        this->PspTrackItemSlot(itemIndex);
 #endif
         item->currentPosition = *heading;
         item->startPosition.x = 0.0f;
@@ -187,10 +176,11 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
         item->sprite.zWriteDisable = 1;
         item->autoCollect = 0;
         item->isOnscreen = 1;
+        spawned = true;
         break;
     }
 
-    return i < kItemCapacity ? item : &this->items[kItemCapacity];
+    return spawned ? item : this->ItemFailureSentinel();
 }
 
 void ItemManager::OnUpdate()
@@ -206,7 +196,6 @@ void ItemManager::OnUpdate()
     f32 itemTimerSecs;
     i32 i;
 
-    item = this->items;
     ZunVec3 local_20(g_Player.shooterData->itemCollectRadius,
                      g_Player.shooterData->itemCollectRadius, 16.0f);
     itemAcquired = 0;
@@ -214,7 +203,7 @@ void ItemManager::OnUpdate()
     this->listTail = &this->listHead;
     this->listHead.next = NULL;
 
-    for (i = 0; i < kItemCapacity; i++, item++)
+    for (i = 0; i < kItemCapacity; i++)
     {
 #if defined(TH07_PSP)
         if (!this->PspIsItemSlotTracked(i))
@@ -222,6 +211,7 @@ void ItemManager::OnUpdate()
             continue;
         }
 #endif
+        item = this->ItemAt(i);
         if (!item->isInUse)
         {
 #if defined(TH07_PSP)
@@ -611,8 +601,7 @@ void ItemManager::RemoveAllItems()
     Item *item;
     i32 i;
 
-    item = this->items;
-    for (i = 0; i < kItemCapacity; i++, item++)
+    for (i = 0; i < kItemCapacity; i++)
     {
 #if defined(TH07_PSP)
         if (!this->PspIsItemSlotTracked(i))
@@ -620,6 +609,7 @@ void ItemManager::RemoveAllItems()
             continue;
         }
 #endif
+        item = this->ItemAt(i);
         if (!item->isInUse)
         {
             continue;
@@ -635,8 +625,7 @@ void ItemManager::DespawnAllItems(i32 param_1)
     Item *item;
     i32 i;
 
-    item = this->items;
-    for (i = 0; i < kItemCapacity; i++, item++)
+    for (i = 0; i < kItemCapacity; i++)
     {
 #if defined(TH07_PSP)
         if (!this->PspIsItemSlotTracked(i))
@@ -644,6 +633,7 @@ void ItemManager::DespawnAllItems(i32 param_1)
             continue;
         }
 #endif
+        item = this->ItemAt(i);
         if (item->isInUse == 0 || i == param_1)
         {
             continue;
@@ -669,8 +659,7 @@ void ItemManager::ActivateAllItems()
     Item *item;
     i32 i;
 
-    item = this->items;
-    for (i = 0; i < kItemCapacity; i++, item++)
+    for (i = 0; i < kItemCapacity; i++)
     {
 #if defined(TH07_PSP)
         if (!this->PspIsItemSlotTracked(i))
@@ -678,6 +667,7 @@ void ItemManager::ActivateAllItems()
             continue;
         }
 #endif
+        item = this->ItemAt(i);
         if (item->isInUse != 1)
         {
             continue;
