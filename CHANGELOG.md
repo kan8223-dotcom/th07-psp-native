@@ -2,6 +2,20 @@
 
 このプロジェクトは開発途中です。実機未確認の修正は、その旨を明記します。
 
+## 2026-08-23 — v0.1.6-beta（PSP-1000音声ホットフィックス）
+
+- v0.1.5のBGM/SE共通master gain方式を廃止しました。SEが鳴っていない出力blockはBGMを
+  bit単位で変更せず、再生中のSEだけを元のDirectSound gainで32bit幅のbusへ合成します。
+  SEは中間s16 clipを行わず、各BGM sampleの符号付き16bit残りheadroomへ加算します。
+- TH07にはTH06のような複数blockの出力queueがないため、出力thread内でMEの完了を待つ方式を
+  使用せず、SEのmixとBGMへの加算をSC上で同期実行します。PSP-1000実機ログでは、SE trigger
+  2595回、mix 9106 block、headroom制限70898 channel sample、SC mix＋加算は平均504 us・最大1255 usで、
+  BGM入力ringのunderrunは0回でした。OPのBGM、雑魚の爆散音、ボム音がクリアになったとの実機報告を
+  確認しています。
+- PSP-1000/64MB版のクリーンビルドとrelease audit、PPSSPPの32MB/64MBモデルによる
+  スモーク試験を通過しています。このホットフィックスの聴感確認はPSP-1000実機のみで、
+  64MB実機では未確認です。
+
 ## 2026-08-23 — v0.1.5-beta（描画・音声・リプレイ修正候補）
 
 - STARTポーズ用のフレームバッファ取込みを論理画面と同じ上から下の行順へ統一しました。

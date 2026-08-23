@@ -43,6 +43,16 @@ typedef struct Th07PspMixJob
 // Returns 1 when ME produced this block, 0 when the identical SC fallback did.
 // Either return value leaves `output` ready for the existing software ring.
 int th07_psp_me_audio_mix(const Th07PspMixJob *job, short *output);
+// Run the identical integer mixer synchronously on the main CPU.  TH07's
+// audio output thread has only one 512-frame block of deadline slack, so SFX
+// jobs must not pay a blocking ME round trip before submitting that block.
+// Accumulate SFX in the internal 32-bit bus and add them directly to `io`.
+// Only the SFX contribution is limited against each untouched BGM sample's
+// remaining signed-16-bit headroom; no intermediate 16-bit clip is possible.
+// This entry point uses one internal wide bus and is intentionally
+// non-reentrant; call it only from TH07's single audio-output thread.
+int th07_psp_sc_audio_mix_into(const Th07PspMixJob *job, short *io,
+                               unsigned int *limitedSamples);
 int th07_psp_me_audio_init(void);
 void th07_psp_me_audio_shutdown(void);
 void th07_psp_me_audio_diag_window(unsigned int *jobs, unsigned int *fallbacks,

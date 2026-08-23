@@ -208,7 +208,7 @@ static int apply_gain_q16(int sample, uint32_t gainQ16)
     return product >> 16;
 }
 
-static void mix_on_sc(const Th07PspMixJob *job, short *output)
+static void mix_on_sc_output(const Th07PspMixJob *job, short *output, int *wideOutput)
 {
     const unsigned int frames = job->frames <= TH07_PSP_ME_MAX_MIX_FRAMES
                                     ? job->frames
@@ -256,9 +256,22 @@ static void mix_on_sc(const Th07PspMixJob *job, short *output)
         }
     }
 
+    if (!output && !wideOutput)
+        return;
     const int divisor = job->mixDivisor ? (int)job->mixDivisor : 1;
     for (unsigned int sample = 0; sample < samples; ++sample)
-        output[sample] = (short)clamp_s16(gScWide[sample] / divisor);
+    {
+        const int mixed = gScWide[sample] / divisor;
+        if (wideOutput)
+            wideOutput[sample] = mixed;
+        else
+            output[sample] = (short)clamp_s16(mixed);
+    }
+}
+
+static void mix_on_sc(const Th07PspMixJob *job, short *output)
+{
+    mix_on_sc_output(job, output, 0);
 }
 
 static void me_invalidate_stream(uint32_t physical, uint32_t stride,
@@ -739,6 +752,46 @@ int th07_psp_me_audio_mix(const Th07PspMixJob *job, short *output)
     return 0;
 }
 
+int th07_psp_sc_audio_mix_into(const Th07PspMixJob *job, short *io,
+                               unsigned int *limitedSamples)
+{
+    if (!job || !io || job->frames == 0 || job->frames > TH07_PSP_ME_MAX_MIX_FRAMES ||
+        job->inputCount > TH07_PSP_ME_MAX_MIX_INPUTS)
+        return 0;
+    mix_on_sc_output(job, 0, 0);
+
+    const unsigned int samples = job->frames * 2;
+    const int divisor = job->mixDivisor ? (int)job->mixDivisor : 1;
+    unsigned int limited = 0;
+    for (unsigned int sample = 0; sample < samples; ++sample)
+    {
+        const int background = io[sample];
+        int effect = divisor == 1 ? gScWide[sample] : gScWide[sample] / divisor;
+        if (effect > 0)
+        {
+            const int headroom = 32767 - background;
+            if (effect > headroom)
+            {
+                effect = headroom;
+                ++limited;
+            }
+        }
+        else if (effect < 0)
+        {
+            const int headroom = -32768 - background;
+            if (effect < headroom)
+            {
+                effect = headroom;
+                ++limited;
+            }
+        }
+        io[sample] = (short)(background + effect);
+    }
+    if (limitedSamples)
+        *limitedSamples = limited;
+    return 1;
+}
+
 static int selftest_audio(void)
 {
     static short testStereo[TH07_PSP_ME_MAX_MIX_FRAMES * 2] __attribute__((aligned(64)));
@@ -776,7 +829,26 @@ static int selftest_audio(void)
     mix_on_sc(&test, expected);
     if (!dispatch_audio(&test, actual))
         return 0;
-    return memcmp(expected, actual, sizeof(expected)) == 0;
+    if (memcmp(expected, actual, sizeof(expected)) != 0)
+        return 0;
+
+    // Verify the runtime SFX-only wide path and its sign-aware saturation.
+    short into[4] = {32760, -32760, 100, -100};
+    short mono[2] = {1000, -1000};
+    unsigned int limited = 0;
+    memset(&test, 0, sizeof(test));
+    test.frames = 2;
+    test.inputCount = 1;
+    test.mixDivisor = 1;
+    test.inputs[0].samples = mono;
+    test.inputs[0].frames = 2;
+    test.inputs[0].channels = 1;
+    test.inputs[0].stepFixed = 65536u;
+    test.inputs[0].gainQ16 = 65536u;
+    if (!th07_psp_sc_audio_mix_into(&test, into, &limited))
+        return 0;
+    return limited == 1 && into[0] == 32767 && into[1] == -31760 &&
+           into[2] == -900 && into[3] == -1100;
 }
 
 static int selftest_vertices(void)

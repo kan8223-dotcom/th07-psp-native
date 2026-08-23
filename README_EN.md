@@ -12,7 +12,7 @@ An unofficial, work-in-progress native PSP port of *Touhou Youyoumu ~ Perfect Ch
 
 ## Before you install
 
-The current release is v0.1.5-beta and is intended for testing. There are two separate downloads:
+The current release is v0.1.6-beta and is intended for testing. There are two separate downloads:
 
 - **PSP-1000:** use the archive whose name ends in `-psp1000.zip`. This is a special 32 MiB tester
   build with a reduced enemy limit.
@@ -116,6 +116,11 @@ option is treated as `FULL STRETCH` (480x272).
   files before testing a new build.
 - PPSSPP is useful for testing, but a successful PPSSPP run does not prove that the same path works on
   real PSP hardware. Memory Stick I/O, CFW, Media Engine audio, and memory limits can behave differently.
+- v0.1.6 leaves BGM-only output unmodified and mixes only active sound effects on the main CPU into a
+  32-bit-wide bus before adding them within the BGM samples' remaining headroom. A PSP-1000 hardware
+  test found the opening BGM, enemy-explosion effects, and bomb effects clear, with zero BGM input-ring
+  underruns. Both profiles clean-build, and both the 32 MiB and 64 MiB models pass PPSSPP smoke tests.
+  The 64 MiB build has not received the same real-hardware listening test.
 - The PSP-1000 build now stores all 1,024 original bullet slots after compacting their mutually
   exclusive spawn-animation VMs, all 1,100 original item slots, and all 400 normal effect slots. The
   same built-in demo matched the 64 MiB build at all 136 sampled points through frame 8160 in PPSSPP.
@@ -205,8 +210,10 @@ make psp1000-build
 make release
 ```
 
-`make release` clean-builds both hardware profiles and creates the two model-specific ZIP files. A
-direct-stage diagnostic build is available only when explicitly requested and must not be distributed:
+`make release` clean-builds both hardware profiles and creates
+`dist/th07-psp-native-v0.1.6-beta-psp1000.zip` and
+`dist/th07-psp-native-v0.1.6-beta-psp2000plus.zip`. A direct-stage diagnostic build is available only
+when explicitly requested and must not be distributed:
 
 ```sh
 make PSP_DIRECT_GAME=1 PSP_DIRECT_STAGE=5 -j"$(nproc)"

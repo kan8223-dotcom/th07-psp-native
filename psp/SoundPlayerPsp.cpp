@@ -50,10 +50,6 @@ constexpr u32 kSfxBufferCount = 30;
 constexpr u32 kSfxLogicalCount = 38;
 constexpr u32 kSfxVoiceCount = 16;
 constexpr u32 kUnityGainQ16 = 65536u;
-// Restore at 1/128 full scale per 512-frame block (about 1.5 seconds from
-// silence to unity).  Gain reductions remain immediate so a new burst can
-// never hard-clip while the slower release avoids audible block pumping.
-constexpr u32 kMixGainReleaseQ16 = 512u;
 constexpr int kBgmIoUrgentPriority = 0x1c;
 constexpr int kBgmIoBackgroundPriority = 0x21;
 
@@ -92,7 +88,9 @@ volatile u32 gStopSfxMaskLow;
 volatile u32 gStopSfxMaskHigh;
 volatile u32 gSfxTriggerCount;
 volatile u32 gSfxMixedBlocks;
-volatile u32 gMixMasterGainQ16 = kUnityGainQ16;
+volatile u32 gSfxHeadroomLimitedSamples;
+volatile u32 gSfxScTotalMixUs;
+volatile u32 gSfxScMaxMixUs;
 volatile u32 gSePowerStarts;
 volatile u32 gSePowerEnds;
 volatile u32 gSePowerIgnored;
@@ -191,14 +189,13 @@ void ResetSfxVoices()
     __atomic_store_n(&gPendingSfxMaskHigh, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&gStopSfxMaskLow, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&gStopSfxMaskHigh, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&gMixMasterGainQ16, kUnityGainQ16, __ATOMIC_RELEASE);
     for (PspSfxVoice &voice : gSfxVoices)
     {
         voice = {-1, 0, 0, false};
     }
 }
 
-__attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames, bool haveBackground)
+__attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames)
 {
     // Allegrex is a 32-bit CPU.  Two native atomic masks avoid libatomic's
     // 64-bit emulation in this real-time thread.
@@ -283,23 +280,6 @@ __attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames, bool haveBack
 
     Th07PspMixJob mixJob{};
     mixJob.frames = frames;
-    mixJob.mixDivisor = 1;
-    u32 totalInputGainQ16 = 0;
-    if (haveBackground)
-    {
-        // Input zero preserves the BGM/fade block already assembled by the
-        // SC. It is the only mutable source and therefore the only input
-        // requiring a per-job cache writeback before ME reads it.
-        Th07PspMixInput &background = mixJob.inputs[mixJob.inputCount++];
-        background.samples = block;
-        background.frames = frames;
-        background.channels = 2;
-        background.stepFixed = kUnityGainQ16;
-        background.gainQ16 = kUnityGainQ16;
-        background.needsWriteback = 1;
-        background.sampleFormat = TH07_PSP_MIX_S16;
-        totalInputGainQ16 = kUnityGainQ16;
-    }
 
     bool mixed = false;
     for (PspSfxVoice &voice : gSfxVoices)
@@ -336,7 +316,6 @@ __attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames, bool haveBack
             input.sourceFraction = voice.positionFraction;
             input.stepFixed = sound.stepFixed;
             input.gainQ16 = static_cast<u32>(gSfxGainQ15[voice.logicalIdx]) << 1;
-            totalInputGainQ16 += input.gainQ16;
 #if defined(TH07_PSP_1000)
             input.sampleFormat = TH07_PSP_MIX_MULAW8;
 #else
@@ -361,71 +340,35 @@ __attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames, bool haveBack
         }
     }
 
-    // TH06 avoids multi-channel saturation by dividing its complete mix by
-    // max(8, playingChannels). TH07 previously left the divisor at one, so a
-    // dense SFX burst was added to full-scale BGM and hard-clipped at s16.
-    // Use the same headroom principle but weight it by the effects' actual
-    // DirectSound gains. This preserves the BGM/SE balance, leaves solo BGM
-    // bit-exact at unity, and guarantees that the worst-case absolute sum is
-    // inside the signed-16-bit range. Reductions attack immediately; release
-    // is deliberately gradual to avoid an 18 dB on/off pump.
-    u32 targetMasterGainQ16 = kUnityGainQ16;
-    if (mixed && totalInputGainQ16 != 0)
+    if (!mixed)
     {
-        // apply_gain_q16 rounds each negative input down by at most one LSB.
-        // Reserve one output LSB per descriptor so even equal-phase -FS
-        // sources cannot cross -32768 after those independent shifts.
-        const u32 roundingMargin =
-            std::min<u32>(static_cast<u32>(mixJob.inputCount), kUnityGainQ16 - 1u);
-        const unsigned long long numerator =
-            static_cast<unsigned long long>(kUnityGainQ16 - roundingMargin) << 16;
-        targetMasterGainQ16 = static_cast<u32>(
-            std::min<unsigned long long>(kUnityGainQ16,
-                                         numerator / totalInputGainQ16));
+        // Preserve BGM-only blocks bit-for-bit.  TH07 submits directly from
+        // this thread and has no TH06-style multi-block output queue, so even
+        // a successful 8-10 ms ME wait can miss the 11.6 ms DAC deadline.
+        return false;
     }
 
-    u32 masterGainQ16 =
-        __atomic_load_n(&gMixMasterGainQ16, __ATOMIC_ACQUIRE);
-    if (!mixed && !haveBackground)
+    // Mix effects into a wide bus at their original DirectSound gains.  TH06
+    // divides BGM and SFX together, but applying that divisor only to TH07's
+    // SFX would make every effect 18 dB too quiet relative to untouched BGM.
+    // Running synchronously on SC is also more predictable than a blocking ME
+    // round trip in this deadline-critical output thread.
+    mixJob.mixDivisor = 1;
+    const u32 mixStartUs = sceKernelGetSystemTimeLow();
+    unsigned int limitedSamples = 0;
+    if (!th07_psp_sc_audio_mix_into(&mixJob, block, &limitedSamples))
     {
-        // No audible source exists, so there is nothing across which to hear
-        // a release ramp. Make the next isolated sound start at its own gain.
-        masterGainQ16 = kUnityGainQ16;
+        return false;
     }
-    else if (targetMasterGainQ16 < masterGainQ16)
+    const u32 mixElapsedUs = sceKernelGetSystemTimeLow() - mixStartUs;
+    if (mixElapsedUs > gSfxScMaxMixUs)
     {
-        masterGainQ16 = targetMasterGainQ16;
+        gSfxScMaxMixUs = mixElapsedUs;
     }
-    else if (masterGainQ16 < targetMasterGainQ16)
-    {
-        masterGainQ16 = std::min(targetMasterGainQ16,
-                                 masterGainQ16 + kMixGainReleaseQ16);
-    }
-    __atomic_store_n(&gMixMasterGainQ16, masterGainQ16, __ATOMIC_RELEASE);
-
-    if (masterGainQ16 != kUnityGainQ16)
-    {
-        for (u32 inputIndex = 0; inputIndex < mixJob.inputCount; ++inputIndex)
-        {
-            Th07PspMixInput &input = mixJob.inputs[inputIndex];
-            input.gainQ16 = static_cast<u32>(
-                static_cast<unsigned long long>(input.gainQ16) * masterGainQ16 >> 16);
-        }
-    }
-
-    if (mixed || (haveBackground && masterGainQ16 != kUnityGainQ16))
-    {
-        // The API deliberately performs an identical SC mix if ME is absent,
-        // disabled or times out.  Audio correctness is independent of MECC.
-        th07_psp_me_audio_mix(&mixJob, block);
-        // Only count blocks which actually contain an SFX voice. During the
-        // limiter release, BGM-only blocks also pass through this mixer.
-        if (mixed)
-        {
-            ++gSfxMixedBlocks;
-        }
-    }
-    return mixed;
+    gSfxScTotalMixUs += mixElapsedUs;
+    gSfxHeadroomLimitedSamples += limitedSamples;
+    ++gSfxMixedBlocks;
+    return true;
 }
 
 void CloseTrackFile()
@@ -625,7 +568,7 @@ int BgmOutputThread(SceSize, void *)
             }
         }
 
-        const bool haveSfx = MixSfxBlock(block, kFramesPerOutput, haveBgm);
+        const bool haveSfx = MixSfxBlock(block, kFramesPerOutput);
         if (!haveBgm && !haveSfx)
         {
             sceKernelDelayThread(1000);
@@ -792,6 +735,20 @@ ZunResult SoundPlayer::Release()
 {
     StopBGM();
     StopThreads();
+    const u32 mixedBlocks = __atomic_load_n(&gSfxMixedBlocks, __ATOMIC_ACQUIRE);
+    const u32 totalMixUs = __atomic_load_n(&gSfxScTotalMixUs, __ATOMIC_ACQUIRE);
+    th07_psp_boot_notef("audio stats U%lu T%lu M%lu L%lu SA%lu SM%lu",
+                        static_cast<unsigned long>(
+                            __atomic_load_n(&gUnderruns, __ATOMIC_ACQUIRE)),
+                        static_cast<unsigned long>(
+                            __atomic_load_n(&gSfxTriggerCount, __ATOMIC_ACQUIRE)),
+                        static_cast<unsigned long>(mixedBlocks),
+                        static_cast<unsigned long>(
+                            __atomic_load_n(&gSfxHeadroomLimitedSamples,
+                                            __ATOMIC_ACQUIRE)),
+                        static_cast<unsigned long>(mixedBlocks ? totalMixUs / mixedBlocks : 0u),
+                        static_cast<unsigned long>(
+                            __atomic_load_n(&gSfxScMaxMixUs, __ATOMIC_ACQUIRE)));
     th07_psp_me_audio_shutdown();
     if (gAudioChannel >= 0)
     {
@@ -1106,6 +1063,9 @@ ZunResult SoundPlayer::InitSoundBuffers()
     ResetSfxVoices();
     gSfxTriggerCount = 0;
     gSfxMixedBlocks = 0;
+    gSfxHeadroomLimitedSamples = 0;
+    gSfxScTotalMixUs = 0;
+    gSfxScMaxMixUs = 0;
     gSePowerStarts = 0;
     gSePowerEnds = 0;
     gSePowerIgnored = 0;
@@ -1148,6 +1108,7 @@ ZunResult SoundPlayer::InitSoundBuffers()
                   storageName,
                   static_cast<unsigned long>(totalFrames * sizeof(PspSfxSample) / 1024u));
     th07_psp_boot_note(message);
+    th07_psp_boot_note("audio mix SC wide SFX residual headroom");
     return ZUN_SUCCESS;
 }
 

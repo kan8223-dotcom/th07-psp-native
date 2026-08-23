@@ -2,7 +2,7 @@ export PATH := /usr/local/pspdev/bin:$(PATH)
 export PSPDEV := /usr/local/pspdev
 
 TARGET := TH07PSP
-PSP_RELEASE_VERSION := v0.1.5-beta
+PSP_RELEASE_VERSION := v0.1.6-beta
 PSP_RELEASE_1000_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION)-psp1000.zip
 PSP_RELEASE_2000PLUS_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION)-psp2000plus.zip
 MECC_DIR := psp/third_party/me-custom-core
