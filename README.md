@@ -18,6 +18,11 @@
 - m-c/dの[Media Engine Custom Core（MECC）](https://github.com/mcidclan/psp-media-engine-custom-core)を使い、
   実機ではMedia Engine（ME）にPCM音声ミキシングを担当させます。利用できない場合やPPSSPPでは
   メインCPU（SC）へ安全にフォールバックします。
+- PSP-1000の省メモリ音声profileでは、M-cid（m-c/d）氏の
+  [PSP Media Engine Safe Task](https://github.com/mcidclan/psp-media-engine-safe-task)が提供する
+  **MIST方式**を利用します。BGM ringをME local eDRAMへ移すことで、Main RAMを正味
+  393,088 bytes（383.875 KiB、約384 KiB）回収し、PSP-1000で発生していたOOMを防げました。
+  実機で1面から6面、Ending、Result、タイトル復帰まで通して確認しています。
 - 原作の論理解像度640x480を保ち、PSPの480x272へ4:3表示または全画面引き伸ばしで出力します。
 - 設定、スコア、リプレイは原作フォルダへ書かず、EBOOTと同じ場所へ保存します。
 
@@ -208,7 +213,7 @@ make PSP_DIRECT_GAME=1 PSP_DIRECT_STAGE=5 -j"$(nproc)"
 
 ## 参照・謝辞
 
-参考元のデコンパイル、TH06 PSP移植、MECCを含む実装出所は
+参考元のデコンパイル、TH06 PSP移植、MECC、MISTを含む実装出所は
 [CREDITS.md](CREDITS.md)へURLと用途を記載しています。
 
 ## ライセンス

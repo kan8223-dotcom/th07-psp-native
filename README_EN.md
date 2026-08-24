@@ -10,6 +10,13 @@ An unofficial, work-in-progress native PSP port of *Touhou Youyoumu ~ Perfect Ch
 > You must provide the complete installation folder from your own copy of the Windows version of
 > Touhou 7, updated to version 1.00b.
 
+The PSP-1000 memory-saving audio profile uses the **MIST method** from M-cid (m-c/d)'s
+[PSP Media Engine Safe Task](https://github.com/mcidclan/psp-media-engine-safe-task), together with
+the [PSP Media Engine Custom Core mapper](https://github.com/mcidclan/psp-media-engine-custom-core).
+Moving the BGM ring into ME-local eDRAM recovered a net 393,088 bytes (383.875 KiB, approximately
+384 KiB) of Main RAM and prevented the out-of-memory failures seen on PSP-1000. Real-hardware
+validation completed stages 1 through 6, the ending, results, and return to the title.
+
 ## Before you install
 
 The current release is v0.1.6-beta and is intended for testing. There are two separate downloads:
@@ -222,7 +229,7 @@ make PSP_DIRECT_GAME=1 PSP_DIRECT_STAGE=5 -j"$(nproc)"
 ## Credits and license
 
 Implementation sources and acknowledgements, including the upstream decompilation, the TH06 PSP port,
-and MECC, are listed in [CREDITS.md](CREDITS.md).
+MECC, and MIST, are listed in [CREDITS.md](CREDITS.md).
 
 The main project follows the upstream some100/th07 license and is released under CC0 1.0 Universal;
 see [LICENSE](LICENSE). Bundled third-party components and fonts retain their own licenses. Original

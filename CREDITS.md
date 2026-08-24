@@ -17,8 +17,16 @@
   TH06のプラットフォーム分離と、別機種向け移植時の描画・音声・ファイル境界の参照。
 - [kan8223-dotcom/psp-pmdvis](https://github.com/kan8223-dotcom/psp-pmdvis) @ `18fb0b1` —
   実機で稼働済みのMECC初期化、SC/ME共有メモリ、キャッシュ同期の基準。
-- [mcidclan/psp-media-engine-custom-core](https://github.com/mcidclan/psp-media-engine-custom-core) —
-  m-c/dによるPSP Media Engine Custom Core（MECC）。vendored copyのライセンスは
+- [mcidclan/psp-media-engine-safe-task](https://github.com/mcidclan/psp-media-engine-safe-task) @
+  `e8c2d8b` — M-cid（m-c/d）氏によるPSP Media Engine Safe Task Library。PSP-1000の
+  BGM ringをME local eDRAMへ移すため、同ライブラリのMIST方式を使用しています。これにより
+  Main RAMを正味393,088 bytes（383.875 KiB、約384 KiB）回収し、PSP-1000で発生していた
+  OOMを防ぐことができました。
+  ライセンスは同repositoryの[MIT License](https://github.com/mcidclan/psp-media-engine-safe-task/blob/main/LICENSE.md)を
+  参照してください。
+- [mcidclan/psp-media-engine-custom-core](https://github.com/mcidclan/psp-media-engine-custom-core) @
+  `7dbf492` — M-cid（m-c/d）氏によるPSP Media Engine Custom Core（MECC）とME core mapper。
+  MIST task内のnative ME関数と機種別mappingに使用しています。vendored copyのライセンスは
   `psp/third_party/me-custom-core/LICENSE.md`を参照してください。
 
 ## SDK・検証環境
