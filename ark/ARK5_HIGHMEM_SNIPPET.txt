@@ -1,0 +1,15 @@
+# TH07 PSP-2000+/3000/Go on ARK-5
+#
+# MERGE the one active line below into:
+#   ms0:/PSP/SAVEDATA/ARK_01234/SETTINGS.TXT
+# or, when ARK_01234 is installed on PSP Go internal storage:
+#   ef0:/PSP/SAVEDATA/ARK_01234/SETTINGS.TXT
+#
+# Do not replace your complete SETTINGS.TXT with this snippet.
+# Back up SETTINGS.TXT first.  If it already contains
+# "always, highmem, off", remove or replace that conflicting line.
+# Exit and relaunch the game after editing.  If ARK has not reloaded the
+# setting, restart VSH or power-cycle the PSP once.
+#
+# Do not use this on PSP-1000; that model has no extra Main RAM.
+homebrew, highmem, on

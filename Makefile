@@ -2,7 +2,7 @@ export PATH := /usr/local/pspdev/bin:$(PATH)
 export PSPDEV := /usr/local/pspdev
 
 TARGET := TH07PSP
-PSP_RELEASE_VERSION := v0.1.6-beta
+PSP_RELEASE_VERSION := v0.1.7-beta
 PSP_RELEASE_1000_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION)-psp1000.zip
 PSP_RELEASE_2000PLUS_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION)-psp2000plus.zip
 MECC_DIR := psp/third_party/me-custom-core
@@ -157,7 +157,8 @@ release-psp2000plus: psp/assets/NotoSansJP-Regular.ttf
 	stage="$$stage_root/TH07PSP"; \
 	mkdir -p "$$stage/docs" "$$stage/licenses/NotoSansJP" "$$stage/licenses/MECC" dist; \
 	cp EBOOT.PBP psp/assets/NotoSansJP-Regular.ttf README.md README_EN.md CREDITS.md CHANGELOG.md LICENSE "$$stage/"; \
-	cp docs/KNOWN_ISSUES.md "$$stage/docs/"; \
+	cp ark/ARK5_HIGHMEM_SNIPPET.txt "$$stage/"; \
+	cp docs/KNOWN_ISSUES.md docs/ARK5_HIGH_MEMORY.md "$$stage/docs/"; \
 	cp licenses/NotoSansJP/OFL.txt "$$stage/licenses/NotoSansJP/"; \
 	cp psp/third_party/me-custom-core/LICENSE.md "$$stage/licenses/MECC/"; \
 	stage_win=$$(wslpath -w "$$stage"); \

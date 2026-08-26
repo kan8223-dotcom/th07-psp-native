@@ -19,7 +19,7 @@ validation completed stages 1 through 6, the ending, results, and return to the 
 
 ## Before you install
 
-The current release is v0.1.6-beta and is intended for testing. There are two separate downloads:
+The current release is v0.1.7-beta and is intended for testing. There are two separate downloads:
 
 - **PSP-1000:** use the archive whose name ends in `-psp1000.zip`. This is a special 32 MiB tester
   build with a reduced enemy limit.
@@ -28,6 +28,10 @@ The current release is v0.1.6-beta and is intended for testing. There are two se
 
 Do not mix files from the two packages. In particular, do not copy an EBOOT intended for a different
 PSP model over the one in your selected package.
+
+v0.1.7 is an ARK-5 high-memory compatibility packaging update. If the 64 MiB build shuts down or
+returns before game `main()` and does not update `TH07PSP_BOOT.LOG`, follow the
+[ARK-5 high-memory setup](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md).
 
 > [!IMPORTANT]
 > For more stable play, press **SELECT** after starting the game to enable fixed-30 mode. This reduces
@@ -159,6 +163,15 @@ Check these items in order:
 4. Your original game is version 1.00b.
 5. You installed the package intended for your PSP model.
 
+For the 64 MiB build on PSP-2000/3000/Go with ARK-5, also check for an explicit
+`always, highmem, off` rule when the EBOOT exits without writing any boot log. In the ARK-5 UI, do
+not leave `Use Extra Memory` set to `Off`; select `Default`. Back up the existing
+ARK settings and replace the conflicting rule with `homebrew, highmem, on` (the same result as
+ARK-5 `Default` for this EBOOT).
+Relaunch the game; restart VSH or power-cycle only if the setting was not reloaded. Do not overwrite
+your complete settings file with the packaged snippet. See the
+[ARK-5 high-memory setup](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md).
+
 If the game still returns to XMB or fails during a stage transition, preserve the boot log before
 launching the game again.
 
@@ -218,8 +231,8 @@ make release
 ```
 
 `make release` clean-builds both hardware profiles and creates
-`dist/th07-psp-native-v0.1.6-beta-psp1000.zip` and
-`dist/th07-psp-native-v0.1.6-beta-psp2000plus.zip`. A direct-stage diagnostic build is available only
+`dist/th07-psp-native-v0.1.7-beta-psp1000.zip` and
+`dist/th07-psp-native-v0.1.7-beta-psp2000plus.zip`. A direct-stage diagnostic build is available only
 when explicitly requested and must not be distributed:
 
 ```sh

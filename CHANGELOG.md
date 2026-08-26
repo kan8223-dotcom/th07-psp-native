@@ -2,6 +2,17 @@
 
 このプロジェクトは開発途中です。実機未確認の修正は、その旨を明記します。
 
+## 2026-08-27 — v0.1.7-beta（ARK-5 high-memory互換性更新）
+
+- PSP-3000 / ARK-5で64MB版を起動した際、ARK設定に`always, highmem, off`があるとゲームの
+  `main()`より前に停止し、`TH07PSP_BOOT.LOG`も更新されないことを実機で確認しました。
+- 既存ARK設定を丸ごと上書きせず、`homebrew, highmem, on`だけをマージするsnippetと日英手順を
+  PSP-2000+配布ZIPへ追加しました。retail game全体へhigh memoryを強制しません。
+- GitHub v0.1.6 PSP-2000+配布EBOOT（SHA-256
+  `55dc6c2e254d1cad8c63e3965dfdd1b4059021ccecd3bd57a70bd945370bc278`）と同梱NotoSansJP fontを
+  PSP-3000 / ARK-5で使用し、設定変更後の再起動試験でタイトル画面到達を確認しました。
+- ゲームplay code、ME audio、GE描画、PSP-1000 profileは変更していません。
+
 ## 2026-08-23 — v0.1.6-beta（PSP-1000音声ホットフィックス）
 
 - v0.1.5のBGM/SE共通master gain方式を廃止しました。SEが鳴っていない出力blockはBGMを

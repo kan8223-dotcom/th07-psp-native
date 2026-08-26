@@ -28,8 +28,12 @@
 
 ## ベータ版の状態
 
-現在はテスター向けのv0.1.6-betaです。PSP-2000/3000/Goの64MB版と、メモリ使用量を縮小した
+現在はテスター向けのv0.1.7-betaです。PSP-2000/3000/Goの64MB版と、メモリ使用量を縮小した
 PSP-1000専用32MB版を別々のZIPで配布します。PSP-1000版は引き続きテスター向けです。
+
+v0.1.7はARK-5向けhigh-memory起動手順を64MB版ZIPへ追加した互換性更新です。ゲーム本体が
+`main()`へ入る前に黒画面または電源断となり、`TH07PSP_BOOT.LOG`も更新されない場合は、
+[ARK-5 high-memory手順](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md)を確認してください。
 
 > [!IMPORTANT]
 > **安定してプレイする場合は、起動後にSELECTを押して固定30fpsモードを使用することを推奨します。**
@@ -154,6 +158,15 @@ PSP-1000用タイトルキャッシュは起動したEBOOTのフォルダごと�
 3. `TH07PSP/th7/th07.dat`と`TH07PSP/th7/thbgm.dat`がある。
 4. 原作が東方妖々夢 1.00bである。
 
+PSP-2000/3000/Goの64MB版をARK-5で起動し、上記を満たしてもログを一行も残さず起動前に終了する場合は、
+CFW設定の`Use Extra Memory`を`Off`のままにせず、`Default`を選んでください。手動編集時はARKの
+明示的な`always, highmem, off`設定を確認してください。既存設定をバックアップし、retail gameへ
+影響させない`homebrew, highmem, on`（このEBOOTではARK-5 UIの`Default`と同じ結果）へ置き換えて
+ゲームを起動し直します。
+反映されない場合だけVSH再起動または本体の電源入れ直しを行います。配布ZIPの
+`ARK5_HIGHMEM_SNIPPET.txt`を設定ファイル全体として上書きしてはいけません。詳細は
+[ARK-5 high-memory手順](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md)にあります。
+
 起動・面移動の記録はメモリースティック直下の`TH07PSP_BOOT.LOG`へ出ます。不具合報告時は、
 このログ、PSPの型番、CFW、問題が起きた場面を添えてください。原作データそのものは添付しないでください。
 
@@ -200,8 +213,8 @@ make release
 ```
 
 `make release`は両機種向けを順にクリーンビルドし、
-`dist/th07-psp-native-v0.1.6-beta-psp1000.zip`と
-`dist/th07-psp-native-v0.1.6-beta-psp2000plus.zip`を作ります。原作データ、ユーザーデータ、
+`dist/th07-psp-native-v0.1.7-beta-psp1000.zip`と
+`dist/th07-psp-native-v0.1.7-beta-psp2000plus.zip`を作ります。原作データ、ユーザーデータ、
 開発用EBOOTの混入と、各ZIPのビルド種別も自動検査します。`make psp1000-build`と
 `make psp2000plus-build`では、対応する専用EBOOTだけをクリーンビルドできます。
 

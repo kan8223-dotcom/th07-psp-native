@@ -1,5 +1,14 @@
 # 既知の不具合・未検証項目
 
+## ARK-5で64MB版が起動前に終了する
+
+- PSP-3000 / ARK-5で`always, highmem, off`が設定されていると、PSP-2000+用64MB EBOOTが
+  ゲームの`main()`へ到達せず、`TH07PSP_BOOT.LOG`も更新されない実機例を確認しました。
+- 既存`SETTINGS.TXT`をバックアップし、競合するoff行を`homebrew, highmem, on`へ置換して
+  起動し直したところ、同じGitHub配布EBOOTでタイトル画面まで到達しました。
+- 設定ファイル全体の自動置換は行いません。PSP-1000には適用しません。詳細とrollback方法は
+  [ARK-5 high-memory手順](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md)を参照してください。
+
 ## タイトル・デモの未検証経路
 
 - **タイトル画面の背景・ロゴ・キャラクター・項目が欠落する問題（修正済み）。**

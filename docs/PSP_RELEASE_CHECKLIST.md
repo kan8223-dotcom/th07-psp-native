@@ -110,6 +110,10 @@ is not a release candidate until every item passes without the debug route.
 - The release archive contains only EBOOT, documentation, license files and a
   redistributable font.  It must contain no original DAT/BGM, user save or
   replay data, Microsoft font, or diagnostic EBOOT.
+- The PSP-2000+ archive contains `ARK5_HIGHMEM_SNIPPET.txt` and
+  `docs/ARK5_HIGH_MEMORY.md`.  The snippet must contain exactly one active
+  `homebrew, highmem, on` rule, must tell users to merge rather than overwrite,
+  and must never be packaged as a complete ARK `SETTINGS.TXT`.
 
 ## Hardware gates inherited from TH06 PSP
 
