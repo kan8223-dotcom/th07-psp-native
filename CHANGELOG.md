@@ -27,6 +27,23 @@
 - ビルド: `make psp3000-a1-item-motion-build`（MECCはCMakeで自動ビルド）。
   原作の `th07.dat` / `thbgm.dat` 等は従来どおり各自の所有データを使用してください。
   本リポジトリに原作データは一切含まれません（ガードで機械検証済み）。
+
+### 配布EBOOT（GitHub Release）
+
+- Releaseに `TH07PSP-v0.2.0-beta.zip`（EBOOT.PBP / ge4wrap_texv1.prx /
+  NotoSansJP-Regular.ttf / INSTALL_JP.txt）を添付しました。
+  ビルド再現は `make psp3000-dist-v020-build`。
+- 配布ビルドはネットワーク観測（SHIKIGAMI）をホスト未設定で完全休眠にしています
+  （スレッド生成・通信なし、ホストIPのリテラルもバイナリに含まれません）。
+- **この配布構成そのものの実機通し確認は未実施**です（同一機能構成のRID30は
+  PSP-3000実機で6面完走・ボス戦走行を確認済み）。Lトリガのメーター切替も実機未確認。
+
+### 既知の問題
+
+- **デモプレイを放置すると、3回目のデモあたりでメモリ不足（OOM）により落ちる
+  可能性が高いです。** タイトル画面の長時間放置にご注意ください。
+- PSボタンからの終了はフリーズすることがあります。タイトルのQuitから終了してください。
+- Item吸引移動のME化（A1-MOVE）は動作しますが、性能効果の実証はまだ取れていません。
 >>>>>>> 52e0783 (feat: v0.2.0-beta — ME render worker era (bullet/item ME offload, SC/ME usage meter with L-toggle, safe-demotion boot))
 
 ## 2026-08-27 — v0.1.7-beta（ARK-5 high-memory互換性更新）
