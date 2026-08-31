@@ -13,6 +13,11 @@
 #include "graphics/PspGuGraphics.hpp"
 #endif
 
+struct AsciiManagerPopup;
+#if defined(TH07_PSP_BULLET_SNAPSHOT_EMITTER)
+struct PspBulletRenderRecord;
+#endif
+
 struct VertexDiffuseXyzrhw
 {
     ZunVec3 pos;
@@ -133,7 +138,30 @@ struct AnmManager
 #if defined(TH07_PSP)
     ZunResult DrawPspBullet(AnmVm *vm, const f32 *cachedSin = nullptr,
                             const f32 *cachedCos = nullptr);
+#if defined(TH07_PSP_BULLET_ROTATED_DIRECT)
+    void BeginPspRotatedBulletBatch();
+    ZunResult DrawPspRotatedBullet(AnmVm *vm, f32 cachedSin, f32 cachedCos);
+#endif
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+    void BeginPspUnifiedBulletBatch();
+#endif
+#if defined(TH07_PSP_BULLET_SNAPSHOT_EMITTER)
+    void DrawPspBulletRecords(const PspBulletRenderRecord *records, u32 count);
+#endif
+#if defined(TH07_PSP_BULLET_AXIS_FAST)
+    __attribute__((noinline)) ZunResult
+    DrawPspBulletFallback(AnmVm *vm, const f32 *cachedSin, const f32 *cachedCos);
+#endif
     ZunResult DrawPspFastSprite(AnmVm *vm);
+#if defined(TH07_PSP_GUI_TILE_BATCH)
+    ZunResult DrawPspNoRotationGrid(AnmVm *vm, f32 xStart, f32 xEnd,
+                                    f32 xStep, f32 yStart, f32 yEnd,
+                                    f32 yStep, f32 z);
+#endif
+#if defined(TH07_PSP_ASCII_POPUP_BATCH)
+    ZunResult DrawPspAsciiPopupBatch(AnmVm *vm, AsciiManagerPopup *popups,
+                                     i32 popupCount, f32 playerX, f32 playerY);
+#endif
 #endif
     ZunResult DrawBillboard(AnmVm *vm);
     ZunResult Draw3(AnmVm *vm);
@@ -145,6 +173,8 @@ struct AnmManager
     ZunResult DrawProjected(AnmVm *vm);
     void DrawStringFormat(AnmVm *vm, u32 textColor, u32 outlineType, const char *text, ...);
     void DrawStringFormat2(AnmVm *vm, u32 textColor, u32 outlineType, const char *text, ...);
+    bool PreRenderVmText(AnmVm *vm, u32 textColor, u32 outlineType, const char *text);
+    bool PreRenderString(AnmVm *vm, u32 textColor, u32 outlineType, const char *text);
     void DrawTextToSprite(u32 spriteDstIdx, i32 x, i32 y, i32 width, i32 height, i32 fontWidth,
                           i32 fontHeight, u32 textColor, u32 outlineType, char *strToPrint,
                           f32 scaleY, f32 scaleX);
@@ -171,9 +201,9 @@ struct AnmManager
     void SetRenderStateForVm(AnmVm *vm);
     void SetupVertexBuffer();
     void SyncRenderState(AnmVm *vm);
-    void TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcWidth, i32 srcHeight,
+    bool TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcWidth, i32 srcHeight,
                         i32 dstLeft, i32 dstTop, i32 dstWidth, i32 dstHeight);
-    void TakeScreenshotIfRequested();
+    bool TakeScreenshotIfRequested();
     void TranslateRotation(VertexTex1DiffuseXyzrhw *vertex, f32 width, f32 height, f32 sine,
                            f32 cosine, f32 xOffset, f32 yOffset);
 
@@ -394,6 +424,13 @@ struct AnmManager
     Th07PspSpriteVertex *vertexBufferStartPtr;
     u8 pspSpriteBatchUsesPairs;
     u8 pspPreferSpritePairs;
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+    // Once a drawable general quad appears in BulletManager::OnDraw, keep
+    // later axis bullets in the same ordered four-vertex stream.  This state
+    // spans frontend Flush() calls until the next bullet callback begins.
+    u8 pspUnifiedBulletGeneralMode;
+    u8 pspForceSpriteQuads;
+#endif
 #else
     struct VertexTex1DiffuseXyzrhw spriteVertexBuffer[49152];
     struct VertexTex1DiffuseXyzrhw *vertexBufferCurPtr;
@@ -411,3 +448,34 @@ struct AnmManager
 };
 
 extern AnmManager *g_AnmManager;
+
+#if defined(TH07_PSP_PERF_M2)
+void Th07PspTakeBulletDrawPerf(unsigned int *axisEligible, unsigned int *fallbackEligible,
+                              unsigned int *cullRejects);
+#if defined(TH07_PSP_ASCII_POPUP_BATCH)
+void Th07PspTakeAsciiPopupBatchPerf(unsigned int *batchCalls, unsigned int *digits,
+                                    unsigned int *fallbacks);
+#endif
+#endif
+#if defined(TH07_PSP_PERF_M3)
+struct Th07PspM3EmitterWindow
+{
+    unsigned long long phaseUs[4];
+    unsigned long long excludedBackendUs;
+    unsigned int phaseRecords[4];
+    unsigned int emitterCalls;
+    unsigned int samples;
+    unsigned int sampledCulls;
+    unsigned int phaseMismatches;
+};
+
+void Th07PspTakeM3EmitterPerf(Th07PspM3EmitterWindow *window);
+bool Th07PspM3EmitterPopulationValid(const Th07PspM3EmitterWindow *window,
+                                     unsigned int sampledBulletDraws,
+                                     unsigned int bulletVisits);
+void Th07PspM3EmitterBackendBegin();
+void Th07PspM3EmitterBackendEnd();
+void Th07PspM3BulletBatchBegin();
+void Th07PspM3BulletBatchEnd();
+unsigned int Th07PspM3FrontBatchUnresolved();
+#endif

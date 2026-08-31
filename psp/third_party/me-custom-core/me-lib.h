@@ -68,6 +68,14 @@ extern "C" {
 #endif
 
   int  meLibLoadPrx();
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+  // Last loader transaction. M-ME0 records the otherwise-hidden startup
+  // Memory Stick write and module-load costs separately.
+  extern unsigned int meLibPrxWriteUs;
+  extern unsigned int meLibPrxLoadUs;
+  extern int meLibPrxWriteResult;
+  extern int meLibPrxLoadResult;
+#endif
   void meLibHalt();
   
   int meLibSendExternalSoftInterrupt();

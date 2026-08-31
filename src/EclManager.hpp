@@ -7,6 +7,8 @@
 
 extern const char *g_EclPaths[10];
 
+struct AnmVm;
+
 // values from
 // https://en.touhouwiki.net/wiki/User:Mddass/Touhou_File_Format_Specification/ECL
 typedef enum EclVarId
@@ -171,6 +173,7 @@ struct EclManager
 {
     ZunResult Load(const char *path);
     void Unload();
+    u32 PreRenderSpellcardNames(AnmVm *nameVm, bool *sourceScanComplete);
     ZunResult CallEclSub(struct EnemyEclContext *ctx, i16 subId);
     static i32 *GetVar(Enemy *enemy, i32 *eclVarId, u16 paramMask, i32 param_4);
     static i32 GetVarValue(Enemy *enemy, i32 eclVarId);
@@ -187,6 +190,7 @@ struct EclManager
     EclRawHeader *eclFile;
     EclTimelineInstr *timelinePtr[16];
     EclRawInstr **subTable;
+    u32 eclFileSize;
 
     EclTimelineInstr *GetTimeline(i32 idx)
     {

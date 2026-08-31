@@ -97,6 +97,10 @@ struct ReplayManager
     static u32 OnUpdateDemoHighPrio(ReplayManager *arg);
     static u32 OnUpdateDemoLowPrio(ReplayManager *arg);
     static u32 OnUpdateRng(ReplayManager *arg);
+#if defined(TH07_PSP_BULLET_WARM_QUEUE) || \
+    defined(TH07_PSP_ME_RENDER_PERFORMANCE)
+    static bool MayRestartCalcChainAfterBulletUpdate();
+#endif
 
     static void SaveReplay(const char *filename, char *replayName);
     static void SaveReplay2(const char *filename);

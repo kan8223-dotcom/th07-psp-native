@@ -5,6 +5,13 @@
 extern unsigned char embedded_kcall[];
 extern unsigned int embedded_kcall_len;
 
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+unsigned int meLibPrxWriteUs;
+unsigned int meLibPrxLoadUs;
+int meLibPrxWriteResult;
+int meLibPrxLoadResult;
+#endif
+
 static int writePrx(void* start, int size) {
   SceUID fd = sceIoOpen(PRX_FILE, PSP_O_WRONLY | PSP_O_CREAT, 0777);
   if (fd < 0) {
@@ -19,12 +26,30 @@ static int writePrx(void* start, int size) {
 }
 
 int meLibLoadPrx() {
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+  const unsigned int writeStartUs = sceKernelGetSystemTimeLow();
+  meLibPrxWriteResult = writePrx(embedded_kcall, (int)embedded_kcall_len);
+  meLibPrxWriteUs = sceKernelGetSystemTimeLow() - writeStartUs;
+  meLibPrxLoadUs = 0;
+  meLibPrxLoadResult = -2; // not attempted
+  if(meLibPrxWriteResult < 0) {
+    return -1;
+  }
+  const unsigned int loadStartUs = sceKernelGetSystemTimeLow();
+  meLibPrxLoadResult =
+      pspSdkLoadStartModule(PRX_FILE, PSP_MEMORY_PARTITION_KERNEL);
+  meLibPrxLoadUs = sceKernelGetSystemTimeLow() - loadStartUs;
+  if (meLibPrxLoadResult < 0){
+    return -1;
+  }
+#else
   if(writePrx(embedded_kcall, (int)embedded_kcall_len) < 0) {
     return -1;
   }
   if (pspSdkLoadStartModule(PRX_FILE, PSP_MEMORY_PARTITION_KERNEL) < 0){
     return -1;
   }
+#endif
   return 0;
 }
 
@@ -106,9 +131,13 @@ int meLibHwMutexTryLock() {
 
 void meLibDcacheWritebackInvalidateAll() {
   asm volatile ("sync");
-  for (int i = 0; i < 8192; i += 64) {
-    asm volatile ("cache 0x14, 0(%0)" :: "r"(i));
-    asm volatile ("cache 0x14, 0(%0)" :: "r"(i));
+  // Keep the hardware-proven RID22 sequence until the ME cache-operation
+  // semantics are established from primary sources.  RID27 tried to select a
+  // presumed second way with index + 8192; real hardware produced the exact
+  // same stale Item next-pointer, disproving that change.
+  for (u32Me index = 0; index < 8192; index += 64) {
+    asm volatile ("cache 0x14, 0(%0)" :: "r"(index));
+    asm volatile ("cache 0x14, 0(%0)" :: "r"(index));
   }
   asm volatile ("sync");
 }

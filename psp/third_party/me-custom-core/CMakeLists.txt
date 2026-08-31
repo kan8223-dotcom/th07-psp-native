@@ -46,6 +46,11 @@ add_library(me-core STATIC
 
 add_dependencies(me-core kcall_files)
 
+option(TH07_ME_RENDER_WORKER "Instrument the TH07 M-ME0 loader transaction" OFF)
+if(TH07_ME_RENDER_WORKER)
+  target_compile_definitions(me-core PRIVATE TH07_PSP_ME_RENDER_WORKER=1)
+endif()
+
 target_compile_options(me-core PRIVATE 
   -Os
   -G0

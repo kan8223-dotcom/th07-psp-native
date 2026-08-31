@@ -12,8 +12,22 @@
 
 #include "FileSystem.hpp"
 #include "Supervisor.hpp"
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+#include "BulletManager.hpp"
+#endif
 #include "audio_me.h"
 #include "fileio.hpp"
+#if defined(TH07_PSP_SHIKIGAMI)
+#include "shikigami_th07.h"
+#endif
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+#include "audio4m_sfx.h"
+#endif
+
+#if defined(TH07_PSP_MECC_BGM_384K) || \
+    (defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_BGM_MAIN_RAM))
+#define TH07_PSP_MECC_LOCAL_BGM 1
+#endif
 
 SoundBufferIdxVolume SOUND_BUFFER_IDX_VOL[38] = {
     {0, -2000, 0},   {0, -2500, 0},   {1, -1200, 5},   {1, -1500, 5},   {2, -1000, 100},
@@ -43,8 +57,14 @@ namespace
 constexpr u32 kChannels = 2;
 constexpr u32 kBytesPerFrame = sizeof(i16) * kChannels;
 constexpr u32 kFramesPerOutput = 512;
+constexpr u32 kDacBufferCount = 2;
+constexpr u32 kDacBufferBytes = kFramesPerOutput * kBytesPerFrame;
 constexpr u32 kPrefillFrames = 4096;
 constexpr u32 kIoFrames = 16 * 1024;
+// Keep the canonical 384 KiB capacity for all PSP profiles.  AUDIO4M R19 uses
+// the original SC-direct Main-RAM ring: both upper and lower ME eDRAM failed
+// real-hardware pause/retention listening tests.  The standalone historical
+// MECC_BGM_384K diagnostic remains the only local-eDRAM ring profile.
 constexpr u32 kRingFrames = 96 * 1024;
 constexpr u32 kSfxBufferCount = 30;
 constexpr u32 kSfxLogicalCount = 38;
@@ -52,6 +72,30 @@ constexpr u32 kSfxVoiceCount = 16;
 constexpr u32 kUnityGainQ16 = 65536u;
 constexpr int kBgmIoUrgentPriority = 0x1c;
 constexpr int kBgmIoBackgroundPriority = 0x21;
+static_assert(kDacBufferCount == 2,
+              "PSP DAC output must alternate two live PCM buffers");
+static_assert(kDacBufferBytes == 2048,
+              "PSP DAC output block must remain 512-frame stereo s16");
+
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+constexpr u32 kRingBytes = kRingFrames * kBytesPerFrame;
+constexpr u32 kMeccFifoBlocks = kPrefillFrames / kFramesPerOutput;
+constexpr u32 kMeccFifoBlockBytes = kFramesPerOutput * kBytesPerFrame;
+constexpr u32 kMeccScResetTimeoutUs = 3000000;
+static_assert(kIoFrames * kBytesPerFrame == 65536,
+              "MECC upload staging must remain exactly 64 KiB");
+static_assert(kMeccFifoBlockBytes == 2048,
+              "MECC fetch must remain exactly one 512-frame stereo block");
+static_assert(kMeccFifoBlocks == 8,
+              "MECC FIFO must preserve the existing 4096-frame prefill");
+static_assert(kRingFrames % kIoFrames == 0 && kRingFrames % kFramesPerOutput == 0,
+              "MECC ring commands must never cross the fixed local extent");
+static_assert(kRingBytes == 384 * 1024,
+              "MECC profiles must retain the proven 384 KiB ring");
+#else
+static_assert(kRingFrames * kChannels * sizeof(i16) == 393216,
+              "TH07 PSP BGM ring must remain exactly 384 KiB");
+#endif
 
 #if defined(TH07_PSP_1000)
 using PspSfxSample = u8;
@@ -77,7 +121,74 @@ struct PspSfxVoice
     bool active;
 };
 
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+i16 *gBgmRing;
+struct alignas(64) MeccBgmFifoBlock
+{
+    i16 samples[kFramesPerOutput * kChannels];
+    u32 generation;
+};
+alignas(64) MeccBgmFifoBlock gMeccBgmFifo[kMeccFifoBlocks];
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+// R8 noise diagnostic: hash every 2 KiB block on the SC before it is uploaded
+// to the eDRAM ring, and verify each fetched block against that hash.  Any
+// mismatch proves the SC->eDRAM->SC round trip corrupts PCM, which is the
+// remaining suspect for the crackle the plain Main-RAM-ring build never had.
+struct BgmBlockCheck
+{
+    u32 hash;
+    u32 generation;
+};
+BgmBlockCheck gBgmRingCheck[kRingBytes / kMeccFifoBlockBytes];
+volatile u32 gBgmCrcChecks;
+volatile u32 gBgmCrcMismatches;
+constexpr u32 kBgmCrcDetailLimit = 8;
+struct BgmCrcMismatchRecord
+{
+    u32 ordinal;
+    u32 ringOffset;
+    u32 expectedHash;
+    u32 fetchedHash;
+    u32 generation;
+    u32 eventTimeUs;
+};
+BgmCrcMismatchRecord gBgmCrcMismatchRecords[kBgmCrcDetailLimit];
+volatile u32 gBgmCrcMismatchRecordCount;
+
+u32 HashBgmBlock(const void *data)
+{
+    const u32 *words = static_cast<const u32 *>(data);
+    u32 hash = 2166136261u;
+    for (u32 index = 0; index < kMeccFifoBlockBytes / sizeof(u32); ++index)
+    {
+        hash = (hash ^ words[index]) * 16777619u;
+    }
+    return hash;
+}
+
+void FlushBgmCrcMismatchRecords()
+{
+    // Called only after StopThreads joined the feeder.  Keeping detail in RAM
+    // until this point prevents synchronous Memory Stick writes from stealing
+    // the feeder's 92.9 ms FIFO headroom and manufacturing an underrun.
+    const u32 count = std::min(
+        __atomic_load_n(&gBgmCrcMismatchRecordCount, __ATOMIC_ACQUIRE),
+        kBgmCrcDetailLimit);
+    for (u32 index = 0; index < count; ++index)
+    {
+        const BgmCrcMismatchRecord &record = gBgmCrcMismatchRecords[index];
+        th07_psp_boot_notef(
+            "bgm crc mismatch %lu ring %08x want %08x got %08x gen %lu at %luus",
+            static_cast<unsigned long>(record.ordinal), record.ringOffset,
+            record.expectedHash, record.fetchedHash,
+            static_cast<unsigned long>(record.generation),
+            static_cast<unsigned long>(record.eventTimeUs));
+    }
+}
+#endif
+#else
 alignas(64) i16 gBgmRing[kRingFrames * kChannels];
+#endif
 alignas(64) i16 gIoBuffer[kIoFrames * kChannels];
 PspSfxBuffer gSfxBuffers[kSfxBufferCount];
 PspSfxVoice gSfxVoices[kSfxVoiceCount];
@@ -107,11 +218,37 @@ volatile u32 gUnderruns;
 volatile bool gAudioAlive;
 volatile bool gBgmPlaying;
 volatile bool gBgmPaused;
+volatile bool gBgmStageLoadBlocked;
 volatile bool gSystemSuspended;
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+volatile bool gMeccLocalRing;
+volatile u32 gMeccFetchFrame;
+volatile u32 gMeccFifoRead;
+volatile u32 gMeccFifoWrite;
+volatile u32 gMeccProducerAckGeneration;
+volatile u32 gMeccFeederAckGeneration;
+volatile u32 gMeccOutputAckGeneration;
+#endif
+#if defined(TH07_PSP_MECC_LOCAL_BGM) || defined(TH07_PSP_ME_RENDER_WORKER)
+volatile bool gMeccSuspendLogPending;
+#endif
+#if defined(TH07_PSP_MECC_LOCAL_BGM) || defined(TH07_PSP_MECC_AUDIO_4M)
+volatile bool gMeccFatal;
+#endif
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+// Wire names are retained for schema compatibility.  On the Main-RAM backend
+// these count producer writes, consumer reads and successful DAC submissions.
+volatile u32 gBgmUploadWraps;
+volatile u32 gBgmFetchWraps;
+volatile u32 gBgmOutputWraps;
+#endif
 
 SceUID gFileSema = -1;
 SceUID gProducerThread = -1;
 SceUID gOutputThread = -1;
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+SceUID gMeccFeederThread = -1;
+#endif
 int gAudioChannel = -1;
 FILE *gBgmFile;
 u32 gTrackBase;
@@ -126,6 +263,108 @@ u32 RingCount()
     const u32 read = __atomic_load_n(&gReadFrame, __ATOMIC_ACQUIRE);
     return write >= read ? write - read : kRingFrames - read + write;
 }
+
+#if defined(TH07_PSP_MECC_LOCAL_BGM) || defined(TH07_PSP_MECC_AUDIO_4M)
+void LatchMeccFatal(const char *message)
+{
+    if (__atomic_exchange_n(&gMeccFatal, true, __ATOMIC_ACQ_REL))
+    {
+        return;
+    }
+    __atomic_store_n(&gBgmPlaying, false, __ATOMIC_RELEASE);
+    th07_psp_me_audio_suspend_latch();
+    th07_psp_boot_note(message);
+#if defined(TH07_PSP_SHIKIGAMI)
+    th07_shikigami_record_fatal(message);
+#endif
+}
+#endif
+
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+u32 MeccFifoCount()
+{
+    const u32 write = __atomic_load_n(&gMeccFifoWrite, __ATOMIC_ACQUIRE);
+    const u32 read = __atomic_load_n(&gMeccFifoRead, __ATOMIC_ACQUIRE);
+    return write - read;
+}
+
+bool WaitForMeccScWorkers(u32 generation)
+{
+    const u32 startUs = sceKernelGetSystemTimeLow();
+    for (;;)
+    {
+        const bool producerReady =
+            gProducerThread < 0 ||
+            __atomic_load_n(&gMeccProducerAckGeneration, __ATOMIC_ACQUIRE) == generation;
+        const bool feederReady =
+            gMeccFeederThread < 0 ||
+            __atomic_load_n(&gMeccFeederAckGeneration, __ATOMIC_ACQUIRE) == generation;
+        const bool outputReady =
+            gOutputThread < 0 ||
+            __atomic_load_n(&gMeccOutputAckGeneration, __ATOMIC_ACQUIRE) == generation;
+        if (producerReady && feederReady && outputReady)
+        {
+            return true;
+        }
+        if (sceKernelGetSystemTimeLow() - startUs >= kMeccScResetTimeoutUs)
+        {
+            LatchMeccFatal("MECC BGM SC RESET ACK TIMEOUT -> COLD REBOOT");
+            return false;
+        }
+        sceKernelDelayThread(100);
+    }
+}
+
+u8 MeccSelftestByte(u32 absoluteOffset, u32 uploadBlock)
+{
+    return static_cast<u8>((absoluteOffset * 37u) ^
+                           (absoluteOffset >> 7u) ^
+                           (uploadBlock * 0x5bu) ^ 0xa5u);
+}
+
+bool SelftestMeccBgmRing(u32 generation)
+{
+    if (!th07_psp_me_bgm_reset(generation))
+    {
+        return false;
+    }
+
+    u8 *const upload = reinterpret_cast<u8 *>(gIoBuffer);
+    u8 *const fetch = reinterpret_cast<u8 *>(gMeccBgmFifo[0].samples);
+    constexpr u32 uploadBytes = kIoFrames * kBytesPerFrame;
+    constexpr u32 fetchBytes = kMeccFifoBlockBytes;
+    constexpr u32 uploadBlocks = kRingBytes / uploadBytes;
+    constexpr u32 fetchesPerUpload = uploadBytes / fetchBytes;
+    for (u32 block = 0; block < uploadBlocks; ++block)
+    {
+        const u32 blockOffset = block * uploadBytes;
+        for (u32 byte = 0; byte < uploadBytes; ++byte)
+        {
+            upload[byte] = MeccSelftestByte(blockOffset + byte, block);
+        }
+        if (!th07_psp_me_bgm_upload(upload, uploadBytes, generation, blockOffset))
+        {
+            return false;
+        }
+        for (u32 part = 0; part < fetchesPerUpload; ++part)
+        {
+            const u32 fetchOffset = blockOffset + part * fetchBytes;
+            if (!th07_psp_me_bgm_fetch(fetch, fetchBytes, generation, fetchOffset))
+            {
+                return false;
+            }
+            for (u32 byte = 0; byte < fetchBytes; ++byte)
+            {
+                if (fetch[byte] != MeccSelftestByte(fetchOffset + byte, block))
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    return th07_psp_me_bgm_reset(generation) != 0;
+}
+#endif
 
 void LockFile()
 {
@@ -145,8 +384,27 @@ void UnlockFile()
 
 void ResetRing()
 {
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    const u32 generation = __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE);
+    if (!WaitForMeccScWorkers(generation))
+    {
+        return;
+    }
+    if (__atomic_load_n(&gMeccLocalRing, __ATOMIC_ACQUIRE) &&
+        !__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE) &&
+        !th07_psp_me_bgm_reset(generation))
+    {
+        LatchMeccFatal("MECC BGM RESET FAILED -> COLD REBOOT");
+        return;
+    }
+#endif
     __atomic_store_n(&gReadFrame, 0u, __ATOMIC_RELEASE);
     __atomic_store_n(&gWriteFrame, 0u, __ATOMIC_RELEASE);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    __atomic_store_n(&gMeccFetchFrame, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&gMeccFifoRead, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&gMeccFifoWrite, 0u, __ATOMIC_RELEASE);
+#endif
 }
 
 u16 ReadLe16(const u8 *bytes)
@@ -195,6 +453,7 @@ void ResetSfxVoices()
     }
 }
 
+#if !defined(TH07_PSP_MECC_AUDIO_4M) || defined(TH07_PSP_SFX_MAIN_RAM)
 __attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames)
 {
     // Allegrex is a 32-bit CPU.  Two native atomic masks avoid libatomic's
@@ -370,6 +629,7 @@ __attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames)
     ++gSfxMixedBlocks;
     return true;
 }
+#endif
 
 void CloseTrackFile()
 {
@@ -424,11 +684,23 @@ int BgmProducerThread(SceSize, void *)
 {
     while (__atomic_load_n(&gAudioAlive, __ATOMIC_ACQUIRE))
     {
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        __atomic_store_n(&gMeccProducerAckGeneration,
+                         __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE),
+                         __ATOMIC_RELEASE);
+#endif
         if (__atomic_load_n(&gSystemSuspended, __ATOMIC_ACQUIRE))
         {
             sceKernelDelayThread(10000);
             continue;
         }
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE))
+        {
+            sceKernelDelayThread(10000);
+            continue;
+        }
+#endif
         if (!__atomic_load_n(&gBgmPlaying, __ATOMIC_ACQUIRE))
         {
             sceKernelDelayThread(2000);
@@ -460,14 +732,64 @@ int BgmProducerThread(SceSize, void *)
         }
 
         u32 write = __atomic_load_n(&gWriteFrame, __ATOMIC_RELAXED);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (__atomic_load_n(&gMeccLocalRing, __ATOMIC_ACQUIRE))
+        {
+            if (framesRead != kIoFrames ||
+                !th07_psp_me_bgm_upload(gIoBuffer, kIoFrames * kBytesPerFrame,
+                                        generation, write * kBytesPerFrame))
+            {
+                if (generation == __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE))
+                {
+                    LatchMeccFatal("MECC BGM UPLOAD FAILED -> COLD REBOOT");
+                }
+                continue;
+            }
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+            // Record the pre-upload hashes before gWriteFrame publishes the
+            // region, so the feeder can never fetch a block whose expected
+            // hash is not in place yet.
+            {
+                const u32 firstBlock =
+                    write * kBytesPerFrame / kMeccFifoBlockBytes;
+                const u32 blockCount =
+                    kIoFrames * kBytesPerFrame / kMeccFifoBlockBytes;
+                for (u32 blockIdx = 0; blockIdx < blockCount; ++blockIdx)
+                {
+                    BgmBlockCheck &check = gBgmRingCheck[firstBlock + blockIdx];
+                    check.hash = HashBgmBlock(
+                        reinterpret_cast<const u8 *>(gIoBuffer) +
+                        blockIdx * kMeccFifoBlockBytes);
+                    check.generation = generation;
+                }
+                __asm__ volatile("sync");
+            }
+#endif
+        }
+        else
+#endif
+        {
         for (u32 frame = 0; frame < framesRead; ++frame)
         {
             const u32 dst = ((write + frame) % kRingFrames) * kChannels;
             gBgmRing[dst] = gIoBuffer[frame * kChannels];
             gBgmRing[dst + 1] = gIoBuffer[frame * kChannels + 1];
         }
+        }
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (generation != __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE))
+        {
+            continue;
+        }
+#endif
         __atomic_store_n(&gWriteFrame, (write + framesRead) % kRingFrames,
                          __ATOMIC_RELEASE);
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+        if (write + framesRead == kRingFrames)
+        {
+            __atomic_fetch_add(&gBgmUploadWraps, 1u, __ATOMIC_RELAXED);
+        }
+#endif
         if (RingCount() >= kIoFrames * 2u)
         {
             sceKernelChangeThreadPriority(sceKernelGetThreadId(),
@@ -478,19 +800,139 @@ int BgmProducerThread(SceSize, void *)
     return 0;
 }
 
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+int BgmMeccFeederThread(SceSize, void *)
+{
+    while (__atomic_load_n(&gAudioAlive, __ATOMIC_ACQUIRE))
+    {
+        __atomic_store_n(&gMeccFeederAckGeneration,
+                         __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE),
+                         __ATOMIC_RELEASE);
+        if (__atomic_load_n(&gSystemSuspended, __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE) ||
+            !__atomic_load_n(&gMeccLocalRing, __ATOMIC_ACQUIRE) ||
+            !__atomic_load_n(&gBgmPlaying, __ATOMIC_ACQUIRE))
+        {
+            sceKernelDelayThread(2000);
+            continue;
+        }
+
+        const u32 generation = __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE);
+        const u32 fifoWrite = __atomic_load_n(&gMeccFifoWrite, __ATOMIC_RELAXED);
+        const u32 fifoRead = __atomic_load_n(&gMeccFifoRead, __ATOMIC_ACQUIRE);
+        if (fifoWrite - fifoRead >= kMeccFifoBlocks)
+        {
+            sceKernelDelayThread(500);
+            continue;
+        }
+
+        const u32 fetch = __atomic_load_n(&gMeccFetchFrame, __ATOMIC_RELAXED);
+        const u32 write = __atomic_load_n(&gWriteFrame, __ATOMIC_ACQUIRE);
+        const u32 available = write >= fetch ? write - fetch
+                                             : kRingFrames - fetch + write;
+        if (available < kFramesPerOutput)
+        {
+            sceKernelDelayThread(500);
+            continue;
+        }
+
+        MeccBgmFifoBlock &slot = gMeccBgmFifo[fifoWrite % kMeccFifoBlocks];
+        if (!th07_psp_me_bgm_fetch(slot.samples, kMeccFifoBlockBytes,
+                                   generation, fetch * kBytesPerFrame))
+        {
+            if (generation == __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE))
+            {
+                LatchMeccFatal("MECC BGM FETCH FAILED -> COLD REBOOT");
+            }
+            continue;
+        }
+        if (generation != __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE))
+        {
+            continue;
+        }
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+        {
+            const BgmBlockCheck &check =
+                gBgmRingCheck[fetch * kBytesPerFrame / kMeccFifoBlockBytes];
+            if (check.generation == generation)
+            {
+                __atomic_fetch_add(&gBgmCrcChecks, 1u, __ATOMIC_RELAXED);
+                const u32 fetched = HashBgmBlock(slot.samples);
+                if (fetched != check.hash)
+                {
+                    const u32 misses = __atomic_add_fetch(&gBgmCrcMismatches, 1u,
+                                                          __ATOMIC_RELAXED);
+                    if (misses <= kBgmCrcDetailLimit)
+                    {
+                        BgmCrcMismatchRecord &record =
+                            gBgmCrcMismatchRecords[misses - 1u];
+                        record.ordinal = misses;
+                        record.ringOffset = fetch * kBytesPerFrame;
+                        record.expectedHash = check.hash;
+                        record.fetchedHash = fetched;
+                        record.generation = generation;
+                        record.eventTimeUs = sceKernelGetSystemTimeLow();
+                        __atomic_store_n(&gBgmCrcMismatchRecordCount, misses,
+                                         __ATOMIC_RELEASE);
+                    }
+                    // Never submit known-corrupt PCM to the DAC.  The lower
+                    // R18 ring is expected to keep this path at zero hits;
+                    // fail silent for one 512-frame block if hardware still
+                    // reports a retention fault.
+                    std::memset(slot.samples, 0, kMeccFifoBlockBytes);
+                }
+            }
+        }
+#endif
+        slot.generation = generation;
+        __asm__ volatile("sync");
+        __atomic_store_n(&gMeccFetchFrame,
+                         (fetch + kFramesPerOutput) % kRingFrames,
+                         __ATOMIC_RELEASE);
+        __atomic_store_n(&gMeccFifoWrite, fifoWrite + 1u, __ATOMIC_RELEASE);
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+        if (fetch + kFramesPerOutput == kRingFrames)
+        {
+            __atomic_fetch_add(&gBgmFetchWraps, 1u, __ATOMIC_RELAXED);
+        }
+#endif
+    }
+    sceKernelExitThread(0);
+    return 0;
+}
+#endif
+
 int BgmOutputThread(SceSize, void *)
 {
-    alignas(64) i16 block[kFramesPerOutput * kChannels];
+    // sceAudioOutputBlocking queues this address; it does not make the buffer
+    // reusable when the call returns.  Build the next block in the other slot
+    // so the DAC never observes a buffer while the SC is rewriting it.
+    alignas(64) i16 blocks[kDacBufferCount][kFramesPerOutput * kChannels];
+    u32 outputIndex = 0;
     u32 seenGeneration = __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE);
     bool primed = false;
     while (__atomic_load_n(&gAudioAlive, __ATOMIC_ACQUIRE))
     {
+        i16 *const block = blocks[outputIndex];
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        __atomic_store_n(&gMeccOutputAckGeneration,
+                         __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE),
+                         __ATOMIC_RELEASE);
+#endif
         if (__atomic_load_n(&gSystemSuspended, __ATOMIC_ACQUIRE))
         {
             primed = false;
             sceKernelDelayThread(10000);
             continue;
         }
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE))
+        {
+            primed = false;
+            sceKernelDelayThread(10000);
+            continue;
+        }
+#endif
         const u32 generation = __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE);
         if (generation != seenGeneration)
         {
@@ -498,25 +940,78 @@ int BgmOutputThread(SceSize, void *)
             primed = false;
         }
         bool haveBgm = false;
-        const bool wantsBgm = __atomic_load_n(&gBgmPlaying, __ATOMIC_ACQUIRE) &&
-                              !__atomic_load_n(&gBgmPaused, __ATOMIC_ACQUIRE);
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+        bool bgmOutputWrap = false;
+#endif
+        const bool wantsBgm =
+            __atomic_load_n(&gBgmPlaying, __ATOMIC_ACQUIRE) &&
+            !__atomic_load_n(&gBgmPaused, __ATOMIC_ACQUIRE) &&
+            !__atomic_load_n(&gBgmStageLoadBlocked, __ATOMIC_ACQUIRE);
         if (wantsBgm)
         {
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+            const bool localRing =
+                __atomic_load_n(&gMeccLocalRing, __ATOMIC_ACQUIRE);
+            const u32 available = localRing
+                                      ? MeccFifoCount() * kFramesPerOutput
+                                      : RingCount();
+#else
             const u32 available = RingCount();
+#endif
             if ((!primed && available >= kPrefillFrames) ||
                 (primed && available >= kFramesPerOutput))
             {
                 primed = true;
                 haveBgm = true;
                 const u32 read = __atomic_load_n(&gReadFrame, __ATOMIC_RELAXED);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+                if (localRing)
+                {
+                    const u32 fifoRead =
+                        __atomic_load_n(&gMeccFifoRead, __ATOMIC_RELAXED);
+                    const MeccBgmFifoBlock &slot =
+                        gMeccBgmFifo[fifoRead % kMeccFifoBlocks];
+                    if (slot.generation != generation)
+                    {
+                        haveBgm = false;
+                        primed = false;
+                        LatchMeccFatal("MECC BGM FIFO EPOCH MISMATCH -> COLD REBOOT");
+                    }
+                    else
+                    {
+                        std::memcpy(block, slot.samples, kDacBufferBytes);
+                        __atomic_store_n(&gMeccFifoRead, fifoRead + 1u,
+                                         __ATOMIC_RELEASE);
+                    }
+                }
+                else
+#endif
+                {
                 for (u32 frame = 0; frame < kFramesPerOutput; ++frame)
                 {
                     const u32 src = ((read + frame) % kRingFrames) * kChannels;
                     block[frame * kChannels] = gBgmRing[src];
                     block[frame * kChannels + 1] = gBgmRing[src + 1];
                 }
+                }
+                if (haveBgm)
+                {
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+                    if (read + kFramesPerOutput == kRingFrames)
+                    {
+                        bgmOutputWrap = true;
+#if !defined(TH07_PSP_MECC_LOCAL_BGM)
+                        // The SC-direct read replaces the old ME feeder fetch.
+                        // Preserve the frozen wire counter as a consumer-wrap
+                        // counter so R19 can still prove every ring boundary.
+                        __atomic_fetch_add(&gBgmFetchWraps, 1u,
+                                           __ATOMIC_RELAXED);
+#endif
+                    }
+#endif
                 __atomic_store_n(&gReadFrame, (read + kFramesPerOutput) % kRingFrames,
                                  __ATOMIC_RELEASE);
+                }
             }
             else
             {
@@ -543,7 +1038,7 @@ int BgmOutputThread(SceSize, void *)
 
         if (!haveBgm)
         {
-            std::memset(block, 0, sizeof(block));
+            std::memset(block, 0, kDacBufferBytes);
         }
         else
         {
@@ -568,7 +1063,24 @@ int BgmOutputThread(SceSize, void *)
             }
         }
 
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE))
+        {
+            primed = false;
+            sceKernelDelayThread(10000);
+            continue;
+        }
+#endif
+#if defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_SFX_MAIN_RAM)
+        unsigned int limitedSamples = 0u;
+        const unsigned int sfxToken =
+            th07_audio4m_sfx_consume(block, kFramesPerOutput, &limitedSamples);
+        const bool haveSfx = sfxToken != 0u;
+        __atomic_fetch_add(&gSfxHeadroomLimitedSamples, limitedSamples,
+                           __ATOMIC_RELAXED);
+#else
         const bool haveSfx = MixSfxBlock(block, kFramesPerOutput);
+#endif
         if (!haveBgm && !haveSfx)
         {
             sceKernelDelayThread(1000);
@@ -577,7 +1089,33 @@ int BgmOutputThread(SceSize, void *)
         // Both channels use the same volume.  Keep this on the exact output
         // path proven by TH06 PSP; PPSSPP's panned-blocking path can return
         // with the worker's saved state corrupted after the first block.
-        sceAudioOutputBlocking(gAudioChannel, PSP_AUDIO_VOLUME_MAX, block);
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+        const int outputResult =
+            sceAudioOutputBlocking(gAudioChannel, PSP_AUDIO_VOLUME_MAX, block);
+#if !defined(TH07_PSP_SFX_MAIN_RAM)
+        if (sfxToken != 0u)
+        {
+            th07_audio4m_sfx_output_committed(sfxToken, outputResult >= 0);
+        }
+#endif
+        if (outputResult < 0)
+        {
+            LatchMeccFatal("MECC AUDIO4M DAC OUTPUT FAILED -> COLD REBOOT");
+        }
+        else
+        {
+            outputIndex ^= 1u;
+            if (bgmOutputWrap)
+            {
+                __atomic_fetch_add(&gBgmOutputWraps, 1u, __ATOMIC_RELAXED);
+            }
+        }
+#else
+        if (sceAudioOutputBlocking(gAudioChannel, PSP_AUDIO_VOLUME_MAX, block) >= 0)
+        {
+            outputIndex ^= 1u;
+        }
+#endif
     }
     sceKernelExitThread(0);
     return 0;
@@ -596,6 +1134,14 @@ void StopThreads()
         sceKernelDeleteThread(gProducerThread);
         gProducerThread = -1;
     }
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    if (gMeccFeederThread >= 0)
+    {
+        sceKernelWaitThreadEnd(gMeccFeederThread, nullptr);
+        sceKernelDeleteThread(gMeccFeederThread);
+        gMeccFeederThread = -1;
+    }
+#endif
     if (gOutputThread >= 0)
     {
         sceKernelWaitThreadEnd(gOutputThread, nullptr);
@@ -624,9 +1170,23 @@ bool StartThreads()
     gProducerThread = sceKernelCreateThread("th07_bgm_io", BgmProducerThread,
                                              kBgmIoUrgentPriority, 0x4000,
                                              PSP_THREAD_ATTR_USER, nullptr);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    if (__atomic_load_n(&gMeccLocalRing, __ATOMIC_ACQUIRE))
+    {
+        gMeccFeederThread = sceKernelCreateThread("th07_bgm_mecc_feed",
+                                                   BgmMeccFeederThread,
+                                                   0x12, 0x4000,
+                                                   PSP_THREAD_ATTR_USER, nullptr);
+    }
+#endif
     gOutputThread = sceKernelCreateThread("th07_bgm_out", BgmOutputThread, 0x10, 0x4000,
                                            PSP_THREAD_ATTR_USER, nullptr);
-    if (gProducerThread < 0 || gOutputThread < 0)
+    if (gProducerThread < 0 || gOutputThread < 0
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        || (__atomic_load_n(&gMeccLocalRing, __ATOMIC_ACQUIRE) &&
+            gMeccFeederThread < 0)
+#endif
+    )
     {
         __atomic_store_n(&gAudioAlive, false, __ATOMIC_RELEASE);
         if (gProducerThread >= 0)
@@ -634,6 +1194,13 @@ bool StartThreads()
             sceKernelDeleteThread(gProducerThread);
             gProducerThread = -1;
         }
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (gMeccFeederThread >= 0)
+        {
+            sceKernelDeleteThread(gMeccFeederThread);
+            gMeccFeederThread = -1;
+        }
+#endif
         if (gOutputThread >= 0)
         {
             sceKernelDeleteThread(gOutputThread);
@@ -649,6 +1216,13 @@ bool StartThreads()
     {
         __atomic_store_n(&gAudioAlive, false, __ATOMIC_RELEASE);
         sceKernelDeleteThread(gProducerThread);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (gMeccFeederThread >= 0)
+        {
+            sceKernelDeleteThread(gMeccFeederThread);
+            gMeccFeederThread = -1;
+        }
+#endif
         sceKernelDeleteThread(gOutputThread);
         gProducerThread = -1;
         gOutputThread = -1;
@@ -658,11 +1232,41 @@ bool StartThreads()
         gFileSema = -1;
         return false;
     }
-    if (sceKernelStartThread(gOutputThread, 0, nullptr) < 0)
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    if (gMeccFeederThread >= 0 &&
+        sceKernelStartThread(gMeccFeederThread, 0, nullptr) < 0)
     {
         __atomic_store_n(&gAudioAlive, false, __ATOMIC_RELEASE);
         sceKernelWaitThreadEnd(gProducerThread, nullptr);
         sceKernelDeleteThread(gProducerThread);
+        sceKernelDeleteThread(gMeccFeederThread);
+        sceKernelDeleteThread(gOutputThread);
+        gProducerThread = -1;
+        gMeccFeederThread = -1;
+        gOutputThread = -1;
+        sceAudioChRelease(gAudioChannel);
+        gAudioChannel = -1;
+        sceKernelDeleteSema(gFileSema);
+        gFileSema = -1;
+        return false;
+    }
+#endif
+    if (sceKernelStartThread(gOutputThread, 0, nullptr) < 0)
+    {
+        __atomic_store_n(&gAudioAlive, false, __ATOMIC_RELEASE);
+        sceKernelWaitThreadEnd(gProducerThread, nullptr);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (gMeccFeederThread >= 0)
+            sceKernelWaitThreadEnd(gMeccFeederThread, nullptr);
+#endif
+        sceKernelDeleteThread(gProducerThread);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        if (gMeccFeederThread >= 0)
+        {
+            sceKernelDeleteThread(gMeccFeederThread);
+            gMeccFeederThread = -1;
+        }
+#endif
         sceKernelDeleteThread(gOutputThread);
         gProducerThread = -1;
         gOutputThread = -1;
@@ -689,8 +1293,42 @@ void RemoveFirstCommand(SoundPlayer *player)
 }
 } // namespace
 
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+extern "C" void th07_psp_audio4m_latch_fatal(const char *message)
+{
+    LatchMeccFatal(message);
+}
+#endif
+
 extern "C" void th07_psp_audio_set_system_suspended(int suspended)
 {
+#if defined(TH07_PSP_MECC_LOCAL_BGM) || defined(TH07_PSP_ME_RENDER_WORKER)
+    if (suspended && th07_psp_me_audio_reset_committed())
+    {
+        // Power callbacks must not touch Memory Stick I/O.  Latch the
+        // irreversible boundary here and defer the human-readable boot log to
+        // ProcessQueues on the game thread.  Observer fatal publication is
+        // atomic-only and is safe in callback context.
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+        // Reset ownership makes resume unsupported. Publish that irreversible
+        // worker disable even when another ME fault already latched fatal.
+        Th07PspMeRenderSetAvailable(false);
+#endif
+        th07_psp_me_audio_suspend_latch();
+        if (!__atomic_exchange_n(&gMeccFatal, true, __ATOMIC_ACQ_REL))
+        {
+            __atomic_store_n(&gBgmPlaying, false, __ATOMIC_RELEASE);
+            __atomic_store_n(&gMeccSuspendLogPending, true, __ATOMIC_RELEASE);
+#if defined(TH07_PSP_SHIKIGAMI)
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+            th07_shikigami_record_fatal("MERW SUSPEND -> COLD REBOOT");
+#else
+            th07_shikigami_record_fatal("MECC BGM SUSPEND -> COLD REBOOT");
+#endif
+#endif
+        }
+    }
+#endif
     __atomic_store_n(&gSystemSuspended, suspended != 0, __ATOMIC_RELEASE);
 }
 
@@ -712,18 +1350,127 @@ SoundPlayer::SoundPlayer()
 
 ZunResult SoundPlayer::InitializeSound()
 {
+#if defined(TH07_PSP_ME_RENDER_WORKER) && !defined(TH07_PSP_MECC_LOCAL_BGM)
+    gMeccSuspendLogPending = false;
+#endif
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    gBgmRing = nullptr;
+    gMeccLocalRing = false;
+    gMeccSuspendLogPending = false;
+    gGeneration = 1;
+    gMeccProducerAckGeneration = gGeneration;
+    gMeccFeederAckGeneration = gGeneration;
+    gMeccOutputAckGeneration = gGeneration;
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+    gBgmCrcChecks = 0u;
+    gBgmCrcMismatches = 0u;
+    gBgmCrcMismatchRecordCount = 0u;
+    std::memset(gBgmCrcMismatchRecords, 0, sizeof(gBgmCrcMismatchRecords));
+#endif
+#if defined(TH07_PSP_MECC_LOCAL_BGM) || defined(TH07_PSP_MECC_AUDIO_4M)
+    gMeccFatal = false;
+#endif
+    ResetRing();
+#else
     ResetRing();
     gGeneration = 1;
+#endif
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+    gBgmUploadWraps = 0u;
+    gBgmFetchWraps = 0u;
+    gBgmOutputWraps = 0u;
+#endif
     gFadeFramesRemaining = 0;
     gFadeFramesTotal = 0;
     gUnderruns = 0;
     gBgmPlaying = false;
     gBgmPaused = false;
+    gBgmStageLoadBlocked = false;
     gSystemSuspended = false;
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    const int meInit = th07_psp_me_audio_init();
+    if (meInit < 0)
+    {
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+        th07_psp_boot_note("MECC AUDIO INIT UNSAFE -> COLD REBOOT");
+#else
+        th07_psp_boot_note("MECC BGM INIT UNSAFE -> COLD REBOOT");
+#endif
+        return ZUN_ERROR;
+    }
+    if (meInit > 0)
+    {
+        if (!SelftestMeccBgmRing(gGeneration))
+        {
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+            LatchMeccFatal("MECC AUDIO4M BGM SELFTEST FAILED -> COLD REBOOT");
+#else
+            LatchMeccFatal("MECC BGM 384K SELFTEST FAILED -> COLD REBOOT");
+#endif
+            th07_psp_me_audio_shutdown();
+            return ZUN_ERROR;
+        }
+        th07_psp_me_bgm_commit_owned();
+        if (!th07_psp_me_bgm_is_active())
+        {
+            LatchMeccFatal("MECC BGM OWNERSHIP COMMIT FAILED -> COLD REBOOT");
+            th07_psp_me_audio_shutdown();
+            return ZUN_ERROR;
+        }
+        __atomic_store_n(&gMeccLocalRing, true, __ATOMIC_RELEASE);
+        ResetRing();
+        if (__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE))
+        {
+            __atomic_store_n(&gMeccLocalRing, false, __ATOMIC_RELEASE);
+            th07_psp_me_audio_shutdown();
+            return ZUN_ERROR;
+        }
+        unsigned int ignoredJobs, ignoredFallbacks, ignoredTimeouts, ignoredMaxWait;
+        th07_psp_me_audio_diag_window(&ignoredJobs, &ignoredFallbacks,
+                                      &ignoredTimeouts, &ignoredMaxWait);
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+        th07_psp_boot_note("MECC AUDIO4M BGM 384K LOWER ON (LOCAL EDRAM)");
+#else
+        th07_psp_boot_note("MECC BGM 384K ON (LOCAL EDRAM)");
+#endif
+    }
+    else
+    {
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+        th07_psp_boot_note("MECC AUDIO4M REQUIRES REAL PSP-3000 -> COLD REBOOT");
+        th07_psp_me_audio_shutdown();
+        return ZUN_ERROR;
+#else
+        gBgmRing = new (std::nothrow) i16[kRingFrames * kChannels];
+        if (!gBgmRing)
+        {
+            th07_psp_boot_note("MECC SAFE SC RING ALLOC FAILED");
+            return ZUN_ERROR;
+        }
+        std::memset(gBgmRing, 0, kRingBytes);
+        th07_psp_boot_note("MECC PROFILE SAFE SC RING FALLBACK");
+#endif
+    }
+#else
+#if defined(TH07_PSP_MECC_AUDIO_4M) && defined(TH07_PSP_BGM_MAIN_RAM)
+    // Do not start ME Custom Core merely to move PCM between two Main-RAM
+    // buffers.  The producer and DAC worker use the long-proven SC-direct ring,
+    // leaving every byte of ME eDRAM unowned and untouched by TH07.
+    th07_psp_boot_note("BGM MAIN RAM 384K SC-DIRECT; ME EDRAM UNUSED");
+#else
     th07_psp_me_audio_init();
+#endif
+#endif
     if (!StartThreads())
     {
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        __atomic_store_n(&gMeccLocalRing, false, __ATOMIC_RELEASE);
+#endif
         th07_psp_me_audio_shutdown();
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+        delete[] gBgmRing;
+        gBgmRing = nullptr;
+#endif
         th07_psp_boot_note("bgm audio init failed");
         return ZUN_ERROR;
     }
@@ -733,8 +1480,12 @@ ZunResult SoundPlayer::InitializeSound()
 
 ZunResult SoundPlayer::Release()
 {
+    __atomic_store_n(&gBgmStageLoadBlocked, false, __ATOMIC_RELEASE);
     StopBGM();
     StopThreads();
+#if defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_SFX_MAIN_RAM)
+    th07_audio4m_sfx_shutdown();
+#endif
     const u32 mixedBlocks = __atomic_load_n(&gSfxMixedBlocks, __ATOMIC_ACQUIRE);
     const u32 totalMixUs = __atomic_load_n(&gSfxScTotalMixUs, __ATOMIC_ACQUIRE);
     th07_psp_boot_notef("audio stats U%lu T%lu M%lu L%lu SA%lu SM%lu",
@@ -749,7 +1500,34 @@ ZunResult SoundPlayer::Release()
                         static_cast<unsigned long>(mixedBlocks ? totalMixUs / mixedBlocks : 0u),
                         static_cast<unsigned long>(
                             __atomic_load_n(&gSfxScMaxMixUs, __ATOMIC_ACQUIRE)));
+#if defined(TH07_PSP_MECC_AUDIO_4M) && defined(TH07_PSP_MECC_LOCAL_BGM)
+    FlushBgmCrcMismatchRecords();
+    th07_psp_boot_notef("bgm crc checks %lu mismatch %lu",
+                        static_cast<unsigned long>(
+                            __atomic_load_n(&gBgmCrcChecks, __ATOMIC_ACQUIRE)),
+                        static_cast<unsigned long>(
+                            __atomic_load_n(&gBgmCrcMismatches, __ATOMIC_ACQUIRE)));
+#endif
     th07_psp_me_audio_shutdown();
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    if (th07_psp_me_audio_faulted())
+    {
+        LatchMeccFatal("MECC BGM STOP NOT CONFIRMED -> COLD REBOOT");
+    }
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+    if (th07_psp_me_audio_power_locked())
+    {
+        th07_psp_boot_note("MECC AUDIO4M EXIT BLOCKED; HOLD POWER FOR COLD OFF");
+        for (;;)
+        {
+            sceKernelDelayThread(1000u * 1000u);
+        }
+    }
+#endif
+    __atomic_store_n(&gMeccLocalRing, false, __ATOMIC_RELEASE);
+    delete[] gBgmRing;
+    gBgmRing = nullptr;
+#endif
     if (gAudioChannel >= 0)
     {
         sceAudioChRelease(gAudioChannel);
@@ -918,7 +1696,20 @@ ZunResult SoundPlayer::LoadSound(i32 idx, const char *path)
     gSfxBuffers[idx].frames = storedFrames;
     gSfxBuffers[idx].stepFixed = std::max<u32>(
         1, static_cast<u32>((static_cast<unsigned long long>(storedSampleRate) << 16) / 44100u));
+#if defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_SFX_MAIN_RAM)
+    if (!th07_audio4m_sfx_upload_buffer(
+            static_cast<unsigned int>(idx), samples, storedFrames,
+            gSfxBuffers[idx].stepFixed))
+    {
+        delete[] samples;
+        gSfxBuffers[idx] = {};
+        return ZUN_ERROR;
+    }
+    delete[] samples;
+    gSfxBuffers[idx].samples = nullptr;
+#else
     sceKernelDcacheWritebackRange(samples, storedFrames * sizeof(PspSfxSample));
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -969,6 +1760,18 @@ ZunResult SoundPlayer::StartBGM(const char *path)
     return ZUN_SUCCESS;
 }
 
+void SoundPlayer::SetBgmStageLoadBlocked(bool blocked)
+{
+    // This gate is independent of pause/menu state and track generation. The
+    // producer keeps filling Main RAM, but OutputThread cannot consume or
+    // advance gReadFrame until gameplay is ready.
+    th07_psp_boot_note(blocked ? "bgm stage-load gate on" : "bgm stage-load gate off");
+    // In particular, the OFF note must finish before the release-store. A
+    // release build writes boot notes synchronously, and logging after OFF
+    // would let BGM advance while AddedCallback was still blocked in I/O.
+    __atomic_store_n(&gBgmStageLoadBlocked, blocked, __ATOMIC_RELEASE);
+}
+
 ZunResult SoundPlayer::ReopenBGM(const char *name)
 {
     const i32 fmtIdx = GetFmtIndexByName(name);
@@ -999,8 +1802,16 @@ ZunResult SoundPlayer::ReopenBGM(const char *name)
     }
 
     __atomic_store_n(&gBgmPlaying, false, __ATOMIC_RELEASE);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    // Drain any old-generation reader before publishing the new generation
+    // and replacing the file under the same semaphore.  A producer can then
+    // only read old-file/old-epoch or new-file/new-epoch.
+    LockFile();
+    __atomic_add_fetch(&gGeneration, 1u, __ATOMIC_ACQ_REL);
+#else
     __atomic_add_fetch(&gGeneration, 1u, __ATOMIC_ACQ_REL);
     LockFile();
+#endif
     if (gBgmFile)
     {
         fclose(gBgmFile);
@@ -1012,10 +1823,22 @@ ZunResult SoundPlayer::ReopenBGM(const char *name)
     gTrackTotalBytes = static_cast<u32>(fmt.totalLength) & ~(kBytesPerFrame - 1u);
     UnlockFile();
     ResetRing();
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    if (__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE))
+    {
+        CloseTrackFile();
+        return ZUN_ERROR;
+    }
+#endif
     gFadeFramesRemaining = 0;
     gFadeFramesTotal = 0;
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    __atomic_store_n(&gBgmPaused, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&gBgmPlaying, true, __ATOMIC_RELEASE);
+#else
     gBgmPaused = false;
     gBgmPlaying = true;
+#endif
     curBgmIdx = fmtIdx;
 
     char message[128];
@@ -1047,11 +1870,29 @@ ZunResult SoundPlayer::LoadBGM(i32 idx)
 void SoundPlayer::StopBGM()
 {
     __atomic_store_n(&gBgmPlaying, false, __ATOMIC_RELEASE);
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    LockFile();
+    __atomic_add_fetch(&gGeneration, 1u, __ATOMIC_ACQ_REL);
+    if (gBgmFile)
+    {
+        fclose(gBgmFile);
+        gBgmFile = nullptr;
+    }
+    gTrackBase = 0;
+    gTrackCursor = 0;
+    gTrackIntroBytes = 0;
+    gTrackTotalBytes = 0;
+    UnlockFile();
+    ResetRing();
+    gFadeFramesRemaining = 0;
+    gFadeFramesTotal = 0;
+#else
     __atomic_add_fetch(&gGeneration, 1u, __ATOMIC_ACQ_REL);
     ResetRing();
     gFadeFramesRemaining = 0;
     gFadeFramesTotal = 0;
     CloseTrackFile();
+#endif
 }
 
 ZunResult SoundPlayer::InitSoundBuffers()
@@ -1072,6 +1913,13 @@ ZunResult SoundPlayer::InitSoundBuffers()
     gSePowerActive = 0;
     std::memset(gSfxRequestCounts, 0, sizeof(gSfxRequestCounts));
     std::memset(gSfxCooldown, 0, sizeof(gSfxCooldown));
+#if defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_SFX_MAIN_RAM)
+    if (!th07_audio4m_sfx_begin(gIoBuffer, sizeof(gIoBuffer)))
+    {
+        LatchMeccFatal("MECC AUDIO4M SFX ATLAS BEGIN FAILED -> COLD REBOOT");
+        return ZUN_ERROR;
+    }
+#endif
 
     u32 loaded = 0;
     u32 totalFrames = 0;
@@ -1096,6 +1944,13 @@ ZunResult SoundPlayer::InitSoundBuffers()
         gSfxGainQ15[idx] = static_cast<u16>(
             std::max(0, std::min(32768, static_cast<int>(gain * 32768.0f + 0.5f))));
     }
+#if defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_SFX_MAIN_RAM)
+    if (loaded != kSfxBufferCount || !th07_audio4m_sfx_finalize())
+    {
+        LatchMeccFatal("MECC AUDIO4M SFX ATLAS FINALIZE FAILED -> COLD REBOOT");
+        return ZUN_ERROR;
+    }
+#endif
     char message[80];
 #if defined(TH07_PSP_1000)
     constexpr const char *storageName = "mulaw";
@@ -1108,7 +1963,20 @@ ZunResult SoundPlayer::InitSoundBuffers()
                   storageName,
                   static_cast<unsigned long>(totalFrames * sizeof(PspSfxSample) / 1024u));
     th07_psp_boot_note(message);
+#if defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_SFX_MAIN_RAM)
+    th07_psp_boot_note("MECC AUDIO4M SFX ATLAS 2048KB PCM (NO PADDING)");
+    th07_psp_boot_note("audio mix ME local SFX -> 2x4KB WIDE FIFO / ONE FINAL CLAMP");
+    th07_psp_boot_note("AUDIO4M READY: GAME-REQUESTED SE ONLY");
+#elif defined(TH07_PSP_SFX_MAIN_RAM)
+    th07_psp_boot_note("SE Main RAM PCM / SC wide mixer");
+#if defined(TH07_PSP_BGM_MAIN_RAM)
+    th07_psp_boot_note("BGM Main RAM 384K; ME eDRAM disabled");
+#else
+    th07_psp_boot_note("MECC BGM 384K lower; ME upper/SFX FIFO disabled");
+#endif
+#else
     th07_psp_boot_note("audio mix SC wide SFX residual headroom");
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -1192,6 +2060,9 @@ void SoundPlayer::StopSoundByIdx(i32 idx)
             queued = -1;
         }
     }
+#if defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_SFX_MAIN_RAM)
+    th07_audio4m_sfx_stop_logical(static_cast<unsigned int>(idx));
+#else
     if (idx < 32)
     {
         const u32 bit = 1u << idx;
@@ -1204,11 +2075,22 @@ void SoundPlayer::StopSoundByIdx(i32 idx)
         __atomic_fetch_and(&gPendingSfxMaskHigh, ~bit, __ATOMIC_RELEASE);
         __atomic_fetch_or(&gStopSfxMaskHigh, bit, __ATOMIC_RELEASE);
     }
+#endif
     gSfxCooldown[idx] = 0;
 }
 
 i32 SoundPlayer::ProcessQueues()
 {
+#if defined(TH07_PSP_MECC_LOCAL_BGM) || defined(TH07_PSP_ME_RENDER_WORKER)
+    if (__atomic_exchange_n(&gMeccSuspendLogPending, false, __ATOMIC_ACQ_REL))
+    {
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+        th07_psp_boot_note("MERW SUSPEND -> COLD REBOOT");
+#else
+        th07_psp_boot_note("MECC BGM SUSPEND -> COLD REBOOT");
+#endif
+    }
+#endif
     for (u32 &cooldown : gSfxCooldown)
     {
         if (cooldown != 0)
@@ -1290,6 +2172,21 @@ i32 SoundPlayer::ProcessQueues()
 
     if (g_Supervisor.cfg.playSounds)
     {
+#if defined(TH07_PSP_MECC_AUDIO_4M) && !defined(TH07_PSP_SFX_MAIN_RAM)
+        for (i32 &queued : soundQueue)
+        {
+            if (queued >= 0 && queued < static_cast<i32>(kSfxLogicalCount))
+            {
+                const unsigned int logical = static_cast<unsigned int>(queued);
+                th07_audio4m_sfx_request(
+                    logical,
+                    static_cast<unsigned int>(SOUND_BUFFER_IDX_VOL[logical].bufferIdx),
+                    static_cast<unsigned int>(gSfxGainQ15[logical]) << 1);
+                queued = -1;
+                ++gSfxTriggerCount;
+            }
+        }
+#else
         u32 pendingLow = 0;
         u32 pendingHigh = 0;
         for (i32 &queued : soundQueue)
@@ -1321,6 +2218,7 @@ i32 SoundPlayer::ProcessQueues()
             gSfxTriggerCount += static_cast<u32>(__builtin_popcount(pendingLow) +
                                                   __builtin_popcount(pendingHigh));
         }
+#endif
     }
     return commandQueue[0].opcode;
 }
@@ -1341,3 +2239,132 @@ void SoundPlayer::PushCommand(AudioOpcode opcode, i32 arg1, const char *arg2)
         break;
     }
 }
+
+#if defined(TH07_PSP_SHIKIGAMI)
+extern "C" void th07_psp_audio_shikigami_snapshot(
+    Th07ShikigamiAudioSnapshot *snapshot)
+{
+    if (!snapshot)
+    {
+        return;
+    }
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    snapshot->ring_bytes = kRingBytes;
+#else
+    snapshot->ring_bytes = sizeof(gBgmRing);
+#endif
+    snapshot->ring_fill_frames = RingCount();
+    snapshot->underruns = __atomic_load_n(&gUnderruns, __ATOMIC_ACQUIRE);
+    snapshot->generation = __atomic_load_n(&gGeneration, __ATOMIC_ACQUIRE);
+    snapshot->bgm_index = g_SoundPlayer.curBgmIdx;
+    snapshot->playing =
+        __atomic_load_n(&gBgmPlaying, __ATOMIC_ACQUIRE) ? 1u : 0u;
+    snapshot->paused =
+        __atomic_load_n(&gBgmPaused, __ATOMIC_ACQUIRE) ? 1u : 0u;
+    unsigned int meRingBase = 0;
+    unsigned int meRingBytes = 0;
+    unsigned int meAudioJobs = 0;
+    unsigned int meFallbacks = 0;
+    unsigned int meTimeouts = 0;
+    unsigned int meMaxWaitUs = 0;
+#if defined(TH07_PSP_MECC_LOCAL_BGM)
+    // Report only the extent the ME actually owns and uses.  R18 places the
+    // complete 384 KiB BGM ring at 0x00010000 in lower eDRAM and owns no byte
+    // at or above the 2 MiB upper-half boundary.
+    th07_psp_me_bgm_extent(&meRingBase, &meRingBytes);
+    th07_psp_me_audio_diag_snapshot(&meAudioJobs, &meFallbacks,
+                                    &meTimeouts, &meMaxWaitUs);
+#endif
+    // Wire field names predate the lower-ring migration.  Zero base/bytes in
+    // R19 is the factual assertion that TH07 owns no ME eDRAM at runtime.
+    snapshot->me_upper_base = meRingBase;
+    snapshot->me_upper_bytes = meRingBytes;
+    snapshot->me_jobs = meAudioJobs;
+    snapshot->me_fallbacks = meFallbacks;
+    snapshot->me_timeouts = meTimeouts;
+    snapshot->me_max_wait_us = meMaxWaitUs;
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+    Th07Audio4mSfxSnapshot sfx{};
+#if !defined(TH07_PSP_SFX_MAIN_RAM)
+    th07_audio4m_sfx_snapshot(&sfx);
+#endif
+    snapshot->sfx_atlas_bytes = sfx.atlas_bytes;
+    snapshot->sfx_canonical_bytes = sfx.canonical_bytes;
+    snapshot->sfx_replica_bytes = sfx.replica_bytes;
+    snapshot->sfx_canonical_output_mask = sfx.canonical_output_mask;
+    snapshot->sfx_replica_output_mask = sfx.replica_output_mask;
+    snapshot->sfx_mix_jobs = sfx.mix_jobs;
+    snapshot->sfx_output_blocks = sfx.output_blocks;
+    snapshot->sfx_fifo_misses = sfx.fifo_misses;
+    snapshot->sfx_fatal = sfx.fatal;
+    snapshot->sfx_coverage_active = sfx.coverage_active;
+    snapshot->sfx_coverage_complete = sfx.coverage_complete;
+    snapshot->sfx_coverage_pass = sfx.coverage_pass;
+    snapshot->sfx_coverage_buffer = sfx.coverage_buffer;
+    snapshot->bgm_upload_wraps =
+        __atomic_load_n(&gBgmUploadWraps, __ATOMIC_ACQUIRE);
+    snapshot->bgm_fetch_wraps =
+        __atomic_load_n(&gBgmFetchWraps, __ATOMIC_ACQUIRE);
+    snapshot->bgm_output_wraps =
+        __atomic_load_n(&gBgmOutputWraps, __ATOMIC_ACQUIRE);
+
+    constexpr u32 requiredSfxMask = (1u << kSfxBufferCount) - 1u;
+    u32 proof = 0u;
+#if !defined(TH07_PSP_BGM_MAIN_RAM)
+    if (meRingBase == 0x00010000u && meRingBytes == 384u * 1024u)
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_FULL_EXTENT;
+#endif
+    if (sfx.atlas_bytes == 2u * 1024u * 1024u &&
+        sfx.canonical_bytes != 0u && sfx.replica_bytes != 0u &&
+        sfx.canonical_bytes + sfx.replica_bytes == sfx.atlas_bytes)
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_ATLAS_EXACT;
+    if (sfx.canonical_output_mask == requiredSfxMask)
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_CANONICAL_DAC;
+    if (sfx.replica_output_mask == requiredSfxMask)
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_REPLICA_DAC;
+    if (snapshot->bgm_upload_wraps != 0u)
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_BGM_UPLOAD_WRAP;
+    if (snapshot->bgm_fetch_wraps != 0u)
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_BGM_FETCH_WRAP;
+    if (snapshot->bgm_output_wraps != 0u)
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_BGM_OUTPUT_WRAP;
+    // PROVEN remains an exhaustive diagnostic claim.  Normal startup never
+    // schedules the audible 30x2 sweep, so ordinary gameplay reports factual
+    // runtime activity without being pressured to exercise every atlas entry.
+#if defined(TH07_PSP_SFX_MAIN_RAM)
+    // SE mixes on the SC from Main RAM; the eDRAM SFX FIFO/coverage machinery
+    // never runs.  The R19 BGM backend also remains wholly on the SC, so its
+    // zero-fault gate has no ME ownership, cache or retention precondition.
+#if defined(TH07_PSP_BGM_MAIN_RAM)
+    if (snapshot->underruns == 0u && meFallbacks == 0u && meTimeouts == 0u &&
+        !__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE))
+    {
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_ZERO_FAULTS;
+    }
+#else
+    if (snapshot->underruns == 0u && meFallbacks == 0u && meTimeouts == 0u &&
+        __atomic_load_n(&gBgmCrcMismatches, __ATOMIC_ACQUIRE) == 0u &&
+        !__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE) &&
+        !th07_psp_me_audio_faulted() && th07_psp_me_audio_stack_guard_ok() &&
+        th07_psp_me_audio_power_locked() && th07_psp_me_bgm_is_active())
+    {
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_ZERO_FAULTS;
+    }
+#endif
+#else
+    if (sfx.fifo_misses == 0u && sfx.fatal == 0u &&
+        sfx.coverage_complete != 0u && sfx.coverage_active == 0u &&
+        sfx.coverage_pass == 1u && sfx.coverage_buffer == kSfxBufferCount &&
+        snapshot->underruns == 0u && meFallbacks == 0u && meTimeouts == 0u &&
+        __atomic_load_n(&gBgmCrcMismatches, __ATOMIC_ACQUIRE) == 0u &&
+        !__atomic_load_n(&gMeccFatal, __ATOMIC_ACQUIRE) &&
+        !th07_psp_me_audio_faulted() && th07_psp_me_audio_stack_guard_ok() &&
+        th07_psp_me_audio_power_locked() && th07_psp_me_bgm_is_active())
+    {
+        proof |= TH07_SHIKIGAMI_AUDIO4M_PROOF_ZERO_FAULTS;
+    }
+#endif
+    snapshot->audio4m_proof_flags = proof;
+#endif
+}
+#endif

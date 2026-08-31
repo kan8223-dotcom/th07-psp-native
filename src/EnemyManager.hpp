@@ -264,6 +264,14 @@ struct EnemyManager
 
     static u32 ActualOnDraw(EnemyManager *arg, i32 param_2, i32 param_3);
     void Initialize();
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    bool PspEnsureEnemyP5WarmQueue();
+    void PspReleaseEnemyP5WarmQueue();
+    bool PspBeginEnemyP5WarmQueue();
+    bool PspCaptureEnemyP5WarmRecord(Enemy *enemy, u32 slotIndex, u32 headIndex);
+    void PspPublishEnemyP5WarmQueue(bool captureComplete);
+    bool PspEnemyP5WarmQueueReady() const;
+#endif
 
     i32 HasActiveBoss();
     i32 RemoveAllEnemies(i32 scoreMax, i32 scoreMin);
@@ -316,6 +324,15 @@ struct EnemyManager
     // disproportionate cache cost. Keep source ordering while avoiding those
     // cold structure reads for empty slots.
     u32 pspActiveEnemyBits[(kEnemyCapacity + 31) / 32];
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    void *pspEnemyP5WarmQueue;
+    u32 pspEnemyMutationEpoch;
+
+    void PspMarkEnemyMutation()
+    {
+        ++pspEnemyMutationEpoch;
+    }
+#endif
 
     bool PspIsEnemySlotTracked(i32 index) const
     {
@@ -325,13 +342,39 @@ struct EnemyManager
     void PspTrackEnemySlot(i32 index)
     {
         pspActiveEnemyBits[index >> 5] |= 1u << (index & 31);
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+        PspMarkEnemyMutation();
+#endif
     }
 
     void PspForgetEnemySlot(i32 index)
     {
         pspActiveEnemyBits[index >> 5] &= ~(1u << (index & 31));
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+        PspMarkEnemyMutation();
+#endif
     }
 #endif
 };
 
 extern EnemyManager g_EnemyManager;
+
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+struct Th07PspEnemyP5WarmWindow
+{
+    unsigned long long recordVisits;
+    unsigned long long fastEnemyDraws;
+    unsigned long long canonicalEnemyDraws;
+    unsigned int readyFrames;
+    unsigned int fallbackFrames;
+};
+
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+void Th07PspTakeEnemyP5WarmWindow(Th07PspEnemyP5WarmWindow *window);
+#else
+inline void Th07PspTakeEnemyP5WarmWindow(Th07PspEnemyP5WarmWindow *window)
+{
+    (void)window;
+}
+#endif
+#endif

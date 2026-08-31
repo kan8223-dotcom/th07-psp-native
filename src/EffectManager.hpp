@@ -6,6 +6,19 @@
 
 typedef i32 (*EffectCallback)(struct Effect *);
 
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+struct Th07PspMeRenderEffectLayout;
+struct Th07PspMeRenderStreamJob;
+struct Th07PspMeRenderStreamReady;
+typedef void (*Th07PspMeEffectSubmitRuns)(void *context,
+                                          unsigned int firstRun,
+                                          unsigned int endRun);
+// Priority-9 owner implemented beside the shared Item/Bullet stream state.
+// False means Effect draws all three layers canonically without disturbing
+// the independently usable priority-10 suffix.
+bool Th07PspTryConsumeMeEffectStream();
+#endif
+
 struct Effect
 {
     AnmVm vm;
@@ -60,6 +73,27 @@ struct EffectManager
     static ZunResult DeletedCallback(EffectManager *arg);
     static u32 OnUpdate(EffectManager *arg);
     static u32 OnDraw(EffectManager *arg);
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+    // I-ME8 producer/consumer boundary. Prepare is called after Effect update
+    // has rebuilt all four canonical lists. BuildLayout is then called by the
+    // command-10 owner with the already-reserved Item record count. Consume
+    // validates both Effect layers before submitting either, draws canonical
+    // layer 2 between them, and therefore preserves layer0 -> layer2 -> layer3
+    // ordering without exposing a partial Effect fast path.
+    bool PspPrepareMeEffectRenderStream();
+    bool PspBuildMeEffectRenderLayout(Th07PspMeRenderEffectLayout *layout,
+                                      u32 itemRecordCount) const;
+    bool PspMeEffectRenderAuthorityMatches(
+        const Th07PspMeRenderEffectLayout *layout) const;
+    bool PspValidateMeEffectRenderStream(
+        const Th07PspMeRenderStreamJob *job,
+        const Th07PspMeRenderStreamReady *ready) const;
+    bool PspConsumeMeEffectRenderStream(
+        const Th07PspMeRenderStreamJob *job,
+        const Th07PspMeRenderStreamReady *ready,
+        Th07PspMeEffectSubmitRuns submitRuns, void *context);
+    void PspDrawCanonicalEffectLayer(i32 layer);
+#endif
 
     static i32 UpdatePhysics(Effect *effect);
     static i32 UpdateOrbitEffect(Effect *effect);
@@ -115,6 +149,18 @@ struct EffectManager
     // in-use byte. External owners may retire an effect directly, so spawn
     // and update paths also repair stale bits when encountered.
     u32 pspActiveEffectBits[(kEffectCapacity + 31) / 32];
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+    u32 pspMeEffectSlotGenerations[kEffectCapacity];
+    f32 pspMeEffectRenderSin[kEffectCapacity];
+    f32 pspMeEffectRenderCos[kEffectCapacity];
+    u32 pspMeEffectPrepareSerial;
+    u32 pspMeEffectPreparedSerial;
+    u32 pspMeEffectPreparedCounts[2];
+    // Filled for free while OnUpdate links the canonical lists.  The adaptive
+    // gate reads these counts before deciding whether a full prepare walk is
+    // affordable; they carry no game-state authority.
+    u32 pspMeEffectListCounts[2];
+#endif
 
     bool PspIsEffectSlotTracked(i32 index) const
     {
@@ -124,11 +170,23 @@ struct EffectManager
     void PspTrackEffectSlot(i32 index)
     {
         pspActiveEffectBits[index >> 5] |= 1u << (index & 31);
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+        if (++pspMeEffectSlotGenerations[index] == 0u)
+        {
+            ++pspMeEffectSlotGenerations[index];
+        }
+#endif
     }
 
     void PspForgetEffectSlot(i32 index)
     {
         pspActiveEffectBits[index >> 5] &= ~(1u << (index & 31));
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+        if (++pspMeEffectSlotGenerations[index] == 0u)
+        {
+            ++pspMeEffectSlotGenerations[index];
+        }
+#endif
     }
 #endif
 };

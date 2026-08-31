@@ -17,6 +17,14 @@
 
 namespace
 {
+enum InitialDescriptionState : u8
+{
+    INITIAL_DESCRIPTION_NONE,
+    INITIAL_DESCRIPTION_WAIT_FOR_LOGO,
+    INITIAL_DESCRIPTION_WAIT_FOR_STOPPED_PRESENT,
+    INITIAL_DESCRIPTION_READY,
+};
+
 void DrawMusicTitle(MusicRoom *room, i32 idx)
 {
     if (idx < 0 || idx >= room->numDescriptors || room->titleRendered[idx])
@@ -30,9 +38,8 @@ void DrawMusicTitle(MusicRoom *room, i32 idx)
 
 bool DrawNextVisibleMusicTitle(MusicRoom *room)
 {
-    // Keep the selected row usable first, then fill the rest of the visible
-    // window from top to bottom.  Exactly one FreeType raster/upload is done
-    // in an update so entering or scrolling never blocks on ten rows at once.
+    // The first visible page is prepared before the entrance animation.  A
+    // scroll can expose only one new row, so keep that incremental here.
     if (room->cursor >= room->listingOffset && room->cursor < room->listingOffset + 10 &&
         room->cursor < room->numDescriptors && !room->titleRendered[room->cursor])
     {
@@ -52,35 +59,28 @@ bool DrawNextVisibleMusicTitle(MusicRoom *room)
     return false;
 }
 
-void QueueMusicDescription(MusicRoom *room, i32 trackIdx)
+void DrawMusicDescription(MusicRoom *room, i32 trackIdx)
 {
     room->selectedIdx = trackIdx;
-    room->descriptionRenderIdx = 0;
-    for (AnmVm &description : room->descriptionSprites)
+    for (i32 lineIdx = 0; lineIdx < 8; ++lineIdx)
     {
-        description.active = 0;
+        char line[66] = {};
+        memcpy(line, room->trackDescriptors[trackIdx].description[lineIdx], 64);
+        AnmVm &description = room->descriptionSprites[lineIdx];
+        description.active = line[0] != '\0';
+        if (description.active)
+        {
+            AnmManager::DrawVmTextFmt(g_AnmManager, &description, 0xffe0c0, 0x300000, line);
+        }
         description.pendingInterrupt = 1;
     }
 }
 
-void DrawNextMusicDescriptionLine(MusicRoom *room)
+void DrawMusicDescriptionBatched(MusicRoom *room, i32 trackIdx)
 {
-    const i32 lineIdx = room->descriptionRenderIdx;
-    if (lineIdx < 0 || lineIdx >= 8)
-    {
-        return;
-    }
-
-    char line[66] = {};
-    memcpy(line, room->trackDescriptors[room->selectedIdx].description[lineIdx], 64);
-    if (line[0] != '\0')
-    {
-        room->descriptionSprites[lineIdx].active = 1;
-        AnmManager::DrawVmTextFmt(g_AnmManager, room->descriptionSprites + lineIdx,
-                                  0xffe0c0, 0x300000, line);
-    }
-    room->descriptionSprites[lineIdx].pendingInterrupt = 1;
-    room->descriptionRenderIdx = lineIdx == 7 ? -1 : lineIdx + 1;
+    Th07PspBeginTextUploadBatch();
+    DrawMusicDescription(room, trackIdx);
+    Th07PspEndTextUploadBatch();
 }
 
 } // namespace
@@ -186,12 +186,17 @@ i32 MusicRoom::ProcessInput()
         }
         g_Supervisor.PlayAudio(this->trackDescriptors[this->selectedIdx].path);
 #if defined(TH07_PSP)
+        this->initialDescriptionState = INITIAL_DESCRIPTION_NONE;
         // Dispatch AUDIO_START before FreeType redraws the eight comment
         // lines.  The producer can fill its ring while those glyphs are
         // rendered, so selecting a track is no longer followed by a long
         // silent pause on Memory Stick hardware.
         g_SoundPlayer.ProcessQueues();
-        QueueMusicDescription(this, this->selectedIdx);
+        // Publish the complete comment block atomically.  The former
+        // one-line-per-update path left the panel blank for several frames
+        // and synchronized the full text atlas once per line.
+        DrawMusicDescriptionBatched(this, this->selectedIdx);
+        th07_psp_boot_note("music comments drawn");
 #else
         for (i = 0; i < 8; i++)
         {
@@ -272,10 +277,28 @@ recheck:
         g_AnmManager->ExecuteScript(&arg->descriptionSprites[i]);
     }
 #if defined(TH07_PSP)
-    if (!DrawNextVisibleMusicTitle(arg))
+    if (arg->initialDescriptionState == INITIAL_DESCRIPTION_WAIT_FOR_LOGO &&
+        arg->vm[0].isStopped)
     {
-        DrawNextMusicDescriptionLine(arg);
+        // Draw runs before calc.  Wait one more update so the stopped logo is
+        // presented before the comment batch can occupy the CPU.
+        arg->initialDescriptionState = INITIAL_DESCRIPTION_WAIT_FOR_STOPPED_PRESENT;
     }
+    else if (arg->initialDescriptionState ==
+             INITIAL_DESCRIPTION_WAIT_FOR_STOPPED_PRESENT)
+    {
+        // The stopped logo was submitted by the draw phase immediately
+        // before this update.  Let that frame reach the display before doing
+        // any more text work.
+        arg->initialDescriptionState = INITIAL_DESCRIPTION_READY;
+    }
+    else if (arg->initialDescriptionState == INITIAL_DESCRIPTION_READY)
+    {
+        DrawMusicDescriptionBatched(arg, arg->selectedIdx);
+        arg->initialDescriptionState = INITIAL_DESCRIPTION_NONE;
+        Th07PspTrimTextureCache();
+    }
+    DrawNextVisibleMusicTitle(arg);
 #endif
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
@@ -333,6 +356,12 @@ ZunResult MusicRoom::AddedCallback(MusicRoom *arg)
 #if defined(TH07_PSP)
     th07_psp_boot_note("music added begin");
     memset(arg->titleRendered, 0, sizeof(arg->titleRendered));
+    // MusicRoom is a function-local static.  Its ANM VMs are rebuilt on
+    // re-entry, but enableInput otherwise remains set from the previous
+    // visit and skips CheckInputEnable(), which publishes the title-script
+    // interrupts.  Keep the selected track/scroll position, while restarting
+    // the short input gate so the freshly loaded title VMs become visible.
+    arg->enableInput = 0;
 #endif
     if (g_AnmManager->LoadSurface(0, "data/result/music.jpg") != ZUN_SUCCESS)
     {
@@ -482,7 +511,20 @@ LAB_0043b195:
 #endif
     }
 #if defined(TH07_PSP)
-    QueueMusicDescription(arg, arg->selectedIdx);
+    // Only the short visible titles are on the menu-to-room critical path.
+    // The initial comments are rendered after the logo stops; a user-initiated
+    // selection still renders its comments immediately in one batch.
+    Th07PspBeginTextUploadBatch();
+    const i32 lastTitleStart = std::max(0, arg->numDescriptors - 10);
+    const i32 initialTitleStart =
+        std::min(std::max(0, arg->listingOffset), lastTitleStart);
+    const i32 initialTitleEnd = std::min(initialTitleStart + 10, arg->numDescriptors);
+    for (offset = initialTitleStart; offset < initialTitleEnd; ++offset)
+    {
+        DrawMusicTitle(arg, offset);
+    }
+    Th07PspEndTextUploadBatch();
+    arg->initialDescriptionState = INITIAL_DESCRIPTION_WAIT_FOR_LOGO;
     Th07PspTrimTextureCache();
     th07_psp_boot_note("music added ready");
 #endif

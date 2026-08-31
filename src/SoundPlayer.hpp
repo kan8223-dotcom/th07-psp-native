@@ -120,6 +120,12 @@ struct SoundPlayer
     ZunResult ReopenBGM(const char *name);
     ZunResult StartBGM(const char *path);
     void StopBGM();
+#if defined(TH07_PSP)
+    // Keep the producer and mandatory track allocations alive while a stage
+    // is loading, but prevent the DAC consumer from advancing the song before
+    // control returns to the gameplay/replay clock.
+    void SetBgmStageLoadBlocked(bool blocked);
+#endif
 
     void FadeOut(f32 duration)
     {

@@ -16,6 +16,14 @@
 #include <cmath>
 #include <pspmath.h>
 
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+#include "../psp/fileio.hpp"
+#include "../psp/graphics/PspGuGraphics.hpp"
+
+#include <cstdlib>
+#include <malloc.h>
+#endif
+
 #if defined(TH07_PSP_1000)
 #include "../psp/fileio.hpp"
 #include "../psp/psp1000_arena.hpp"
@@ -34,6 +42,64 @@ inline void PspEnemyRenderSinCos(f32 angle, f32 *outSin, f32 *outCos)
     }
     sincosf(outSin, outCos, angle);
 }
+
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+constexpr u16 kPspEnemyP5WarmQueueEnd = 0xffffu;
+constexpr u32 kPspEnemyP5WarmCanonical = 1u << 0;
+constexpr u32 kPspEnemyP5WarmPrimaryAutoRotate = 1u << 1;
+constexpr u32 kPspEnemyP5WarmInvisibleOnBomb = 1u << 2;
+static_assert(EnemyManager::kEnemyCapacity < kPspEnemyP5WarmQueueEnd,
+              "u16 queue sentinel must not alias an Enemy slot");
+
+// One cache line per stable Enemy slot.  Draw reads this compact topology
+// instead of following next pointers through the roughly 22 KiB Enemy
+// objects.  AnmVm fields and every renderer/global input remain live.
+struct alignas(64) PspEnemyP5WarmRecord
+{
+    Enemy *enemy;
+    AnmVm *child0;
+    AnmVm *primary;
+    AnmVm *child1;
+    f32 positionX;
+    f32 positionY;
+    f32 angle;
+    u32 flags;
+    u16 nextIndex;
+    u16 slotIndex;
+    u8 headIndex;
+    u8 reserved[27];
+};
+static_assert(sizeof(PspEnemyP5WarmRecord) == 64,
+              "enemy P5 warm record must remain one PSP cache line");
+
+struct alignas(64) PspEnemyP5WarmQueue
+{
+    u16 heads[4];
+    u16 headCounts[4];
+    u16 recordCount;
+    u16 p5RecordCount;
+    u32 mutationEpoch;
+    u32 published;
+    u32 writtenBits[(EnemyManager::kEnemyCapacity + 31) / 32];
+    PspEnemyP5WarmRecord records[EnemyManager::kEnemyCapacity];
+};
+static_assert(sizeof(PspEnemyP5WarmQueue) <= 96u * 1024u,
+              "enemy P5 warm queue exceeds its optional-RAM budget");
+
+inline PspEnemyP5WarmQueue *PspGetEnemyP5WarmQueue(EnemyManager *manager)
+{
+    return static_cast<PspEnemyP5WarmQueue *>(manager->pspEnemyP5WarmQueue);
+}
+
+inline const PspEnemyP5WarmQueue *PspGetEnemyP5WarmQueue(const EnemyManager *manager)
+{
+    return static_cast<const PspEnemyP5WarmQueue *>(manager->pspEnemyP5WarmQueue);
+}
+
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+Th07PspEnemyP5WarmWindow gPspEnemyP5WarmWindow{};
+#endif
+#endif
 } // namespace
 #endif
 
@@ -88,6 +154,12 @@ void EnemyManager::Initialize()
     Enemy *chunks[kEnemyChunkCount];
     memcpy(chunks, this->enemyChunks, sizeof(chunks));
 #endif
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    // A direct reinitialize must not orphan the stage allocation.  Invalidate
+    // it and advance the epoch so no previous calc publication can be drawn.
+    void *enemyP5WarmQueue = this->pspEnemyP5WarmQueue;
+    const u32 enemyMutationEpoch = this->pspEnemyMutationEpoch;
+#endif
     memset(this, 0, sizeof(EnemyManager));
 #if defined(TH07_PSP_1000)
     memcpy(this->enemyChunks, chunks, sizeof(chunks));
@@ -98,6 +170,15 @@ void EnemyManager::Initialize()
             memset(this->enemyChunks[i], 0,
                    sizeof(Enemy) * static_cast<size_t>(kEnemyChunkCapacity));
         }
+    }
+#endif
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    this->pspEnemyP5WarmQueue = enemyP5WarmQueue;
+    this->pspEnemyMutationEpoch =
+        enemyMutationEpoch + (enemyP5WarmQueue ? 1u : 0u);
+    if (enemyP5WarmQueue)
+    {
+        PspGetEnemyP5WarmQueue(this)->published = 0u;
     }
 #endif
     enemy = &this->enemyTemplate;
@@ -166,8 +247,155 @@ EnemyManager::EnemyManager()
 #if defined(TH07_PSP_1000)
     memset(this->enemyChunks, 0, sizeof(this->enemyChunks));
 #endif
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    this->pspEnemyP5WarmQueue = NULL;
+    this->pspEnemyMutationEpoch = 0u;
+#endif
     Initialize();
 }
+
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+bool EnemyManager::PspEnsureEnemyP5WarmQueue()
+{
+    if (this->pspEnemyP5WarmQueue)
+    {
+        return true;
+    }
+
+    const struct mallinfo heapBefore = mallinfo();
+    void *allocation = memalign(64, sizeof(PspEnemyP5WarmQueue));
+    if (!allocation)
+    {
+        return false;
+    }
+    memset(allocation, 0, sizeof(PspEnemyP5WarmQueue));
+    this->pspEnemyP5WarmQueue = allocation;
+    const struct mallinfo heapAfter = mallinfo();
+    th07_psp_boot_notef("enemy p5 warm queue %u bytes heap %uK->%uK",
+                        static_cast<unsigned int>(sizeof(PspEnemyP5WarmQueue)),
+                        static_cast<unsigned int>(heapBefore.fordblks) / 1024u,
+                        static_cast<unsigned int>(heapAfter.fordblks) / 1024u);
+    return true;
+}
+
+void EnemyManager::PspReleaseEnemyP5WarmQueue()
+{
+    if (!this->pspEnemyP5WarmQueue)
+    {
+        return;
+    }
+    PspGetEnemyP5WarmQueue(this)->published = 0u;
+    std::free(this->pspEnemyP5WarmQueue);
+    this->pspEnemyP5WarmQueue = NULL;
+    ++this->pspEnemyMutationEpoch;
+}
+
+bool EnemyManager::PspBeginEnemyP5WarmQueue()
+{
+    PspEnemyP5WarmQueue *queue = PspGetEnemyP5WarmQueue(this);
+    if (!queue)
+    {
+        return false;
+    }
+
+    // Invalidate before calc touches any topology.  A later replay restart,
+    // fixed-30 skipped draw, pause, or early exit can therefore expose only a
+    // complete publication from the most recent finished calc pass.
+    queue->published = 0u;
+    queue->recordCount = 0u;
+    queue->p5RecordCount = 0u;
+    for (u32 head = 0; head < 4u; ++head)
+    {
+        queue->heads[head] = kPspEnemyP5WarmQueueEnd;
+        queue->headCounts[head] = 0u;
+    }
+    memset(queue->writtenBits, 0, sizeof(queue->writtenBits));
+    return true;
+}
+
+bool EnemyManager::PspCaptureEnemyP5WarmRecord(Enemy *enemy, u32 slotIndex,
+                                                u32 headIndex)
+{
+    PspEnemyP5WarmQueue *queue = PspGetEnemyP5WarmQueue(this);
+    if (!queue || !enemy || slotIndex >= static_cast<u32>(kEnemyCapacity) ||
+        headIndex >= 4u || queue->recordCount >= kEnemyCapacity)
+    {
+        return false;
+    }
+
+    const u32 bit = 1u << (slotIndex & 31u);
+    u32 &word = queue->writtenBits[slotIndex >> 5];
+    if (word & bit)
+    {
+        return false;
+    }
+    word |= bit;
+
+    PspEnemyP5WarmRecord &record = queue->records[slotIndex];
+    record.enemy = enemy;
+    record.child0 = &enemy->vms[0];
+    record.primary = &enemy->primaryVm;
+    record.child1 = &enemy->vms[1];
+    record.positionX = enemy->position.x;
+    record.positionY = enemy->position.y;
+    record.angle = enemy->angle;
+    record.flags = 0u;
+    if (enemy->trailFlags != 0)
+    {
+        record.flags |= kPspEnemyP5WarmCanonical;
+    }
+    if (enemy->primaryVmAutoRotate)
+    {
+        record.flags |= kPspEnemyP5WarmPrimaryAutoRotate;
+    }
+    if (enemy->invisibleOnBomb)
+    {
+        record.flags |= kPspEnemyP5WarmInvisibleOnBomb;
+    }
+    record.nextIndex = queue->heads[headIndex];
+    record.slotIndex = static_cast<u16>(slotIndex);
+    record.headIndex = static_cast<u8>(headIndex);
+    queue->heads[headIndex] = static_cast<u16>(slotIndex);
+    ++queue->headCounts[headIndex];
+    ++queue->recordCount;
+    if (headIndex < 2u)
+    {
+        ++queue->p5RecordCount;
+    }
+    return true;
+}
+
+void EnemyManager::PspPublishEnemyP5WarmQueue(bool captureComplete)
+{
+    PspEnemyP5WarmQueue *queue = PspGetEnemyP5WarmQueue(this);
+    if (!queue || !captureComplete)
+    {
+        return;
+    }
+    const u32 headTotal = static_cast<u32>(queue->headCounts[0]) +
+                          static_cast<u32>(queue->headCounts[1]) +
+                          static_cast<u32>(queue->headCounts[2]) +
+                          static_cast<u32>(queue->headCounts[3]);
+    if (headTotal != queue->recordCount ||
+        static_cast<u32>(queue->headCounts[0]) + queue->headCounts[1] !=
+            queue->p5RecordCount)
+    {
+        return;
+    }
+    queue->mutationEpoch = this->pspEnemyMutationEpoch;
+    queue->published = 1u;
+}
+
+bool EnemyManager::PspEnemyP5WarmQueueReady() const
+{
+    const PspEnemyP5WarmQueue *queue = PspGetEnemyP5WarmQueue(this);
+    return queue && queue->published != 0u &&
+           queue->mutationEpoch == this->pspEnemyMutationEpoch &&
+           static_cast<u32>(queue->headCounts[0]) + queue->headCounts[1] ==
+               queue->p5RecordCount &&
+           queue->recordCount <= kEnemyCapacity;
+}
+#endif
 
 #if defined(TH07_PSP_1000)
 bool EnemyManager::PspEnsureEnemyPool()
@@ -802,6 +1030,9 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
     i32 collisionOut;
     i32 stageFactor;
     ZunVec3 enemyDiff;
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    bool pspEnemyP5CaptureComplete = arg->PspBeginEnemyP5WarmQueue();
+#endif
 
     collisionOut = 0;
     stageFactor = g_GameManager.currentStage >= 5 ? 10 : g_GameManager.currentStage * 2;
@@ -1280,6 +1511,14 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
         {
             enemy->next = arg->enemyHead[enemy->zLayer];
             arg->enemyHead[enemy->zLayer] = enemy;
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+            if (pspEnemyP5CaptureComplete &&
+                !arg->PspCaptureEnemyP5WarmRecord(enemy, static_cast<u32>(i),
+                                                   enemy->zLayer))
+            {
+                pspEnemyP5CaptureComplete = false;
+            }
+#endif
         }
     }
 
@@ -1288,6 +1527,9 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
         return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
     }
     arg->timelineTime++;
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    arg->PspPublishEnemyP5WarmQueue(pspEnemyP5CaptureComplete);
+#endif
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -1313,6 +1555,157 @@ f32 AngleLerp(f32 start, f32 target, f32 t)
     }
     return wrapped * t + start;
 }
+
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+namespace
+{
+inline void PspDrawEnemyP5WarmVm(AnmVm *vm, f32 enemyX, f32 enemyY,
+                                 f32 enemyAngle, f32 z, bool negateAngle)
+{
+    if (vm->anmFileIdx < 0)
+    {
+        return;
+    }
+    if (vm->autoRotate)
+    {
+        vm->SetRotationZ(negateAngle ? -enemyAngle : enemyAngle);
+        vm->updateRotation = 1;
+    }
+    vm->pos.x = enemyX + vm->offset.x;
+    vm->pos.y = enemyY + vm->offset.y;
+    vm->pos.z = z;
+    vm->pos.x += g_GameManager.arcadeRegionTopLeftPos.x;
+    vm->pos.y += g_GameManager.arcadeRegionTopLeftPos.y;
+    g_AnmManager->DrawPspFastSprite(vm);
+}
+
+inline void PspDrawEnemyP5WarmFast(const PspEnemyP5WarmRecord &record)
+{
+    // Keep the source order observable by alpha blending and by AnmVm state:
+    // child0 -> primary -> child1.  Only topology and immutable calc outputs
+    // are warm; arcade origin, VM offset/color, manager color multiplication,
+    // viewport, textures and render state are all read here at draw time.
+    PspDrawEnemyP5WarmVm(record.child0, record.positionX, record.positionY,
+                         record.angle, 0.3f, false);
+
+    AnmVm *primary = record.primary;
+    if (record.flags & kPspEnemyP5WarmPrimaryAutoRotate)
+    {
+        primary->SetRotationZ(record.angle);
+        primary->updateRotation = 1;
+    }
+    primary->pos.x = record.positionX + primary->offset.x;
+    primary->pos.y = record.positionY + primary->offset.y;
+    primary->pos.z = 0.29f;
+    if ((record.flags & kPspEnemyP5WarmInvisibleOnBomb) == 0u)
+    {
+        primary->pos.x += g_GameManager.arcadeRegionTopLeftPos.x;
+        primary->pos.y += g_GameManager.arcadeRegionTopLeftPos.y;
+        g_AnmManager->DrawPspFastSprite(primary);
+    }
+
+    PspDrawEnemyP5WarmVm(record.child1, record.positionX, record.positionY,
+                         record.angle, 0.3f, true);
+}
+
+inline void PspDrawEnemyP5CanonicalOne(EnemyManager *manager,
+                                       const PspEnemyP5WarmRecord &record)
+{
+    // Trail geometry has a large, stateful canonical path.  Isolate exactly
+    // one Enemy while retaining that proven implementation, then restore the
+    // public four-head topology before continuing the compact queue.
+    Enemy *enemy = record.enemy;
+    const u32 headIndex = record.headIndex;
+    Enemy *savedHead = manager->enemyHead[headIndex];
+    Enemy *savedNext = enemy->next;
+    manager->enemyHead[headIndex] = enemy;
+    enemy->next = NULL;
+    EnemyManager::ActualOnDraw(manager, headIndex, headIndex + 1u);
+    enemy->next = savedNext;
+    manager->enemyHead[headIndex] = savedHead;
+}
+
+bool PspValidateEnemyP5WarmQueue(const PspEnemyP5WarmQueue *queue)
+{
+    if (!queue)
+    {
+        return false;
+    }
+    u32 totalVisits = 0u;
+    for (u32 head = 0; head < 2u; ++head)
+    {
+        u32 headVisits = 0u;
+        u16 recordIndex = queue->heads[head];
+        while (recordIndex != kPspEnemyP5WarmQueueEnd)
+        {
+            if (recordIndex >= EnemyManager::kEnemyCapacity ||
+                headVisits >= queue->headCounts[head] ||
+                totalVisits >= queue->p5RecordCount)
+            {
+                return false;
+            }
+            const PspEnemyP5WarmRecord &record = queue->records[recordIndex];
+            if (record.slotIndex != recordIndex || record.headIndex != head ||
+                !record.enemy || !record.child0 || !record.primary || !record.child1)
+            {
+                return false;
+            }
+            recordIndex = record.nextIndex;
+            ++headVisits;
+            ++totalVisits;
+        }
+        if (headVisits != queue->headCounts[head])
+        {
+            return false;
+        }
+    }
+    return totalVisits == queue->p5RecordCount;
+}
+
+u32 PspDrawEnemyP5WarmQueue(EnemyManager *manager)
+{
+    const PspEnemyP5WarmQueue *queue = PspGetEnemyP5WarmQueue(manager);
+    u32 visits = 0u;
+    for (u32 head = 0; head < 2u; ++head)
+    {
+        u16 recordIndex = queue->heads[head];
+        while (recordIndex != kPspEnemyP5WarmQueueEnd)
+        {
+            const PspEnemyP5WarmRecord &record = queue->records[recordIndex];
+            if (record.flags & kPspEnemyP5WarmCanonical)
+            {
+                PspDrawEnemyP5CanonicalOne(manager, record);
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+                if (gTh07PspPerfDenseSliceActive)
+                {
+                    ++gPspEnemyP5WarmWindow.canonicalEnemyDraws;
+                }
+#endif
+            }
+            else
+            {
+                PspDrawEnemyP5WarmFast(record);
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+                if (gTh07PspPerfDenseSliceActive)
+                {
+                    ++gPspEnemyP5WarmWindow.fastEnemyDraws;
+                }
+#endif
+            }
+            recordIndex = record.nextIndex;
+            ++visits;
+        }
+    }
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+    if (gTh07PspPerfDenseSliceActive)
+    {
+        gPspEnemyP5WarmWindow.recordVisits += visits;
+    }
+#endif
+    return CHAIN_CALLBACK_RESULT_CONTINUE;
+}
+} // namespace
+#endif
 
 u32 EnemyManager::ActualOnDraw(EnemyManager *arg, i32 first, i32 last)
 {
@@ -1541,6 +1934,25 @@ u32 EnemyManager::ActualOnDraw(EnemyManager *arg, i32 first, i32 last)
 
 u32 EnemyManager::OnDraw1(EnemyManager *arg)
 {
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    if (arg->PspEnemyP5WarmQueueReady() &&
+        PspValidateEnemyP5WarmQueue(PspGetEnemyP5WarmQueue(arg)))
+    {
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+        if (gTh07PspPerfDenseSliceActive)
+        {
+            ++gPspEnemyP5WarmWindow.readyFrames;
+        }
+#endif
+        return PspDrawEnemyP5WarmQueue(arg);
+    }
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+    if (gTh07PspPerfDenseSliceActive)
+    {
+        ++gPspEnemyP5WarmWindow.fallbackFrames;
+    }
+#endif
+#endif
     return ActualOnDraw(arg, 0, 2);
 }
 
@@ -1571,6 +1983,12 @@ ZunResult EnemyManager::AddedCallback(EnemyManager *arg)
     g_AsciiManager.GetBossMarker(1)->pos = vec;
     g_AsciiManager.GetBossMarker(2)->pos = vec;
     g_AsciiManager.GetBossMarker(3)->pos = vec;
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    if (!arg->PspEnsureEnemyP5WarmQueue())
+    {
+        th07_psp_boot_note("enemy p5 warm queue unavailable fallback");
+    }
+#endif
     return ZUN_SUCCESS;
 }
 
@@ -1580,7 +1998,11 @@ ZunResult EnemyManager::DeletedCallback(EnemyManager *arg)
     g_AnmManager->ReleaseAnm(15);
 #if defined(TH07_PSP_1000)
     arg->PspReleaseEnemyPool();
-#else
+#endif
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    arg->PspReleaseEnemyP5WarmQueue();
+#endif
+#if !defined(TH07_PSP_1000) && !defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
     (void)arg;
 #endif
     ZunVec3 vec = ZunVec3(-999.0f, -999.0f, -999.0f);
@@ -1590,6 +2012,18 @@ ZunResult EnemyManager::DeletedCallback(EnemyManager *arg)
     g_AsciiManager.GetBossMarker(3)->pos = vec;
     return ZUN_SUCCESS;
 }
+
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE) && defined(TH07_PSP_PERF_DENSE_SLICE)
+void Th07PspTakeEnemyP5WarmWindow(Th07PspEnemyP5WarmWindow *window)
+{
+    if (!window)
+    {
+        return;
+    }
+    *window = gPspEnemyP5WarmWindow;
+    gPspEnemyP5WarmWindow = Th07PspEnemyP5WarmWindow{};
+}
+#endif
 
 ZunResult EnemyManager::RegisterChain(const char *stgEnm1, const char *stgEnm2)
 {
@@ -1643,6 +2077,13 @@ i32 EnemyManager::RemoveAllEnemies(i32 scoreMax, i32 scoreMin)
     Enemy *enemy;
     i32 totalScore;
     i32 popupScore;
+
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
+    // Gui runs at calc 13, after this queue's calc-10 capture.  Even though
+    // most removals become visible on the following Enemy update, invalidate
+    // conservatively so the complete existing P5 list handles that frame.
+    PspMarkEnemyMutation();
+#endif
 
     totalScore = scoreMin;
     popupScore = 2000;

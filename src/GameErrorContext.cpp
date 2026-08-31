@@ -4,6 +4,10 @@
 #include <cstdio>
 #include <cstring>
 
+#if defined(TH07_PSP_SHIKIGAMI)
+#include "shikigami_th07.h"
+#endif
+
 GameErrorContext g_GameErrorContext;
 
 const char *GameErrorContext::Log(const char *fmt, ...)
@@ -42,6 +46,9 @@ const char *GameErrorContext::Fatal(const char *fmt, ...)
         *this->m_BufferEnd = '\0';
     }
     va_end(args);
+#if defined(TH07_PSP_SHIKIGAMI)
+    th07_shikigami_record_fatal(tmp);
+#endif
     this->m_ShowMessageBox = true;
     return fmt;
 }

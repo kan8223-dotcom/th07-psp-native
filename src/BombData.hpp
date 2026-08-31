@@ -4,6 +4,7 @@
 
 struct BombData
 {
+    static const char *GetBombName(i32 shotTypeAndCharacter, i32 focused);
     static void DarkenViewport(Player *player);
     static void SpawnBombInvulnEffect(Player *player);
     static void ComputeBombCherryDrain(Player *player, i32 minCost, f32 scale);

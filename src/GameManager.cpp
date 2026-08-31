@@ -20,6 +20,12 @@
 #include "graphics/ZunGraphics.hpp"
 #if defined(TH07_PSP)
 #include "fileio.hpp"
+#include "graphics/PspGuGraphics.hpp"
+#include "optional_ram_budget.hpp"
+#if defined(TH07_PSP_SHIKIGAMI) && defined(TH07_PSP_PERF_DIAG)
+#include "perf_log_telemetry.h"
+#include "shikigami_th07.h"
+#endif
 #endif
 #if defined(TH07_PSP_1000)
 #include "psp1000_arena.hpp"
@@ -36,6 +42,28 @@ GameManager g_GameManager;
 ChainElem g_GameManagerCalcChain;
 
 ChainElem g_GameManagerDrawChain;
+
+#if defined(TH07_PSP_PERF_DIAG) && !defined(TH07_PSP_1000)
+namespace
+{
+class PspStageLoadRamLogScope
+{
+public:
+    PspStageLoadRamLogScope()
+    {
+        th07_psp_perf_set_stage_load_active(1);
+    }
+
+    ~PspStageLoadRamLogScope()
+    {
+        th07_psp_perf_set_stage_load_active(0);
+    }
+
+    PspStageLoadRamLogScope(const PspStageLoadRamLogScope &) = delete;
+    PspStageLoadRamLogScope &operator=(const PspStageLoadRamLogScope &) = delete;
+};
+} // namespace
+#endif
 
 GameManager::GameManager()
 {
@@ -510,6 +538,11 @@ void IncrementCappedAgain(u32 *param, u32 cap)
 
 ZunResult GameManager::AddedCallback(GameManager *arg)
 {
+#if defined(TH07_PSP_PERF_DIAG) && !defined(TH07_PSP_1000)
+    // Every success and failure return below unwinds this scope, so a failed
+    // registration cannot leave later menu notes redirected to the RAM log.
+    PspStageLoadRamLogScope stageLoadRamLogScope;
+#endif
     u16 oldSeed;
     i32 shotTypeAndChar;
     u32 size;
@@ -876,6 +909,13 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         th07_psp_boot_note("game added replay ready");
 #endif
     }
+#if defined(TH07_PSP) && !defined(TH07_PSP_1000)
+    // Allow the new track's producer to fill the Main-RAM ring, but hold the
+    // DAC read cursor at frame zero until every stage-load task is complete.
+    // All fallible stage registrations are already complete, and there are no
+    // failure exits before the matching release at the end of this callback.
+    g_SoundPlayer.SetBgmStageLoadBlocked(true);
+#endif
 #if defined(TH07_PSP)
     th07_psp_boot_note("game added audio begin");
 #endif
@@ -899,8 +939,19 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
 #if defined(TH07_PSP)
     th07_psp_boot_note("game added queues ready");
 #endif
+#if defined(TH07_PSP) && !defined(TH07_PSP_1000)
+    bool textCoverageComplete = false;
+    if (Th07PspOptionalRamPrepareStage())
+    {
+        textCoverageComplete = g_Gui.PreRenderStageText();
+    }
+    Th07PspOptionalRamEnterGameplay(textCoverageComplete);
+#endif
     arg->isInRetryMenu = 0;
     arg->notInMenu = 1;
+#if defined(TH07_PSP_PERF_DIAG)
+    Th07PspPerfBeginGameplayWindow(arg->currentStage);
+#endif
     if (g_Supervisor.curState != 3)
     {
         g_Supervisor.framerateMultiplier = 0.0f;
@@ -916,12 +967,29 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
 #if defined(TH07_PSP)
     th07_psp_boot_note("game added ready");
 #endif
+#if defined(TH07_PSP) && !defined(TH07_PSP_1000)
+    g_SoundPlayer.SetBgmStageLoadBlocked(false);
+#endif
     return ZUN_SUCCESS;
 }
 
 ZunResult GameManager::DeletedCallback(GameManager *arg)
 {
 #if defined(TH07_PSP_PERF_DIAG)
+    // Commit timed windows only after gameplay has stopped.
+    Th07PspPerfFinalizeGameplayWindow();
+#if defined(TH07_PSP_SHIKIGAMI) && !defined(TH07_PSP_1000)
+    // Seal and latch only.  Returning from a replay to the title is enough for
+    // the observer to transmit the RAM log; the main thread performs no
+    // network call/allocation/I/O and does not wait for a Memory Stick flush.
+    // main's stop path retains the original synchronous flush as the final
+    // fallback when telemetry is unavailable or incomplete.
+    th07_psp_perf_log_seal();
+    th07_shikigami_request_perf_log();
+#else
+    // Non-SHIKIGAMI diagnostics retain their proven per-game bulk flush.
+    th07_psp_perf_log_flush();
+#endif
     th07_psp_heap_note("game delete begin");
 #endif
     g_Supervisor.StopAudio();

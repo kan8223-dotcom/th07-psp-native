@@ -133,6 +133,7 @@ struct GuiImpl
     AnmVm transitionQuads[168];
     i32 activeTransitionQuads;
     GuiMsgVm msg;
+    u32 msgFileSize;
     // pad 3
     i32 finishedStage;
     i32 stageClearBonus;
@@ -168,6 +169,7 @@ struct Gui
     ZunResult LoadMsg(const char *param_1);
     void MsgRead(i32 param_1);
     i32 MsgWait();
+    bool PreRenderStageText();
 
     void EndEnemySpellcard();
     void EndPlayerSpellcard();

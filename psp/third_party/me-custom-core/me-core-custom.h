@@ -4,6 +4,19 @@
 #include "me-core-mapper.h"
 #include "me-lib.h"
 
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+// The full-local-eDRAM audio profile cannot leave MECC's default descending
+// stack in either half of the 0x00000000..0x003fffff audio store.  The first
+// and last cache lines are guards; the handler installs the cached ME alias of
+// the 8 KiB Main-RAM stack before entering any C worker code.
+#define TH07_ME_MAIN_STACK_GUARD_BYTES 64u
+#define TH07_ME_MAIN_STACK_BYTES 8192u
+#define TH07_ME_MAIN_STACK_AREA_BYTES \
+  (TH07_ME_MAIN_STACK_GUARD_BYTES + TH07_ME_MAIN_STACK_BYTES + \
+   TH07_ME_MAIN_STACK_GUARD_BYTES)
+extern unsigned char gTh07MeMainStackArea[TH07_ME_MAIN_STACK_AREA_BYTES];
+#endif
+
 extern char __start__me_section;
 extern char __stop__me_section;
 extern u32Me SC_HW_RESET;
@@ -50,6 +63,12 @@ extern "C" {
 }                                               \
   
 
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+#define ME_LIB_VME_MEMORY_MODE 1
+#else
+#define ME_LIB_VME_MEMORY_MODE 2
+#endif
+
 #define meLibSetMinimalVmeConfig()              \
 {                                               \
   hw(0xBCC00000) = -1;                          \
@@ -60,7 +79,7 @@ extern "C" {
   hw(0xBCC00070) = 0;                           \
   hw(0xBCC00020) = -1;                          \
   hw(0xBCC00030) = 1;                           \
-  hw(0xBCC00040) = 2; /*1*/                     \
+  hw(0xBCC00040) = ME_LIB_VME_MEMORY_MODE;       \
   meLibSync();                                  \
 }                                               \
   
@@ -166,4 +185,3 @@ void meLibOnWake() { \
 
 
 #endif
-

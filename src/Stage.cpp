@@ -14,9 +14,11 @@
 #include "dxutil.hpp"
 #include "utils.hpp"
 #if defined(TH07_PSP_PERF_DIAG)
+#include "fileio.hpp"
+#endif
+#if defined(TH07_PSP_PERF_DETAIL)
 #include <pspkernel.h>
 
-#include "fileio.hpp"
 #include "graphics/PspGuGraphics.hpp"
 #endif
 
@@ -484,6 +486,17 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
     ZunColor fogColor;
     ZunViewport viewport;
 
+#if defined(TH07_PSP) && defined(TH07_PSP_LOWRES_STAGE_BG)
+    // Half-resolution stage pass: measured 30->50-59 FPS in the stage-4 Lily
+    // section, but the upscale blur was rejected on sight ("あらすぎて論外").
+    // The mechanism stays compiled out unless explicitly enabled.
+    Th07PspBeginLowResStagePass();
+#endif
+#if defined(TH07_PSP)
+    // Lossless: the GUI frame opaquely covers everything outside the
+    // playfield, so background fill there never reaches the eye.
+    Th07PspBeginStagePlayfieldScissor();
+#endif
     g_AnmManager->ResetVertexBuffer();
     g_AnmManager->SetVertexShader(255);
     g_AnmManager->SetSprite(NULL);
@@ -626,6 +639,12 @@ u32 Stage::OnDrawLowPrio(Stage *arg)
         g_AnmManager->SetColor(0x80808080);
     }
     arg->isDarkening = 0;
+#if defined(TH07_PSP)
+    Th07PspEndStagePlayfieldScissor();
+#endif
+#if defined(TH07_PSP) && defined(TH07_PSP_LOWRES_STAGE_BG)
+    Th07PspEndLowResStagePass();
+#endif
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -972,7 +991,7 @@ ZunResult Stage::UpdateObjects()
 
 i32 Stage::RenderObjects(i32 zLevel)
 {
-#if defined(TH07_PSP_PERF_DIAG)
+#if defined(TH07_PSP_PERF_DETAIL)
     const unsigned long long pspStageStartUs = sceKernelGetSystemTimeWide();
 #endif
     ZunColor origColor;
@@ -1175,7 +1194,7 @@ i32 Stage::RenderObjects(i32 zLevel)
         }
         instance++;
     }
-#if defined(TH07_PSP_PERF_DIAG)
+#if defined(TH07_PSP_PERF_DETAIL)
     Th07PspPerfAddStageTime(sceKernelGetSystemTimeWide() - pspStageStartUs);
 #endif
     return 0;

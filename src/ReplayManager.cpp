@@ -130,6 +130,26 @@ u32 ReplayManager::OnUpdateDemoLowPrio(ReplayManager *arg)
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
+#if defined(TH07_PSP_BULLET_WARM_QUEUE) || \
+    defined(TH07_PSP_ME_RENDER_PERFORMANCE)
+bool ReplayManager::MayRestartCalcChainAfterBulletUpdate()
+{
+    if (g_ReplayManager == NULL || !g_ReplayManager->IsDemo() ||
+        !g_GameManager.notInMenu)
+    {
+        return false;
+    }
+
+    // Bullet warm capture runs at calc priority 12, while replay playback can
+    // restart the complete calc chain at priority 17.  Use a deliberately
+    // broad predicate here: GUI priority 13 may change the exact dialogue
+    // skip predicate after capture, so any live message must stay canonical.
+    return g_Gui.HasCurrentMsgIdx() ||
+           (g_GameManager.replayStage == 2 &&
+            !g_EnemyManager.HasActiveBoss());
+}
+#endif
+
 u32 ReplayManager::OnUpdateDemoHighPrio(ReplayManager *arg)
 {
     if (!g_GameManager.notInMenu)

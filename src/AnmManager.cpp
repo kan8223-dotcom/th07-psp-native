@@ -8,8 +8,12 @@
 
 #include "AnmVm.hpp"
 #include "AnmIdx.hpp"
+#if defined(TH07_PSP_ASCII_POPUP_BATCH)
+#include "AsciiManager.hpp"
+#endif
 #include "FileSystem.hpp"
 #include "GameErrorContext.hpp"
+#include "PspBulletRender.hpp"
 #include "Rng.hpp"
 #include "Stage.hpp"
 #include "Supervisor.hpp"
@@ -18,6 +22,9 @@
 #include "graphics/ZunGraphics.hpp"
 #if defined(TH07_PSP)
 #include <pspmath.h>
+#if defined(TH07_PSP_PERF_M3)
+#include <pspkernel.h>
+#endif
 
 #include "fileio.hpp"
 #include "graphics/PspGuGraphics.hpp"
@@ -40,6 +47,221 @@ VertexTex1DiffuseXyz g_Quad3DFallback[4];
 #if defined(TH07_PSP)
 namespace
 {
+#if defined(TH07_PSP_PERF_M3)
+constexpr unsigned int kPspM3EmitterSampleStride = 32u;
+Th07PspM3EmitterWindow gPspM3EmitterWindow{};
+unsigned int gPspM3EmitterOrdinal = 0;
+class PspM3EmitterSample;
+PspM3EmitterSample *gPspM3ActiveEmitterSample = nullptr;
+int gPspM3FrontBatchOrigin = TH07_PSP_PERF_M3_BATCH_NONE;
+bool gPspM3BulletBatchActive = false;
+bool gPspM3BulletBatchCarryPending = false;
+Th07PspSpriteVertex *gPspM3BulletBatchEnd = nullptr;
+unsigned int gPspM3BulletBatchSprites = 0;
+
+void PspM3ResetFrontBatchTracking()
+{
+    gPspM3FrontBatchOrigin = TH07_PSP_PERF_M3_BATCH_NONE;
+    gPspM3BulletBatchCarryPending = false;
+    gPspM3BulletBatchEnd = nullptr;
+    gPspM3BulletBatchSprites = 0;
+}
+
+void PspM3NoteBulletAppend(AnmManager *manager)
+{
+    if (!manager || !gPspM3BulletBatchActive)
+    {
+        return;
+    }
+    if (manager->spritesToDraw == 0)
+    {
+        gPspM3FrontBatchOrigin = TH07_PSP_PERF_M3_BATCH_BULLET;
+    }
+    else if (gPspM3FrontBatchOrigin != TH07_PSP_PERF_M3_BATCH_BULLET)
+    {
+        // A bullet was joined to a pre-existing laser/item/other-owner front
+        // batch.  Its later backend cost cannot be separated exactly.
+        gPspM3FrontBatchOrigin = TH07_PSP_PERF_M3_BATCH_MIXED;
+    }
+}
+
+class PspM3EmitterSample
+{
+  public:
+    PspM3EmitterSample()
+        : mActive((gPspM3EmitterOrdinal++ % kPspM3EmitterSampleStride) == 0u)
+    {
+        ++gPspM3EmitterWindow.emitterCalls;
+        if (mActive)
+        {
+            ++gPspM3EmitterWindow.samples;
+            if (gPspM3ActiveEmitterSample)
+            {
+                ++gPspM3EmitterWindow.phaseMismatches;
+                mActive = false;
+                return;
+            }
+            gPspM3ActiveEmitterSample = this;
+            mLastUs = sceKernelGetSystemTimeWide();
+        }
+    }
+
+    ~PspM3EmitterSample()
+    {
+        if (mBackendDepth != 0u)
+        {
+            ++gPspM3EmitterWindow.phaseMismatches;
+            const unsigned long long nowUs = sceKernelGetSystemTimeWide();
+            gPspM3EmitterWindow.excludedBackendUs += nowUs - mBackendStartUs;
+            mBackendDepth = 0;
+            mLastUs = nowUs;
+        }
+        RecordCurrentPhase();
+        if (mActive)
+        {
+            if (gPspM3ActiveEmitterSample != this)
+            {
+                ++gPspM3EmitterWindow.phaseMismatches;
+            }
+            else
+            {
+                gPspM3ActiveEmitterSample = nullptr;
+            }
+        }
+    }
+
+    void Advance()
+    {
+        RecordCurrentPhase();
+        if (mPhase < 3u)
+        {
+            ++mPhase;
+        }
+    }
+
+    void NoteCull()
+    {
+        if (mActive)
+        {
+            ++gPspM3EmitterWindow.sampledCulls;
+        }
+    }
+
+    void BackendBegin()
+    {
+        if (!mActive)
+        {
+            return;
+        }
+        if (mBackendDepth++ == 0u)
+        {
+            RecordCurrentPhase();
+            mBackendStartUs = mLastUs;
+        }
+    }
+
+    void BackendEnd()
+    {
+        if (!mActive)
+        {
+            return;
+        }
+        if (mBackendDepth == 0u)
+        {
+            ++gPspM3EmitterWindow.phaseMismatches;
+            return;
+        }
+        if (--mBackendDepth == 0u)
+        {
+            const unsigned long long nowUs = sceKernelGetSystemTimeWide();
+            gPspM3EmitterWindow.excludedBackendUs += nowUs - mBackendStartUs;
+            mLastUs = nowUs;
+        }
+    }
+
+  private:
+    void RecordCurrentPhase()
+    {
+        if (!mActive)
+        {
+            return;
+        }
+        if (mBackendDepth != 0u)
+        {
+            return;
+        }
+        const unsigned long long nowUs = sceKernelGetSystemTimeWide();
+        gPspM3EmitterWindow.phaseUs[mPhase] += nowUs - mLastUs;
+        ++gPspM3EmitterWindow.phaseRecords[mPhase];
+        mLastUs = nowUs;
+    }
+
+    bool mActive;
+    unsigned int mPhase = 0;
+    unsigned int mBackendDepth = 0;
+    unsigned long long mLastUs = 0;
+    unsigned long long mBackendStartUs = 0;
+};
+#endif
+
+#if defined(TH07_PSP_PERF_M2)
+unsigned int gPspBulletAxisEligible = 0;
+unsigned int gPspBulletFallbackEligible = 0;
+unsigned int gPspBulletCullRejects = 0;
+#if defined(TH07_PSP_ASCII_POPUP_BATCH)
+unsigned int gPspAsciiPopupBatchCalls = 0;
+unsigned int gPspAsciiPopupBatchDigits = 0;
+unsigned int gPspAsciiPopupBatchFallbacks = 0;
+#endif
+#endif
+
+#if defined(TH07_PSP_BULLET_ROTATED_DIRECT)
+float gPspRotatedViewportLeft = 0.0f;
+float gPspRotatedViewportTop = 0.0f;
+float gPspRotatedViewportRight = 0.0f;
+float gPspRotatedViewportBottom = 0.0f;
+#endif
+#if defined(TH07_PSP_GE_PORTRAIT_CACHE)
+void PreparePspPortraitTexture(u32 textureIdx)
+{
+    switch (textureIdx)
+    {
+    case ANM_FILE_FACE:
+        // face_rm/mr/sk contains the selected protagonist's dialogue and bomb
+        // portrait as two distinct full-size child atlases.
+        Th07PspPrepareUpperPortraitTexture(TH07_PSP_PORTRAIT_SELF, textureIdx);
+        break;
+    case ANM_FILE_FACE + 1u:
+        Th07PspPrepareUpperPortraitTexture(TH07_PSP_PORTRAIT_BOMB, textureIdx);
+        break;
+    case ANM_FILE_FACE_STAGE:
+        // Current-stage protagonist/boss faces are the only atlases minified
+        // to 256x256. Their ANM logical width/height remains unchanged.
+        Th07PspPrepareUpperPortraitTexture(TH07_PSP_PORTRAIT_STAGE_0, textureIdx);
+        break;
+    case ANM_FILE_FACE_STAGE + 1u:
+        Th07PspPrepareUpperPortraitTexture(TH07_PSP_PORTRAIT_STAGE_1, textureIdx);
+        break;
+    case ANM_FILE_FACE_STAGE + 2u:
+        Th07PspPrepareUpperPortraitTexture(TH07_PSP_PORTRAIT_STAGE_2, textureIdx);
+        break;
+    case ANM_FILE_FACE_STAGE + 3u:
+        Th07PspPrepareUpperPortraitTexture(TH07_PSP_PORTRAIT_STAGE_3, textureIdx);
+        break;
+    default:
+        break;
+    }
+}
+
+void CompletePspPortraitPrewarm(i32 anmIdx, unsigned int childCount)
+{
+    if (anmIdx == ANM_FILE_FACE_STAGE)
+    {
+        Th07PspCompleteUpperPortraitPrewarm(childCount);
+    }
+}
+#endif
+
 SDL_Surface *LoadPspMusicRawSurface()
 {
     struct RawHeader
@@ -103,6 +325,20 @@ inline float PspRenderFloor(float value)
     return result;
 }
 
+inline float PspBulletFloor(float value)
+{
+    // Bullet coordinates come from finite gameplay positions and finite ANM
+    // sprite dimensions, and DrawPspBullet rejects non-intersecting geometry
+    // before reaching this conversion.  Avoid repeating PspRenderFloor's
+    // generic NaN/2^31 fallback guard four times for every axis-aligned bullet.
+    float result;
+    asm volatile("floor.w.s %0, %1\n\t"
+                 "cvt.s.w %0, %0"
+                 : "=&f"(result)
+                 : "f"(value));
+    return result;
+}
+
 inline void PspRenderSinCos(float angle, float *outSin, float *outCos)
 {
     if (std::isfinite(angle) && angle >= -16.0f * ZUN_PI && angle <= 16.0f * ZUN_PI)
@@ -130,6 +366,139 @@ inline void WritePspSpriteVertex(Th07PspSpriteVertex &out, float x, float y, flo
     out.z = z;
 }
 } // namespace
+
+#if defined(TH07_PSP_PERF_M2)
+void Th07PspTakeBulletDrawPerf(unsigned int *axisEligible, unsigned int *fallbackEligible,
+                              unsigned int *cullRejects)
+{
+    if (axisEligible)
+    {
+        *axisEligible = gPspBulletAxisEligible;
+    }
+    if (fallbackEligible)
+    {
+        *fallbackEligible = gPspBulletFallbackEligible;
+    }
+    if (cullRejects)
+    {
+        *cullRejects = gPspBulletCullRejects;
+    }
+    gPspBulletAxisEligible = 0;
+    gPspBulletFallbackEligible = 0;
+    gPspBulletCullRejects = 0;
+}
+
+#if defined(TH07_PSP_ASCII_POPUP_BATCH)
+void Th07PspTakeAsciiPopupBatchPerf(unsigned int *batchCalls, unsigned int *digits,
+                                    unsigned int *fallbacks)
+{
+    if (batchCalls)
+    {
+        *batchCalls = gPspAsciiPopupBatchCalls;
+    }
+    if (digits)
+    {
+        *digits = gPspAsciiPopupBatchDigits;
+    }
+    if (fallbacks)
+    {
+        *fallbacks = gPspAsciiPopupBatchFallbacks;
+    }
+    gPspAsciiPopupBatchCalls = 0;
+    gPspAsciiPopupBatchDigits = 0;
+    gPspAsciiPopupBatchFallbacks = 0;
+}
+#endif
+#endif
+
+#if defined(TH07_PSP_PERF_M3)
+void Th07PspTakeM3EmitterPerf(Th07PspM3EmitterWindow *window)
+{
+    if (!window)
+    {
+        return;
+    }
+    *window = gPspM3EmitterWindow;
+    gPspM3EmitterWindow = Th07PspM3EmitterWindow{};
+}
+
+bool Th07PspM3EmitterPopulationValid(const Th07PspM3EmitterWindow *window,
+                                     unsigned int sampledBulletDraws,
+                                     unsigned int bulletVisits)
+{
+    if (!window)
+    {
+        return false;
+    }
+    const unsigned int minimumSamples =
+        window->emitterCalls / kPspM3EmitterSampleStride;
+    const unsigned int maximumSamples =
+        (window->emitterCalls + kPspM3EmitterSampleStride - 1u) /
+        kPspM3EmitterSampleStride;
+    return window->samples >= minimumSamples &&
+           window->samples <= maximumSamples &&
+           window->emitterCalls == bulletVisits &&
+           sampledBulletDraws == window->samples &&
+           window->sampledCulls <= window->samples;
+}
+
+void Th07PspM3EmitterBackendBegin()
+{
+    if (gPspM3ActiveEmitterSample)
+    {
+        gPspM3ActiveEmitterSample->BackendBegin();
+    }
+}
+
+void Th07PspM3EmitterBackendEnd()
+{
+    if (gPspM3ActiveEmitterSample)
+    {
+        gPspM3ActiveEmitterSample->BackendEnd();
+    }
+}
+
+void Th07PspM3BulletBatchBegin()
+{
+    gPspM3BulletBatchActive = true;
+    gPspM3BulletBatchCarryPending = false;
+    gPspM3BulletBatchEnd = nullptr;
+    gPspM3BulletBatchSprites = 0;
+    if (g_AnmManager && g_AnmManager->spritesToDraw != 0)
+    {
+        // Anything queued before the first bullet belongs to the pre-bullet
+        // (laser/item/earlier-owner) side of the ownership boundary.
+        if (gPspM3FrontBatchOrigin == TH07_PSP_PERF_M3_BATCH_NONE)
+        {
+            gPspM3FrontBatchOrigin = TH07_PSP_PERF_M3_BATCH_PRE;
+        }
+    }
+    else
+    {
+        gPspM3FrontBatchOrigin = TH07_PSP_PERF_M3_BATCH_NONE;
+    }
+}
+
+void Th07PspM3BulletBatchEnd()
+{
+    gPspM3BulletBatchActive = false;
+    if (g_AnmManager && g_AnmManager->spritesToDraw != 0 &&
+        gPspM3FrontBatchOrigin == TH07_PSP_PERF_M3_BATCH_BULLET)
+    {
+        gPspM3BulletBatchCarryPending = true;
+        gPspM3BulletBatchEnd = g_AnmManager->vertexBufferCurPtr;
+        gPspM3BulletBatchSprites = g_AnmManager->spritesToDraw;
+    }
+}
+
+unsigned int Th07PspM3FrontBatchUnresolved()
+{
+    return gPspM3BulletBatchCarryPending ||
+                   gPspM3FrontBatchOrigin == TH07_PSP_PERF_M3_BATCH_MIXED
+               ? 1u
+               : 0u;
+}
+#endif
 #endif
 
 AnmManager::AnmManager()
@@ -303,6 +672,9 @@ ZunResult AnmManager::LoadTextureEmbedded(u32 textureIdx, ZunImageInfoEmbedded *
             Th07PspAllowNextWideStaticTexture();
         }
 #endif
+#if defined(TH07_PSP_GE_PORTRAIT_CACHE)
+        PreparePspPortraitTexture(textureIdx);
+#endif
         g_Supervisor.gfxDevice->SetTextureImage(imageInfo->width, imageInfo->height, pixelFormat,
                                                 pixelType, imageInfo->data);
         this->imageDataArray[textureIdx] = nullptr;
@@ -356,6 +728,9 @@ ZunResult AnmManager::LoadTextureEmbedded(u32 textureIdx, ZunImageInfoEmbedded *
 
     this->textures[textureIdx] = g_Supervisor.gfxDevice->CreateTexture();
     g_Supervisor.gfxDevice->BindTexture(this->textures[textureIdx]);
+#if defined(TH07_PSP_GE_PORTRAIT_CACHE)
+    PreparePspPortraitTexture(textureIdx);
+#endif
 #if defined(TH07_PSP)
     if (imageInfo->format == 3)
     {
@@ -666,6 +1041,9 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
             th07_psp_boot_notef("ANM OK %s SRC%uK META%uK N%u", path ? path : "?",
                                 sourceSize / 1024u, compactSize / 1024u, entryCount);
 #endif
+#if defined(TH07_PSP_GE_PORTRAIT_CACHE)
+            CompletePspPortraitPrewarm(anmIdx, entryCount);
+#endif
             return ZUN_SUCCESS;
         }
 #if defined(TH07_PSP_PERF_DIAG)
@@ -685,7 +1063,11 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
         anmIdx++;
         if (entry->nextOffset == 0)
         {
-            this->anmFiles[startIdx].childCount = anmIdx - startIdx;
+            const unsigned int childCount = static_cast<unsigned int>(anmIdx - startIdx);
+            this->anmFiles[startIdx].childCount = childCount;
+#if defined(TH07_PSP_GE_PORTRAIT_CACHE)
+            CompletePspPortraitPrewarm(startIdx, childCount);
+#endif
             return ZUN_SUCCESS;
         }
         entry = (AnmRawEntry *)((u8 *)entry + entry->nextOffset);
@@ -1068,6 +1450,9 @@ void AnmManager::SetRenderStateForVm(AnmVm *vm)
 
 void AnmManager::SyncRenderState(AnmVm *vm)
 {
+#if defined(TH07_PSP_PERF_M2)
+    Th07PspPerfInternalBegin(TH07_PSP_PERF_INTERNAL_STATE);
+#endif
     if ((u32)this->currentBlendMode != vm->blendMode)
     {
         this->Flush();
@@ -1088,6 +1473,9 @@ void AnmManager::SyncRenderState(AnmVm *vm)
         g_Supervisor.gfxDevice->SetDepthMask(this->currentZWriteDisable == 0);
     }
     this->renderStateChangesThisFrame++;
+#if defined(TH07_PSP_PERF_M2)
+    Th07PspPerfInternalEnd(TH07_PSP_PERF_INTERNAL_STATE);
+#endif
 }
 
 ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipBottom)
@@ -1212,12 +1600,31 @@ ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags, f32 pspClipBottom)
 
 void AnmManager::ResetVertexBuffer()
 {
+#if defined(TH07_PSP) && defined(TH07_PSP_PERF_M3)
+    if (this->spritesToDraw != 0 &&
+        (gPspM3BulletBatchCarryPending ||
+         gPspM3FrontBatchOrigin == TH07_PSP_PERF_M3_BATCH_BULLET ||
+         gPspM3FrontBatchOrigin == TH07_PSP_PERF_M3_BATCH_MIXED))
+    {
+        // A normal frame flushes the front batch before ResetVertexBuffer.
+        // If it did not, preserve that ownership failure in the window latch
+        // instead of silently discarding the range metadata.
+        Th07PspPerfM3LatchUnresolved();
+    }
+#endif
     this->spritesToDraw = 0;
     this->vertexBufferCurPtr = this->spriteVertexBuffer;
     this->vertexBufferStartPtr = this->vertexBufferCurPtr;
 #if defined(TH07_PSP)
     this->pspSpriteBatchUsesPairs = 0;
     this->pspPreferSpritePairs = 0;
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+    this->pspUnifiedBulletGeneralMode = 0;
+    this->pspForceSpriteQuads = 0;
+#endif
+#if defined(TH07_PSP_PERF_M3)
+    PspM3ResetFrontBatchTracking();
+#endif
 #endif
 }
 
@@ -1233,14 +1640,49 @@ void AnmManager::Flush()
     g_Supervisor.gfxDevice->SetColorOp(COMPONENT_RGB, COLOR_OP_MODULATE);
 
 #if defined(TH07_PSP)
+#if defined(TH07_PSP_PERF_M3)
+    int m3BatchOrigin = gPspM3FrontBatchOrigin;
+    if (m3BatchOrigin == TH07_PSP_PERF_M3_BATCH_NONE)
+    {
+        m3BatchOrigin = TH07_PSP_PERF_M3_BATCH_PRE;
+    }
+    if (gPspM3BulletBatchCarryPending &&
+        (m3BatchOrigin != TH07_PSP_PERF_M3_BATCH_BULLET ||
+         this->vertexBufferCurPtr != gPspM3BulletBatchEnd ||
+         this->spritesToDraw != gPspM3BulletBatchSprites))
+    {
+        // Another owner appended to the bullet range before it reached the
+        // backend.  Do not estimate a byte/time split: mark it unprovable.
+        m3BatchOrigin = TH07_PSP_PERF_M3_BATCH_MIXED;
+    }
+    Th07PspPerfSetM3BatchOrigin(m3BatchOrigin);
+#endif
     if (this->pspSpriteBatchUsesPairs)
     {
         Th07PspDrawSpritePairs(this->vertexBufferStartPtr, this->spritesToDraw);
     }
     else
     {
-        Th07PspDrawSpriteQuads(this->vertexBufferStartPtr, this->spritesToDraw);
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+        if (this->pspForceSpriteQuads)
+        {
+            Th07PspDrawSpriteQuadsUnified(this->vertexBufferStartPtr,
+                                          this->spritesToDraw);
+        }
+        else
+#endif
+        {
+            Th07PspDrawSpriteQuads(this->vertexBufferStartPtr,
+                                   this->spritesToDraw);
+        }
     }
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+    this->pspForceSpriteQuads = 0;
+#endif
+#if defined(TH07_PSP_PERF_M3)
+    Th07PspPerfSetM3BatchOrigin(TH07_PSP_PERF_M3_BATCH_NONE);
+    PspM3ResetFrontBatchTracking();
+#endif
 #else
     g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLES, this->spritesToDraw << 1,
                                             this->vertexBufferStartPtr,
@@ -1433,6 +1875,154 @@ ZunResult AnmManager::DrawNoRotation(AnmVm *vm, f32 pspClipBottom)
     return DrawInner(vm, 1, pspClipBottom);
 }
 
+#if defined(TH07_PSP_GUI_TILE_BATCH)
+ZunResult AnmManager::DrawPspNoRotationGrid(
+    AnmVm *vm, f32 xStart, f32 xEnd, f32 xStep, f32 yStart, f32 yEnd,
+    f32 yStep, f32 z)
+{
+    if (!vm || xStep <= 0.0f || yStep <= 0.0f)
+    {
+        return ZUN_ERROR;
+    }
+
+    // Preserve the canonical observable vm->pos even when this VM is not
+    // drawable.  The ordinary GUI loops still assign every grid position in
+    // that case; only the redundant DrawNoRotation front-end work is skipped.
+    const bool drawable = vm->visible && vm->active && vm->color.bytes.a &&
+                          vm->sprite;
+    if (!drawable)
+    {
+        for (f32 x = xStart; x < xEnd; x = x + xStep)
+        {
+            for (f32 y = yStart; y < yEnd; y = y + yStep)
+            {
+                vm->pos = ZunVec3(x, y, z);
+            }
+        }
+        return ZUN_ERROR;
+    }
+
+    if (!this->vertexBufferCurPtr)
+    {
+        this->ResetVertexBuffer();
+    }
+
+    const f32 halfWidth = vm->sprite->widthPx * vm->scale.x * 0.5f;
+    const f32 halfHeight = vm->sprite->heightPx * vm->scale.y * 0.5f;
+    const f32 u0 = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+    const f32 u1 = vm->sprite->uvEnd.x + vm->uvScrollPos.x;
+    const f32 v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
+    const f32 v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
+    ZunColor color = vm->useColor2 ? vm->color2 : vm->color;
+    if (this->colorMulEnabled)
+    {
+        color.bytes.r = ZunColor::Multiply(color.bytes.r, this->color.bytes.r);
+        color.bytes.g = ZunColor::Multiply(color.bytes.g, this->color.bytes.g);
+        color.bytes.b = ZunColor::Multiply(color.bytes.b, this->color.bytes.b);
+        color.bytes.a = ZunColor::Multiply(color.bytes.a, this->color.bytes.a);
+    }
+
+    bool frontendReady = false;
+    u32 visibleCopies = 0u;
+    for (f32 x = xStart; x < xEnd; x = x + xStep)
+    {
+        for (f32 y = yStart; y < yEnd; y = y + yStep)
+        {
+            vm->pos = ZunVec3(x, y, z);
+            const f32 rawLeft =
+                (vm->anchor & 1) ? vm->pos.x : vm->pos.x - halfWidth;
+            const f32 rawRight = (vm->anchor & 1)
+                                     ? vm->pos.x + halfWidth * 2.0f
+                                     : vm->pos.x + halfWidth;
+            const f32 rawTop =
+                (vm->anchor & 2) ? vm->pos.y : vm->pos.y - halfHeight;
+            const f32 rawBottom = (vm->anchor & 2)
+                                      ? vm->pos.y + halfHeight * 2.0f
+                                      : vm->pos.y + halfHeight;
+            const f32 left =
+                PspRenderFloor(rawLeft + this->offset.x + 0.5f);
+            const f32 right =
+                PspRenderFloor(rawRight + this->offset.x + 0.5f);
+            const f32 top =
+                PspRenderFloor(rawTop + this->offset.y + 0.5f);
+            const f32 bottom =
+                PspRenderFloor(rawBottom + this->offset.y + 0.5f);
+
+            const f32 minX = std::min(left, right);
+            const f32 maxX = std::max(left, right);
+            const f32 minY = std::min(top, bottom);
+            const f32 maxY = std::max(top, bottom);
+            if (maxX < g_Supervisor.viewport.x ||
+                maxY < g_Supervisor.viewport.y ||
+                minX > g_Supervisor.viewport.x +
+                           g_Supervisor.viewport.width ||
+                minY > g_Supervisor.viewport.y +
+                           g_Supervisor.viewport.height)
+            {
+                continue;
+            }
+
+            if (!frontendReady)
+            {
+                const GfxTextureHandle texture =
+                    this->textures[vm->sprite->sourceFileIndex];
+                if (this->currentTexture != texture)
+                {
+                    this->currentTexture = texture;
+                    this->Flush();
+                    g_Supervisor.gfxDevice->BindTexture(this->currentTexture);
+                }
+                if (this->currentVertexShader != 1)
+                {
+                    this->Flush();
+                    this->currentVertexShader = 1;
+                }
+                SyncRenderState(vm);
+                if (this->pspSpriteBatchUsesPairs !=
+                    this->pspPreferSpritePairs)
+                {
+                    this->Flush();
+                    this->pspSpriteBatchUsesPairs =
+                        this->pspPreferSpritePairs;
+                }
+                frontendReady = true;
+            }
+
+            Th07PspSpriteVertex *out = this->vertexBufferCurPtr;
+            WritePspSpriteVertex(out[0], left, top, vm->pos.z, u0, v0,
+                                 color);
+            if (this->pspSpriteBatchUsesPairs)
+            {
+                WritePspSpriteVertex(out[1], right, bottom, vm->pos.z, u1,
+                                     v1, color);
+                this->vertexBufferCurPtr += 2;
+            }
+            else
+            {
+                WritePspSpriteVertex(out[1], right, top, vm->pos.z, u1, v0,
+                                     color);
+                WritePspSpriteVertex(out[2], left, bottom, vm->pos.z, u0,
+                                     v1, color);
+                WritePspSpriteVertex(out[3], right, bottom, vm->pos.z, u1,
+                                     v1, color);
+                this->vertexBufferCurPtr += 4;
+            }
+            ++this->spritesToDraw;
+            ++visibleCopies;
+        }
+    }
+
+    // SyncRenderState's counter is observable to diagnostics. Preserve the
+    // canonical one-call-per-visible-copy value without repeating its state
+    // comparisons and timer probes.
+    if (visibleCopies > 1u)
+    {
+        this->renderStateChangesThisFrame += visibleCopies - 1u;
+    }
+    return ZUN_SUCCESS;
+}
+#endif
+
 void AnmManager::TranslateRotation(VertexTex1DiffuseXyzrhw *vertex, f32 width, f32 height, f32 sine,
                                    f32 cosine, f32 xOffset, f32 yOffset)
 {
@@ -1520,8 +2110,492 @@ ZunResult AnmManager::DrawPspFastSprite(AnmVm *vm)
     return result;
 }
 
+#if defined(TH07_PSP_ASCII_POPUP_BATCH)
+ZunResult AnmManager::DrawPspAsciiPopupBatch(AnmVm *vm, AsciiManagerPopup *popups,
+                                             i32 popupCount, f32 playerX, f32 playerY)
+{
+    if (!vm || !popups || popupCount < 0 || !vm->visible || !vm->active ||
+        !std::isfinite(vm->scale.x) || vm->scale.x < 0.0f ||
+        !std::isfinite(vm->scale.y) || vm->scale.y < 0.0f)
+    {
+#if defined(TH07_PSP_PERF_M2)
+        ++gPspAsciiPopupBatchFallbacks;
+#endif
+        return ZUN_ERROR;
+    }
+
+    // Validate the entire frame before touching renderer or VM state.  A bad
+    // popup must fall back atomically to the proven per-digit path; partial
+    // fast-path output followed by fallback would double-draw the prefix.
+    i32 sourceFileIndex = -1;
+    unsigned int digitCount = 0;
+    for (i32 i = 0; i < popupCount; ++i)
+    {
+        const AsciiManagerPopup &popup = popups[i];
+        if (!popup.inUse)
+        {
+            continue;
+        }
+        if (popup.characterCount == 0 || popup.characterCount > sizeof(popup.digits))
+        {
+#if defined(TH07_PSP_PERF_M2)
+            ++gPspAsciiPopupBatchFallbacks;
+#endif
+            return ZUN_ERROR;
+        }
+        digitCount += popup.characterCount;
+        for (i32 j = 0; j < popup.characterCount; ++j)
+        {
+            const u8 digit = popup.digits[j];
+            if (digit > 10)
+            {
+#if defined(TH07_PSP_PERF_M2)
+                ++gPspAsciiPopupBatchFallbacks;
+#endif
+                return ZUN_ERROR;
+            }
+            i32 spriteIndex = digit;
+            if (digit != 10 && popup.timer.current >= 52)
+            {
+                spriteIndex += popup.timer.current < 56 ? 11 : 21;
+            }
+            const AnmLoadedSprite &candidate = this->sprites[spriteIndex];
+            const i32 candidateSource = candidate.sourceFileIndex;
+            if (candidateSource < 0 ||
+                (sourceFileIndex >= 0 && candidateSource != sourceFileIndex) ||
+                !std::isfinite(candidate.widthPx) || candidate.widthPx <= 0.0f ||
+                !std::isfinite(candidate.heightPx) || candidate.heightPx <= 0.0f)
+            {
+#if defined(TH07_PSP_PERF_M2)
+                ++gPspAsciiPopupBatchFallbacks;
+#endif
+                return ZUN_ERROR;
+            }
+            sourceFileIndex = candidateSource;
+        }
+    }
+
+    if (digitCount == 0)
+    {
+        return ZUN_SUCCESS;
+    }
+
+    if (!this->vertexBufferCurPtr)
+    {
+        this->ResetVertexBuffer();
+    }
+
+    bool batchStarted = false;
+    for (i32 i = 0; i < popupCount; ++i)
+    {
+        AsciiManagerPopup &popup = popups[i];
+        if (!popup.inUse)
+        {
+            continue;
+        }
+
+        vm->pos.x = popup.position.x - static_cast<f32>(popup.characterCount << 2);
+        vm->pos.y = popup.position.y;
+        vm->color.color = popup.color;
+
+        const f32 dx = playerX - popup.position.x;
+        const f32 dy = playerY - popup.position.y;
+        i32 alpha = static_cast<i32>(dx * dx + dy * dy);
+        if (alpha > 4096)
+        {
+            alpha = 208;
+        }
+        else if (alpha > 1024)
+        {
+            alpha = (alpha - 1024) * 128 / 3072 + 80;
+        }
+        else
+        {
+            alpha = 80;
+        }
+
+        u8 *digit = &popup.digits[popup.characterCount - 1];
+        for (i32 j = popup.characterCount; j > 0; --j, --digit)
+        {
+            i32 spriteIndex = *digit;
+            if (*digit != 10 && popup.timer.current >= 52)
+            {
+                spriteIndex += popup.timer.current < 56 ? 11 : 21;
+            }
+            vm->sprite = &this->sprites[spriteIndex];
+            vm->color.bytes.a = alpha;
+
+            const f32 halfWidth = vm->sprite->widthPx * vm->scale.x * 0.5f;
+            const f32 halfHeight = vm->sprite->heightPx * vm->scale.y * 0.5f;
+            const f32 rawLeft = (vm->anchor & 1) ? vm->pos.x : vm->pos.x - halfWidth;
+            const f32 rawRight = (vm->anchor & 1)
+                                     ? vm->pos.x + halfWidth * 2.0f
+                                     : vm->pos.x + halfWidth;
+            const f32 rawTop = (vm->anchor & 2) ? vm->pos.y : vm->pos.y - halfHeight;
+            const f32 rawBottom = (vm->anchor & 2)
+                                      ? vm->pos.y + halfHeight * 2.0f
+                                      : vm->pos.y + halfHeight;
+            const f32 left = PspRenderFloor(rawLeft + this->offset.x + 0.5f);
+            const f32 right = PspRenderFloor(rawRight + this->offset.x + 0.5f);
+            const f32 top = PspRenderFloor(rawTop + this->offset.y + 0.5f);
+            const f32 bottom = PspRenderFloor(rawBottom + this->offset.y + 0.5f);
+
+            if (right >= g_Supervisor.viewport.x &&
+                bottom >= g_Supervisor.viewport.y &&
+                left <= g_Supervisor.viewport.x + g_Supervisor.viewport.width &&
+                top <= g_Supervisor.viewport.y + g_Supervisor.viewport.height)
+            {
+                if (!batchStarted)
+                {
+                    const GfxTextureHandle texture = this->textures[sourceFileIndex];
+                    if (this->currentTexture != texture)
+                    {
+                        this->currentTexture = texture;
+                        this->Flush();
+                        g_Supervisor.gfxDevice->BindTexture(this->currentTexture);
+                    }
+                    if (this->currentVertexShader != 1)
+                    {
+                        this->Flush();
+                        this->currentVertexShader = 1;
+                    }
+                    this->SyncRenderState(vm);
+                    if (this->pspSpriteBatchUsesPairs != 1)
+                    {
+                        this->Flush();
+                        this->pspSpriteBatchUsesPairs = 1;
+                    }
+                    batchStarted = true;
+                }
+
+                ZunColor color = vm->useColor2 ? vm->color2 : vm->color;
+                if (this->colorMulEnabled)
+                {
+                    color.bytes.r = ZunColor::Multiply(color.bytes.r, this->color.bytes.r);
+                    color.bytes.g = ZunColor::Multiply(color.bytes.g, this->color.bytes.g);
+                    color.bytes.b = ZunColor::Multiply(color.bytes.b, this->color.bytes.b);
+                    color.bytes.a = ZunColor::Multiply(color.bytes.a, this->color.bytes.a);
+                }
+                Th07PspSpriteVertex *out = this->vertexBufferCurPtr;
+                WritePspSpriteVertex(out[0], left, top, vm->pos.z,
+                                     vm->sprite->uvStart.x + vm->uvScrollPos.x,
+                                     vm->sprite->uvStart.y + vm->uvScrollPos.y, color);
+                WritePspSpriteVertex(out[1], right, bottom, vm->pos.z,
+                                     vm->sprite->uvEnd.x + vm->uvScrollPos.x,
+                                     vm->sprite->uvEnd.y + vm->uvScrollPos.y, color);
+                this->vertexBufferCurPtr += 2;
+                ++this->spritesToDraw;
+            }
+            vm->pos.x += 8.0f;
+        }
+    }
+
+#if defined(TH07_PSP_PERF_M2)
+    ++gPspAsciiPopupBatchCalls;
+    gPspAsciiPopupBatchDigits += digitCount;
+#endif
+    return ZUN_SUCCESS;
+}
+#endif
+
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+void AnmManager::BeginPspUnifiedBulletBatch()
+{
+    this->pspUnifiedBulletGeneralMode = 0;
+}
+#endif
+
+#if defined(TH07_PSP_BULLET_ROTATED_DIRECT)
+void AnmManager::BeginPspRotatedBulletBatch()
+{
+    // ZunViewport uses u32 members.  Preserve the legacy expression order:
+    // add x+width/y+height in integer space, then perform the float conversion
+    // once for the whole bullet draw callback instead of once per bullet.
+    const ZunViewport &viewport = g_Supervisor.viewport;
+    gPspRotatedViewportLeft = static_cast<float>(viewport.x);
+    gPspRotatedViewportTop = static_cast<float>(viewport.y);
+    gPspRotatedViewportRight = static_cast<float>(viewport.x + viewport.width);
+    gPspRotatedViewportBottom = static_cast<float>(viewport.y + viewport.height);
+}
+
+__attribute__((noinline)) ZunResult
+AnmManager::DrawPspRotatedBullet(AnmVm *vm, f32 cachedSin, f32 cachedCos)
+{
+    // Bullet::Draw routes only non-zero auto-rotation VMs here.  Keep all
+    // observable validation, culling, renderer-state and vertex semantics of
+    // DrawPspBullet, but place the pure corner math after the last possible
+    // renderer call so its eight results never live across a call boundary.
+    if (!vm || !vm->sprite || !vm->visible || !vm->active || !vm->color.bytes.a)
+    {
+        return ZUN_ERROR;
+    }
+
+    const float halfWidth = vm->sprite->widthPx * vm->scale.x * 0.5f;
+    const float halfHeight = vm->sprite->heightPx * vm->scale.y * 0.5f;
+#if defined(TH07_PSP_PERF_M2)
+    ++gPspBulletFallbackEligible;
+#endif
+    const float centerX =
+        vm->pos.x + this->offset.x + ((vm->anchor & 1) ? halfWidth : 0.0f);
+    const float centerY =
+        vm->pos.y + this->offset.y + ((vm->anchor & 2) ? halfHeight : 0.0f);
+    const float bound = fabsf(halfWidth) + fabsf(halfHeight);
+    if (centerX + bound < gPspRotatedViewportLeft ||
+        centerY + bound < gPspRotatedViewportTop ||
+        centerX - bound > gPspRotatedViewportRight ||
+        centerY - bound > gPspRotatedViewportBottom)
+    {
+#if defined(TH07_PSP_PERF_M2)
+        ++gPspBulletCullRejects;
+#endif
+        return ZUN_SUCCESS;
+    }
+
+    const GfxTextureHandle texture = this->textures[vm->sprite->sourceFileIndex];
+    if (this->currentTexture != texture)
+    {
+        this->currentTexture = texture;
+        this->Flush();
+        g_Supervisor.gfxDevice->BindTexture(this->currentTexture);
+    }
+    if (this->currentVertexShader != 1)
+    {
+        this->Flush();
+        this->currentVertexShader = 1;
+    }
+
+    ZunColor color = vm->useColor2 ? vm->color2 : vm->color;
+    if (this->colorMulEnabled)
+    {
+        color.bytes.r = ZunColor::Multiply(color.bytes.r, this->color.bytes.r);
+        color.bytes.g = ZunColor::Multiply(color.bytes.g, this->color.bytes.g);
+        color.bytes.b = ZunColor::Multiply(color.bytes.b, this->color.bytes.b);
+        color.bytes.a = ZunColor::Multiply(color.bytes.a, this->color.bytes.a);
+    }
+
+#if defined(TH07_PSP_PERF_M2)
+    // M2 owns the state timer boundary; retain it in attribution builds.
+    SyncRenderState(vm);
+#else
+    // Dense bullet runs almost always retain identical blend/depth state.
+    // Preserve SyncRenderState's unconditional accounting on the hit path and
+    // enter the existing slow function only when it has real work to do.
+    const bool renderStateMatches =
+        static_cast<u32>(this->currentBlendMode) == vm->blendMode &&
+        (g_Supervisor.cfg.disableZBuffer ||
+         static_cast<u32>(this->currentZWriteDisable) == vm->zWriteDisable);
+    if (__builtin_expect(renderStateMatches, 1))
+    {
+        ++this->renderStateChangesThisFrame;
+    }
+    else
+    {
+        SyncRenderState(vm);
+    }
+#endif
+
+    // rotation.z is non-zero at the only call site, so the legacy pair test is
+    // always false.  Keep its flush before appending the first rotated quad.
+    if (this->pspSpriteBatchUsesPairs != 0)
+    {
+        this->Flush();
+        this->pspSpriteBatchUsesPairs = 0;
+    }
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+    // A drawable rotated bullet starts the general-quad portion of this
+    // callback.  Keep later axis-aligned bullets in the same stream instead
+    // of alternating pair/general batches.  Set the per-buffer bit only after
+    // the possible pair flush above, because Flush() clears that bit.
+    this->pspUnifiedBulletGeneralMode = 1;
+    this->pspForceSpriteQuads = 1;
+#endif
+
+    const float u0 = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+    const float u1 = vm->sprite->uvEnd.x + vm->uvScrollPos.x;
+    const float v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
+    const float v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
+    const float z = vm->pos.z;
+    const float posX = vm->pos.x;
+    const float posY = vm->pos.y;
+    const float offsetX = this->offset.x;
+    const float offsetY = this->offset.y;
+    const u32 anchor = vm->anchor;
+    Th07PspSpriteVertex *out = this->vertexBufferCurPtr;
+
+    // Do not reassociate these expressions.  Each corner deliberately keeps
+    // DrawPspBullet's mul/sub-or-add/+pos/+offset/+anchor rounding order.
+    const float localX0 = -halfWidth;
+    const float localY0 = -halfHeight;
+    float x0 = localX0 * cachedCos - localY0 * cachedSin + posX + offsetX;
+    float y0 = localX0 * cachedSin + localY0 * cachedCos + posY + offsetY;
+    if (anchor & 1)
+    {
+        x0 += halfWidth;
+    }
+    if (anchor & 2)
+    {
+        y0 += halfHeight;
+    }
+    WritePspSpriteVertex(out[0], x0, y0, z, u0, v0, color);
+
+    const float localX1 = halfWidth;
+    const float localY1 = -halfHeight;
+    float x1 = localX1 * cachedCos - localY1 * cachedSin + posX + offsetX;
+    float y1 = localX1 * cachedSin + localY1 * cachedCos + posY + offsetY;
+    if (anchor & 1)
+    {
+        x1 += halfWidth;
+    }
+    if (anchor & 2)
+    {
+        y1 += halfHeight;
+    }
+    WritePspSpriteVertex(out[1], x1, y1, z, u1, v0, color);
+
+    const float localX2 = -halfWidth;
+    const float localY2 = halfHeight;
+    float x2 = localX2 * cachedCos - localY2 * cachedSin + posX + offsetX;
+    float y2 = localX2 * cachedSin + localY2 * cachedCos + posY + offsetY;
+    if (anchor & 1)
+    {
+        x2 += halfWidth;
+    }
+    if (anchor & 2)
+    {
+        y2 += halfHeight;
+    }
+    WritePspSpriteVertex(out[2], x2, y2, z, u0, v1, color);
+
+    const float localX3 = halfWidth;
+    const float localY3 = halfHeight;
+    float x3 = localX3 * cachedCos - localY3 * cachedSin + posX + offsetX;
+    float y3 = localX3 * cachedSin + localY3 * cachedCos + posY + offsetY;
+    if (anchor & 1)
+    {
+        x3 += halfWidth;
+    }
+    if (anchor & 2)
+    {
+        y3 += halfHeight;
+    }
+    WritePspSpriteVertex(out[3], x3, y3, z, u1, v1, color);
+
+    this->vertexBufferCurPtr += 4;
+    ++this->spritesToDraw;
+    return ZUN_SUCCESS;
+}
+#endif
+
+#if defined(TH07_PSP_BULLET_AXIS_FAST)
 ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *cachedCos)
 {
+    // The dense Stage 4 boss patterns are dominated by non-rotated, positive-scale
+    // bullets. Keep that common path out of the large rotated/mirrored function so it
+    // does not reserve or materialize four-corner scratch arrays on every call.
+    if (!vm || !vm->sprite || !vm->visible || !vm->active || !vm->color.bytes.a)
+    {
+        return ZUN_ERROR;
+    }
+
+    const float halfWidth = vm->sprite->widthPx * vm->scale.x * 0.5f;
+    const float halfHeight = vm->sprite->heightPx * vm->scale.y * 0.5f;
+    const bool axisEligible =
+        vm->rotation.z == 0.0f && halfWidth >= 0.0f && halfHeight >= 0.0f;
+#if defined(TH07_PSP_PERF_M2)
+    if (axisEligible)
+    {
+        ++gPspBulletAxisEligible;
+    }
+    else
+    {
+        ++gPspBulletFallbackEligible;
+    }
+#endif
+    // Keep the R19 visibility rule byte-for-byte equivalent in this first A/B.
+    // Exact axis culling is a separate experiment if the direct-pair split is
+    // insufficient.
+    const float centerX =
+        vm->pos.x + this->offset.x + ((vm->anchor & 1) ? halfWidth : 0.0f);
+    const float centerY =
+        vm->pos.y + this->offset.y + ((vm->anchor & 2) ? halfHeight : 0.0f);
+    const float bound = fabsf(halfWidth) + fabsf(halfHeight);
+    if (centerX + bound < g_Supervisor.viewport.x ||
+        centerY + bound < g_Supervisor.viewport.y ||
+        centerX - bound > g_Supervisor.viewport.x + g_Supervisor.viewport.width ||
+        centerY - bound > g_Supervisor.viewport.y + g_Supervisor.viewport.height)
+    {
+#if defined(TH07_PSP_PERF_M2)
+        ++gPspBulletCullRejects;
+#endif
+        return ZUN_SUCCESS;
+    }
+    if (__builtin_expect(!axisEligible, 0))
+    {
+        return DrawPspBulletFallback(vm, cachedSin, cachedCos);
+    }
+
+    const GfxTextureHandle texture = this->textures[vm->sprite->sourceFileIndex];
+    if (this->currentTexture != texture)
+    {
+        this->currentTexture = texture;
+        this->Flush();
+        g_Supervisor.gfxDevice->BindTexture(this->currentTexture);
+    }
+    if (this->currentVertexShader != 1)
+    {
+        this->Flush();
+        this->currentVertexShader = 1;
+    }
+
+    ZunColor color = vm->useColor2 ? vm->color2 : vm->color;
+    if (this->colorMulEnabled)
+    {
+        color.bytes.r = ZunColor::Multiply(color.bytes.r, this->color.bytes.r);
+        color.bytes.g = ZunColor::Multiply(color.bytes.g, this->color.bytes.g);
+        color.bytes.b = ZunColor::Multiply(color.bytes.b, this->color.bytes.b);
+        color.bytes.a = ZunColor::Multiply(color.bytes.a, this->color.bytes.a);
+    }
+    SyncRenderState(vm);
+
+    if (this->pspSpriteBatchUsesPairs != 1)
+    {
+        this->Flush();
+        this->pspSpriteBatchUsesPairs = 1;
+    }
+
+    // No calls remain after this point. Keep the four rounded endpoints in FPU
+    // registers and write the final 48-byte GU_SPRITES pair directly.
+    const float rawLeft = (vm->anchor & 1) ? vm->pos.x : vm->pos.x - halfWidth;
+    const float rawRight =
+        (vm->anchor & 1) ? vm->pos.x + halfWidth * 2.0f : vm->pos.x + halfWidth;
+    const float rawTop = (vm->anchor & 2) ? vm->pos.y : vm->pos.y - halfHeight;
+    const float rawBottom =
+        (vm->anchor & 2) ? vm->pos.y + halfHeight * 2.0f : vm->pos.y + halfHeight;
+    const float left = PspBulletFloor(rawLeft + this->offset.x + 0.5f);
+    const float right = PspBulletFloor(rawRight + this->offset.x + 0.5f);
+    const float top = PspBulletFloor(rawTop + this->offset.y + 0.5f);
+    const float bottom = PspBulletFloor(rawBottom + this->offset.y + 0.5f);
+    const float u0 = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+    const float u1 = vm->sprite->uvEnd.x + vm->uvScrollPos.x;
+    const float v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
+    const float v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
+    Th07PspSpriteVertex *out = this->vertexBufferCurPtr;
+    WritePspSpriteVertex(out[0], left, top, vm->pos.z, u0, v0, color);
+    WritePspSpriteVertex(out[1], right, bottom, vm->pos.z, u1, v1, color);
+    this->vertexBufferCurPtr += 2;
+    ++this->spritesToDraw;
+    return ZUN_SUCCESS;
+}
+
+__attribute__((noinline)) ZunResult
+AnmManager::DrawPspBulletFallback(AnmVm *vm, const f32 *cachedSin, const f32 *cachedCos)
+#else
+ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *cachedCos)
+#endif
+{
+#if defined(TH07_PSP_PERF_M3)
+    PspM3EmitterSample m3Sample;
+#endif
     // TH06's largest SC-side win was avoiding the generic four-vertex
     // temporary plus a second six-vertex copy for every bullet.  TH07's
     // bullet VMs use the same simple screen-space sprite contract, so emit
@@ -1533,6 +2607,21 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
 
     const float halfWidth = vm->sprite->widthPx * vm->scale.x * 0.5f;
     const float halfHeight = vm->sprite->heightPx * vm->scale.y * 0.5f;
+#if defined(TH07_PSP_PERF_M3)
+    m3Sample.Advance();
+#endif
+#if defined(TH07_PSP_PERF_M2) && !defined(TH07_PSP_BULLET_AXIS_FAST)
+    const bool axisEligible =
+        vm->rotation.z == 0.0f && halfWidth >= 0.0f && halfHeight >= 0.0f;
+    if (axisEligible)
+    {
+        ++gPspBulletAxisEligible;
+    }
+    else
+    {
+        ++gPspBulletFallbackEligible;
+    }
+#endif
     // Special bullet commands retain some off-screen bullets for many frames.
     // Reject those using a conservative rotated bound before constructing and
     // scanning four corners.
@@ -1546,6 +2635,12 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
         centerX - bound > g_Supervisor.viewport.x + g_Supervisor.viewport.width ||
         centerY - bound > g_Supervisor.viewport.y + g_Supervisor.viewport.height)
     {
+#if defined(TH07_PSP_PERF_M3)
+        m3Sample.NoteCull();
+#endif
+#if defined(TH07_PSP_PERF_M2) && !defined(TH07_PSP_BULLET_AXIS_FAST)
+        ++gPspBulletCullRejects;
+#endif
         return ZUN_SUCCESS;
     }
     float x[4];
@@ -1597,6 +2692,10 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
         }
     }
 
+#if defined(TH07_PSP_PERF_M3)
+    m3Sample.Advance();
+#endif
+
     const GfxTextureHandle texture = this->textures[vm->sprite->sourceFileIndex];
     if (this->currentTexture != texture)
     {
@@ -1625,12 +2724,26 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
     const float v0 = vm->sprite->uvStart.y + vm->uvScrollPos.y;
     const float v1 = vm->sprite->uvEnd.y + vm->uvScrollPos.y;
     const float z = vm->pos.z;
-    const bool usePairs = vm->rotation.z == 0.0f && x[0] <= x[3] && y[0] <= y[3];
+    const bool pairEligible =
+        vm->rotation.z == 0.0f && x[0] <= x[3] && y[0] <= y[3];
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+    if (!pairEligible)
+    {
+        this->pspUnifiedBulletGeneralMode = 1;
+    }
+    const bool usePairs = pairEligible && !this->pspUnifiedBulletGeneralMode;
+#else
+    const bool usePairs = pairEligible;
+#endif
     if (this->pspSpriteBatchUsesPairs != usePairs)
     {
         this->Flush();
         this->pspSpriteBatchUsesPairs = usePairs;
     }
+#if defined(TH07_PSP_PERF_M3)
+    m3Sample.Advance();
+    PspM3NoteBulletAppend(this);
+#endif
     Th07PspSpriteVertex *out = this->vertexBufferCurPtr;
     WritePspSpriteVertex(out[0], x[0], y[0], z, u0, v0, color);
     if (usePairs)
@@ -1640,14 +2753,222 @@ ZunResult AnmManager::DrawPspBullet(AnmVm *vm, const f32 *cachedSin, const f32 *
     }
     else
     {
+#if defined(TH07_PSP_BULLET_UNIFIED_QUADS)
+        if (this->pspUnifiedBulletGeneralMode)
+        {
+            // Tell the backend that the mixed bullet stream is deliberately
+            // one indexed-quad run. Without this bit it would rediscover each
+            // axis sub-run and recreate the same submit storm downstream.
+            this->pspForceSpriteQuads = 1;
+        }
+#endif
         WritePspSpriteVertex(out[1], x[1], y[1], z, u1, v0, color);
         WritePspSpriteVertex(out[2], x[2], y[2], z, u0, v1, color);
         WritePspSpriteVertex(out[3], x[3], y[3], z, u1, v1, color);
         this->vertexBufferCurPtr += 4;
     }
     ++this->spritesToDraw;
+#if defined(TH07_PSP_PERF_M3)
+    if (gPspM3FrontBatchOrigin == TH07_PSP_PERF_M3_BATCH_BULLET)
+    {
+        gPspM3BulletBatchEnd = this->vertexBufferCurPtr;
+        gPspM3BulletBatchSprites = this->spritesToDraw;
+    }
+#endif
     return ZUN_SUCCESS;
 }
+
+#if defined(TH07_PSP_BULLET_SNAPSHOT_EMITTER)
+void AnmManager::DrawPspBulletRecords(const PspBulletRenderRecord *records, u32 count)
+{
+    if (!records)
+    {
+        return;
+    }
+
+    // Records arrive in the exact collision-bucket/linked-list order used by
+    // BulletManager::OnDraw.  Never sort by texture or state: alpha blending
+    // makes that order part of the rendered result.
+    for (u32 recordIndex = 0; recordIndex < count; ++recordIndex)
+    {
+        const PspBulletRenderRecord &record = records[recordIndex];
+        if (!(record.flags & PSP_BULLET_RECORD_DRAWABLE))
+        {
+            continue;
+        }
+
+        const float halfWidth = record.halfWidth;
+        const float halfHeight = record.halfHeight;
+        const float rotationZ = record.rotationZ;
+#if defined(TH07_PSP_PERF_M2)
+        const bool axisEligible =
+            rotationZ == 0.0f && halfWidth >= 0.0f && halfHeight >= 0.0f;
+        if (axisEligible)
+        {
+            ++gPspBulletAxisEligible;
+        }
+        else
+        {
+            ++gPspBulletFallbackEligible;
+        }
+#endif
+        const u32 anchor =
+            (record.flags & PSP_BULLET_RECORD_ANCHOR_MASK) >>
+            PSP_BULLET_RECORD_ANCHOR_SHIFT;
+        const float centerX =
+            record.posX + this->offset.x + ((anchor & 1u) ? halfWidth : 0.0f);
+        const float centerY =
+            record.posY + this->offset.y + ((anchor & 2u) ? halfHeight : 0.0f);
+        const float bound = fabsf(halfWidth) + fabsf(halfHeight);
+        if (centerX + bound < g_Supervisor.viewport.x ||
+            centerY + bound < g_Supervisor.viewport.y ||
+            centerX - bound > g_Supervisor.viewport.x + g_Supervisor.viewport.width ||
+            centerY - bound > g_Supervisor.viewport.y + g_Supervisor.viewport.height)
+        {
+#if defined(TH07_PSP_PERF_M2)
+            ++gPspBulletCullRejects;
+#endif
+            continue;
+        }
+
+        float x[4];
+        float y[4];
+        if (rotationZ == 0.0f)
+        {
+            const float rawLeft =
+                (anchor & 1u) ? record.posX : record.posX - halfWidth;
+            const float rawRight =
+                (anchor & 1u) ? record.posX + halfWidth * 2.0f
+                              : record.posX + halfWidth;
+            const float rawTop =
+                (anchor & 2u) ? record.posY : record.posY - halfHeight;
+            const float rawBottom =
+                (anchor & 2u) ? record.posY + halfHeight * 2.0f
+                              : record.posY + halfHeight;
+            const float left = PspRenderFloor(rawLeft + this->offset.x + 0.5f);
+            const float right = PspRenderFloor(rawRight + this->offset.x + 0.5f);
+            const float top = PspRenderFloor(rawTop + this->offset.y + 0.5f);
+            const float bottom = PspRenderFloor(rawBottom + this->offset.y + 0.5f);
+            x[0] = x[2] = left;
+            x[1] = x[3] = right;
+            y[0] = y[1] = top;
+            y[2] = y[3] = bottom;
+        }
+        else
+        {
+            float sine;
+            float cosine;
+            if (record.flags & PSP_BULLET_RECORD_CACHED_SINCOS)
+            {
+                sine = record.sine;
+                cosine = record.cosine;
+            }
+            else
+            {
+                PspRenderSinCos(rotationZ, &sine, &cosine);
+            }
+            const float localX[4] = {-halfWidth, halfWidth, -halfWidth, halfWidth};
+            const float localY[4] = {-halfHeight, -halfHeight, halfHeight, halfHeight};
+            for (int corner = 0; corner < 4; ++corner)
+            {
+                x[corner] = localX[corner] * cosine - localY[corner] * sine +
+                            record.posX + this->offset.x;
+                y[corner] = localX[corner] * sine + localY[corner] * cosine +
+                            record.posY + this->offset.y;
+                if (anchor & 1u)
+                {
+                    x[corner] += halfWidth;
+                }
+                if (anchor & 2u)
+                {
+                    y[corner] += halfHeight;
+                }
+            }
+        }
+
+        const GfxTextureHandle texture = this->textures[record.sourceFileIndex];
+        if (this->currentTexture != texture)
+        {
+            this->currentTexture = texture;
+            this->Flush();
+            g_Supervisor.gfxDevice->BindTexture(this->currentTexture);
+        }
+        if (this->currentVertexShader != 1)
+        {
+            this->Flush();
+            this->currentVertexShader = 1;
+        }
+
+        ZunColor color = record.color;
+        if (this->colorMulEnabled)
+        {
+            color.bytes.r = ZunColor::Multiply(color.bytes.r, this->color.bytes.r);
+            color.bytes.g = ZunColor::Multiply(color.bytes.g, this->color.bytes.g);
+            color.bytes.b = ZunColor::Multiply(color.bytes.b, this->color.bytes.b);
+            color.bytes.a = ZunColor::Multiply(color.bytes.a, this->color.bytes.a);
+        }
+
+#if defined(TH07_PSP_PERF_M2)
+        Th07PspPerfInternalBegin(TH07_PSP_PERF_INTERNAL_STATE);
+#endif
+        const u32 blendMode =
+            (record.flags & PSP_BULLET_RECORD_BLEND_ADD) ? 1u : 0u;
+        if ((u32)this->currentBlendMode != blendMode)
+        {
+            this->Flush();
+            this->currentBlendMode = blendMode;
+            if (!this->currentBlendMode)
+            {
+                g_Supervisor.gfxDevice->SetBlendMode(BLEND_ALPHA, BLEND_ALPHA);
+            }
+            else
+            {
+                g_Supervisor.gfxDevice->SetBlendMode(BLEND_ALPHA, BLEND_ONE);
+            }
+        }
+        const u32 zWriteDisable =
+            (record.flags & PSP_BULLET_RECORD_ZWRITE_DISABLE) ? 1u : 0u;
+        if (!g_Supervisor.cfg.disableZBuffer &&
+            (u32)this->currentZWriteDisable != zWriteDisable)
+        {
+            this->Flush();
+            this->currentZWriteDisable = zWriteDisable;
+            g_Supervisor.gfxDevice->SetDepthMask(this->currentZWriteDisable == 0);
+        }
+        ++this->renderStateChangesThisFrame;
+#if defined(TH07_PSP_PERF_M2)
+        Th07PspPerfInternalEnd(TH07_PSP_PERF_INTERNAL_STATE);
+#endif
+
+        const bool usePairs = rotationZ == 0.0f && x[0] <= x[3] && y[0] <= y[3];
+        if (this->pspSpriteBatchUsesPairs != usePairs)
+        {
+            this->Flush();
+            this->pspSpriteBatchUsesPairs = usePairs;
+        }
+        Th07PspSpriteVertex *out = this->vertexBufferCurPtr;
+        WritePspSpriteVertex(out[0], x[0], y[0], record.posZ, record.u0, record.v0,
+                             color);
+        if (usePairs)
+        {
+            WritePspSpriteVertex(out[1], x[3], y[3], record.posZ, record.u1,
+                                 record.v1, color);
+            this->vertexBufferCurPtr += 2;
+        }
+        else
+        {
+            WritePspSpriteVertex(out[1], x[1], y[1], record.posZ, record.u1,
+                                 record.v0, color);
+            WritePspSpriteVertex(out[2], x[2], y[2], record.posZ, record.u0,
+                                 record.v1, color);
+            WritePspSpriteVertex(out[3], x[3], y[3], record.posZ, record.u1,
+                                 record.v1, color);
+            this->vertexBufferCurPtr += 4;
+        }
+        ++this->spritesToDraw;
+    }
+}
+#endif
 #endif
 
 ZunResult AnmManager::DrawFacingCamera(AnmVm *vm)
@@ -1980,7 +3301,13 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     {
         g_Supervisor.gfxDevice->SetColorOp(COMPONENT_ALPHA, COLOR_OP_MODULATE);
         g_Supervisor.gfxDevice->SetColorOp(COMPONENT_RGB, COLOR_OP_MODULATE);
-        g_Supervisor.gfxDevice->SetTextureArg(TEX_ARG_TFACTOR);
+        // The no-vertex-buffer fallback carries each VM's colour in the
+        // submitted vertices.  Using TFACTOR here would replace that alpha
+        // with the backend's stale constant and make fading 3D backgrounds
+        // opaque, erasing Stage 3's preserved-frame afterimage.
+        g_Supervisor.gfxDevice->SetTextureArg(g_Supervisor.cfg.noVertexBuffers
+                                                  ? TEX_ARG_DIFFUSE
+                                                  : TEX_ARG_TFACTOR);
         this->currentVertexShader = 2;
     }
 
@@ -2782,6 +4109,38 @@ void AnmManager::DrawVmTextFmt(AnmManager *manager, AnmVm *vm, u32 textColor, u3
     vm->visible = 1;
 }
 
+bool AnmManager::PreRenderVmText(AnmVm *vm, u32 textColor, u32 outlineType, const char *text)
+{
+    if (!vm || !vm->sprite || !text)
+    {
+        return false;
+    }
+    const i32 fontWidth = vm->fontWidth <= 0 ? 15 : vm->fontWidth;
+    const i32 fontHeight = vm->fontHeight <= 0 ? 15 : vm->fontHeight;
+    return TextHelper::PreRenderTextToCacheBold(
+        vm->sprite->startPixelInclusive.x, vm->sprite->startPixelInclusive.y,
+        vm->sprite->textureWidth, vm->sprite->textureHeight,
+        static_cast<f32>(fontWidth) * vm->sprite->cols,
+        static_cast<f32>(fontHeight) * vm->sprite->rows, textColor, outlineType, text);
+}
+
+bool AnmManager::PreRenderString(AnmVm *vm, u32 textColor, u32 outlineType, const char *text)
+{
+    if (!vm || !vm->sprite || !text)
+    {
+        return false;
+    }
+    const i32 fontWidth = vm->fontWidth <= 0 ? 15 : vm->fontWidth;
+    const i32 x = vm->sprite->startPixelInclusive.x + vm->sprite->widthPx * vm->sprite->cols -
+                  static_cast<f32>(TextHelper::GetLogicalStringWidth(text)) * fontWidth *
+                      vm->sprite->cols / 2.0f;
+    const i32 fontHeight = vm->fontHeight <= 0 ? 15 : vm->fontHeight;
+    return TextHelper::PreRenderTextToCacheBold(
+        x, vm->sprite->startPixelInclusive.y, vm->sprite->textureWidth,
+        vm->sprite->textureHeight, static_cast<f32>(fontWidth) * vm->sprite->cols,
+        static_cast<f32>(fontHeight) * vm->sprite->rows, textColor, outlineType, text);
+}
+
 void AnmManager::DrawStringFormat(AnmVm *vm, u32 textColor, u32 outlineType, const char *text, ...)
 {
     i32 fontWidth;
@@ -2794,14 +4153,22 @@ void AnmManager::DrawStringFormat(AnmVm *vm, u32 textColor, u32 outlineType, con
     vsprintf(buf, text, args);
     va_end(args);
 
+#if !defined(TH07_PSP)
     this->DrawTextToSprite(vm->sprite->sourceFileIndex, vm->sprite->startPixelInclusive.x,
                            vm->sprite->startPixelInclusive.y, vm->sprite->textureWidth,
                            vm->sprite->textureHeight, fontWidth, vm->fontHeight, textColor,
                            outlineType, (char *)" ", vm->sprite->cols, vm->sprite->rows);
+#endif
 
     x = vm->sprite->startPixelInclusive.x + vm->sprite->widthPx * vm->sprite->cols -
         (f32)TextHelper::GetLogicalStringWidth(buf) * (f32)fontWidth * vm->sprite->cols / 2.0f;
 
+#if defined(TH07_PSP)
+    // TextHelper clears and republishes the complete 512x16 destination band
+    // for this draw. The old leading space pass therefore produced an
+    // identical intermediate blank band that was immediately overwritten,
+    // doubling spell-name rasterisation, synchronization and upload traffic.
+#endif
     this->DrawTextToSprite(vm->sprite->sourceFileIndex, x, vm->sprite->startPixelInclusive.y,
                            vm->sprite->textureWidth, vm->sprite->textureHeight, fontWidth,
                            vm->fontHeight, textColor, outlineType, buf, vm->sprite->cols,
@@ -3129,28 +4496,31 @@ void AnmManager::DrawEndingRect(i32 surfaceIdx, i32 rectX, i32 rectY, i32 rectLe
 #endif
 }
 
-void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcWidth, i32 srcHeight,
-                                i32 dstLeft, i32 dstTop, i32 dstWidth, i32 dstHeight)
+bool AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcWidth,
+                                i32 srcHeight, i32 dstLeft, i32 dstTop, i32 dstWidth,
+                                i32 dstHeight)
 {
     if (!this->textures[textureId])
     {
-        return;
+        return false;
     }
 
     Flush();
 
 #if defined(TH07_PSP)
-    if (!Th07PspCaptureFramebufferToTexture(this->textures[textureId], srcLeft, srcTop, srcWidth,
-                                            srcHeight, dstLeft, dstTop, dstWidth, dstHeight))
+    const bool captured = Th07PspCaptureFramebufferToTexture(
+        this->textures[textureId], srcLeft, srcTop, srcWidth, srcHeight, dstLeft, dstTop, dstWidth,
+        dstHeight);
+    if (!captured)
     {
         // A missing capture must never turn the pause button into a process
         // exit. The menu remains usable without its animated background if
         // the texture was unavailable.
         th07_psp_boot_note("pause capture skipped");
     }
-    return;
-#endif
-
+    return captured;
+#else
+    bool captured = false;
     u32 *pixelData = new u32[srcWidth * srcHeight];
     g_Supervisor.gfxDevice->ReadPixels(srcLeft, srcTop, srcWidth, srcHeight, pixelData);
 
@@ -3158,6 +4528,7 @@ void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcW
     {
         g_Supervisor.gfxDevice->BindTexture(this->textures[textureId]);
         g_Supervisor.gfxDevice->SetTextureSubImage(dstLeft, dstTop, dstWidth, dstHeight, pixelData);
+        captured = true;
     }
     else
     {
@@ -3173,6 +4544,7 @@ void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcW
             g_Supervisor.gfxDevice->BindTexture(this->textures[textureId]);
             g_Supervisor.gfxDevice->SetTextureSubImage(dstLeft, dstTop, dstWidth, dstHeight,
                                                        dstSurf->pixels);
+            captured = true;
         }
 
         if (srcSurf)
@@ -3186,6 +4558,8 @@ void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop, i32 srcW
     }
 
     delete[] pixelData;
+    return captured;
+#endif
 }
 
 void AnmManager::CopyTexture(i32 dstIdx, i32 srcIdx, SDL_Rect *dstRect, SDL_Rect *srcRect)

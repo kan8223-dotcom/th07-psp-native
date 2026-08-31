@@ -1,27 +1,35 @@
 #include "Gui.hpp"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 #include "AnmIdx.hpp"
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
+#include "BombData.hpp"
 #include "BulletManager.hpp"
 #include "Chain.hpp"
 #include "Controller.hpp"
 #include "EnemyManager.hpp"
 #include "EffectManager.hpp"
+#include "EclManager.hpp"
 #include "FileSystem.hpp"
 #include "GameErrorContext.hpp"
 #include "GameManager.hpp"
 #include "ItemManager.hpp"
 #include "Player.hpp"
+#include "Rng.hpp"
 #include "SoundPlayer.hpp"
 #include "Stage.hpp"
 #include "Supervisor.hpp"
+#include "TextHelper.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
 #if defined(TH07_PSP)
 #include "fileio.hpp"
+#include "optional_ram_budget.hpp"
+#include <pspkernel.h>
 #endif
 
 u32 g_SpellcardTimeColors[4] = {
@@ -36,6 +44,12 @@ Gui g_Gui;
 ChainElem g_GuiCalcChain;
 
 ChainElem g_GuiDrawChain;
+
+namespace
+{
+constexpr u32 kMsgTextColorsA[2] = {0xe8f0ff, 0xffe8f0};
+constexpr u32 kMsgTextColorsB[2] = {0, 0};
+}
 
 i32 Gui::IsStageFinished()
 {
@@ -446,35 +460,59 @@ ZunResult Gui::ActualAddedCallback()
     {
         ClearActiveSprites();
 #if defined(TH07_PSP)
-        // The 168-VM checkerboard transition currently trips PPSSPP's JIT on
-        // the first update of the next stage (Gui::UpdateGui, 0x08836eac).
-        // It is cosmetic, so keep stage reinitialization deterministic while
-        // gameplay bring-up is the priority.  The next stage renders directly.
-        this->impl->activeTransitionQuads = 0;
-#else
+        // A pause request normally drains in Present. If a fixed-30 calc-only
+        // tick left one pending, finish it before reserving the same atlas for
+        // the between-stage capture below.
+        g_AnmManager->TakeScreenshotIfRequested();
+#endif
         g_AnmManager->SetAnmIdxAndExecuteScript(&this->impl->stageTransitionSnapshotVm, 1829);
         this->impl->stageTransitionSnapshotVm.pendingInterrupt = 1;
-        g_AnmManager->CreateScreenshotTexture(
+        const i32 captureResult = g_AnmManager->CreateScreenshotTexture(
             this->impl->stageTransitionSnapshotVm.sprite->startPixelInclusive.x,
             this->impl->stageTransitionSnapshotVm.sprite->startPixelInclusive.y,
             this->impl->stageTransitionSnapshotVm.sprite->widthPx,
             this->impl->stageTransitionSnapshotVm.sprite->heightPx);
-        for (i = 0; i < 14; i++)
+        bool transitionCaptureReady = captureResult == 0;
+#if defined(TH07_PSP)
+        // The PSP loop draws before it runs the calc chain. Capture now, while
+        // the draw buffer still contains the completed Stage Clear screen.
+        // Waiting for Present would capture the newly initialized stage and
+        // make the checkerboard reveal a copy of itself.
+        if (captureResult == 0)
         {
-            for (j = 0; j < 12; j++)
+            transitionCaptureReady = g_AnmManager->TakeScreenshotIfRequested();
+#if defined(TH07_PSP_DIRECT_GAME)
+            if (transitionCaptureReady)
             {
-                g_AnmManager->SetAnmIdxAndExecuteScript(&this->impl->transitionQuads[i * 12 + j],
-                                                        ((i + j) & 1) + 1830);
-                this->impl->transitionQuads[i * 12 + j].intVars2[0] = i + j * 2;
-                this->impl->transitionQuads[i * 12 + j].pos.x = (f32)j * 32.0f + 16.0f;
-                this->impl->transitionQuads[i * 12 + j].pos.y = (f32)i * 32.0f + 16.0f;
-                this->impl->transitionQuads[i * 12 + j].pos.z = 0.0f;
-                this->impl->transitionQuads[i * 12 + j].uvScrollPos.x = (f32)j * 32.0f / 512.0f;
-                this->impl->transitionQuads[i * 12 + j].uvScrollPos.y = (f32)i * 32.0f / 512.0f;
+                th07_psp_boot_note("stage transition snapshot ready");
             }
-        }
-        this->impl->activeTransitionQuads = 168;
 #endif
+        }
+        if (!transitionCaptureReady)
+        {
+            th07_psp_boot_note("stage transition snapshot unavailable");
+        }
+#endif
+        if (transitionCaptureReady)
+        {
+            for (i = 0; i < 14; i++)
+            {
+                for (j = 0; j < 12; j++)
+                {
+                    g_AnmManager->SetAnmIdxAndExecuteScript(
+                        &this->impl->transitionQuads[i * 12 + j], ((i + j) & 1) + 1830);
+                    this->impl->transitionQuads[i * 12 + j].intVars2[0] = i + j * 2;
+                    this->impl->transitionQuads[i * 12 + j].pos.x = (f32)j * 32.0f + 16.0f;
+                    this->impl->transitionQuads[i * 12 + j].pos.y = (f32)i * 32.0f + 16.0f;
+                    this->impl->transitionQuads[i * 12 + j].pos.z = 0.0f;
+                    this->impl->transitionQuads[i * 12 + j].uvScrollPos.x =
+                        (f32)j * 32.0f / 512.0f;
+                    this->impl->transitionQuads[i * 12 + j].uvScrollPos.y =
+                        (f32)i * 32.0f / 512.0f;
+                }
+            }
+            this->impl->activeTransitionQuads = 168;
+        }
     }
     switch (g_GameManager.currentStage)
     {
@@ -682,6 +720,7 @@ ZunResult Gui::LoadMsg(const char *param_1)
         g_GameErrorContext.Log("error : メッセージファイル %s が読み込めませんでした\n", param_1);
         return ZUN_ERROR;
     }
+    this->impl->msgFileSize = g_LastFileSize;
 
     this->impl->msg.currentMsgIdx = -1;
     this->impl->msg.curInstr = NULL;
@@ -692,6 +731,234 @@ ZunResult Gui::LoadMsg(const char *param_1)
 void Gui::FreeMsgFile()
 {
     SAFE_FREE(this->impl->msg.msgFile);
+    this->impl->msgFileSize = 0;
+}
+
+bool Gui::PreRenderStageText()
+{
+#if defined(TH07_PSP)
+    const unsigned long long prewarmStartUs = sceKernelGetSystemTimeWide();
+#endif
+    AnmVm dialogueLines[2];
+    AnmVm introLines[2];
+    // These VMs exist only to reproduce the runtime text geometry. ANM scripts
+    // are allowed to execute RAND/RAND_FLOAT, so never let this loading-only
+    // probe perturb the replay/gameplay RNG stream.
+    const Rng rngBeforeVmInit = g_Rng;
+    const i32 scriptsBeforeVmInit = g_AnmManager->scriptsExecutedThisFrame;
+    const i32 scriptTicksBeforeVmInit = g_AnmManager->scriptTicksThisFrame;
+    for (i32 line = 0; line < 2; ++line)
+    {
+        g_AnmManager->SetAnmIdxAndExecuteScript(&dialogueLines[line], line + 1792);
+        dialogueLines[line].fontHeight = 15;
+        dialogueLines[line].fontWidth = 15;
+        g_AnmManager->SetAnmIdxAndExecuteScript(&introLines[line], line + 1794);
+    }
+    const bool vmInitUsedRng = g_Rng.seed != rngBeforeVmInit.seed ||
+                               g_Rng.seedBackup != rngBeforeVmInit.seedBackup ||
+                               g_Rng.generationCount != rngBeforeVmInit.generationCount;
+    g_Rng = rngBeforeVmInit;
+    g_AnmManager->SetScriptsExecuted(scriptsBeforeVmInit);
+    g_AnmManager->SetScriptTicks(scriptTicksBeforeVmInit);
+
+    u32 messageCount = 0;
+    bool messageScanComplete = false;
+    const MsgRawHeader *msgFile = this->impl->msg.msgFile;
+    const u32 msgFileSize = this->impl->msgFileSize;
+    if (msgFile && msgFileSize >= sizeof(MsgRawHeader) && msgFile->numEntries > 0)
+    {
+        const u32 entryCount = static_cast<u32>(msgFile->numEntries);
+        const bool headerFits =
+            entryCount <= (msgFileSize - sizeof(MsgRawHeader)) / sizeof(u32);
+        const u32 headerBytes =
+            headerFits ? sizeof(MsgRawHeader) + entryCount * sizeof(u32) : msgFileSize;
+        bool offsetsValid = headerFits;
+        for (u32 entry = 0; offsetsValid && entry < entryCount; ++entry)
+        {
+            const u32 offset = msgFile->offsets[entry];
+            offsetsValid = offset >= headerBytes && offset <= msgFileSize;
+        }
+
+        const i32 character = g_GameManager.character;
+        if (offsetsValid && character >= CHAR_REIMU && character <= CHAR_SAKUYA)
+        {
+            const u32 firstEntry = static_cast<u32>(character) * 10u;
+            const u32 lastEntry = std::min(entryCount, firstEntry + 10u);
+            if (firstEntry < lastEntry)
+            {
+                messageScanComplete = true;
+                const u8 *const file = reinterpret_cast<const u8 *>(msgFile);
+                for (u32 entry = firstEntry; messageScanComplete && entry < lastEntry; ++entry)
+                {
+                    const u32 startOffset = msgFile->offsets[entry];
+                    u32 endOffset = msgFileSize;
+                    for (u32 other = 0; other < entryCount; ++other)
+                    {
+                        const u32 candidate = msgFile->offsets[other];
+                        if (candidate > startOffset && candidate < endOffset)
+                        {
+                            endOffset = candidate;
+                        }
+                    }
+
+                    u32 cursor = startOffset;
+                    bool reachedTerminator = false;
+                    while (cursor < endOffset && endOffset - cursor >= 4u)
+                    {
+                        const MsgRawInstr *instr =
+                            reinterpret_cast<const MsgRawInstr *>(file + cursor);
+                        const u32 instrBytes = 4u + static_cast<u32>(instr->argsize);
+                        if (instrBytes > endOffset - cursor)
+                        {
+                            messageScanComplete = false;
+                            break;
+                        }
+                        if (instr->opcode == MSG_DELETE)
+                        {
+                            reachedTerminator = true;
+                            break;
+                        }
+                        if (instr->opcode == MSG_DIALOGUE ||
+                            instr->opcode == MSG_TEXT_INTRODUCE)
+                        {
+                            if (instr->argsize < 5u)
+                            {
+                                messageScanComplete = false;
+                                break;
+                            }
+                            const MsgRawInstrArgDialogue &textArgs = instr->args.dialogue;
+                            const i32 color = textArgs.textColor;
+                            const i32 line = textArgs.textLine;
+                            const u32 textBytes = static_cast<u32>(instr->argsize) - 4u;
+                            if (color < 0 || color >= 2 || line < 0 || line >= 2 ||
+                                !std::memchr(textArgs.text, '\0', textBytes))
+                            {
+                                messageScanComplete = false;
+                                break;
+                            }
+                            bool stored = false;
+                            if (instr->opcode == MSG_DIALOGUE)
+                            {
+                                stored = g_AnmManager->PreRenderVmText(
+                                    &dialogueLines[line], kMsgTextColorsA[color],
+                                    kMsgTextColorsB[color], textArgs.text);
+                                if (line == 0 &&
+                                    !g_AnmManager->PreRenderVmText(
+                                        &dialogueLines[1], kMsgTextColorsA[color],
+                                        kMsgTextColorsB[color], " "))
+                                {
+                                    // RunMsg intentionally clears a previously
+                                    // visible second line before drawing line 0.
+                                    messageScanComplete = false;
+                                }
+                            }
+                            else
+                            {
+                                stored = g_AnmManager->PreRenderString(
+                                    &introLines[line], kMsgTextColorsA[color],
+                                    kMsgTextColorsB[color], textArgs.text);
+                            }
+                            if (stored)
+                            {
+                                ++messageCount;
+                            }
+                            else
+                            {
+                                messageScanComplete = false;
+                            }
+                        }
+                        cursor += instrBytes;
+                    }
+                    if (!reachedTerminator)
+                    {
+                        messageScanComplete = false;
+                    }
+                }
+            }
+        }
+    }
+
+    bool spellScanComplete = false;
+    const u32 spellCount = g_EclManager.PreRenderSpellcardNames(
+        &this->impl->enemySpellcardName, &spellScanComplete);
+    const bool spellEnumerationComplete = spellScanComplete && spellCount != 0;
+    u32 bombCount = 0;
+    bool bombScanComplete = true;
+    for (i32 focused = 0; focused < 2; ++focused)
+    {
+        const char *bombName =
+            BombData::GetBombName(g_GameManager.shotTypeAndCharacter, focused);
+        if (!bombName ||
+            !g_AnmManager->PreRenderVmText(&this->impl->bombSpellcardName, 0xf0f0ff, 0,
+                                           bombName))
+        {
+            bombScanComplete = false;
+        }
+        else
+        {
+            ++bombCount;
+        }
+    }
+    const bool sourceEnumerationComplete = !vmInitUsedRng && messageScanComplete &&
+                                           spellEnumerationComplete && bombScanComplete;
+    const bool coverageComplete =
+        TextHelper::EndStageTextCache(sourceEnumerationComplete);
+#if defined(TH07_PSP)
+    const unsigned long long prewarmElapsedUs =
+        sceKernelGetSystemTimeWide() - prewarmStartUs;
+    const unsigned int prewarmMs =
+        static_cast<unsigned int>((prewarmElapsedUs + 500u) / 1000u);
+    th07_psp_boot_notef("text prewarm sources msg %u spell %u bomb %u ms %u", messageCount,
+                       spellCount, bombCount, prewarmMs);
+#if defined(TH07_PSP_TEXT_PREWARM_PROFILE)
+    StageTextPrewarmTiming timing = {};
+    if (TextHelper::GetStageTextPrewarmTiming(&timing))
+    {
+        const u64 storePartsUs = timing.rleMeasureUs + timing.rleEncodeUs;
+        const u64 storeOtherUs = timing.storeUs > storePartsUs
+                                     ? timing.storeUs - storePartsUs
+                                     : 0u;
+        const u64 uniquePartsUs = timing.fontUs + timing.conversionUs + timing.ttfUs +
+                                  timing.clearUs + timing.blitUs + timing.invertUs +
+                                  timing.filterUs + timing.storeUs;
+        const u64 uniqueOtherUs = timing.uniqueTotalUs > uniquePartsUs
+                                      ? timing.uniqueTotalUs - uniquePartsUs
+                                      : 0u;
+        const u64 prewarmPartsUs =
+            timing.lookupUs + timing.uniqueTotalUs + timing.fontFlushUs;
+        const u64 prewarmOtherUs = prewarmElapsedUs > prewarmPartsUs
+                                       ? prewarmElapsedUs - prewarmPartsUs
+                                       : 0u;
+        const auto logUs = [](u64 value) -> unsigned int {
+            return value > 0xffffffffull ? 0xffffffffu : static_cast<unsigned int>(value);
+        };
+        th07_psp_boot_notef(
+            "textpw1 Q%u H%u U%u X%u FM%u SZ%u T%u LK%u FN%u CV%u TT%u",
+            timing.requestCount, timing.hitCount, timing.uniqueRowCount,
+            timing.failureCount, TextHelper::IsDefaultFontInMainRam() ? 1u : 0u,
+            timing.fontSizeChangeCount, logUs(prewarmElapsedUs), logUs(timing.lookupUs),
+            logUs(timing.fontUs), logUs(timing.conversionUs), logUs(timing.ttfUs));
+        th07_psp_boot_notef(
+            "textpw2 CL%u BL%u IV%u BF%u ST%u RM%u RE%u SO%u UO%u FL%u PO%u FA%u FF%u",
+            logUs(timing.clearUs), logUs(timing.blitUs), logUs(timing.invertUs),
+            logUs(timing.filterUs), logUs(timing.storeUs), logUs(timing.rleMeasureUs),
+            logUs(timing.rleEncodeUs), logUs(storeOtherUs), logUs(uniqueOtherUs),
+            logUs(timing.fontFlushUs), logUs(prewarmOtherUs), timing.fastBlitCount,
+            timing.fastBlitFallbackCount);
+    }
+#endif
+    if (!coverageComplete)
+    {
+        const char *reason = vmInitUsedRng            ? "vm-rng"
+                             : !messageScanComplete   ? "msg-enum"
+                             : !spellScanComplete     ? "spell-enum"
+                             : spellCount == 0        ? "spell-enum-0"
+                             : !bombScanComplete      ? "bomb-enum"
+                                                      : "coverage";
+        th07_psp_boot_notef("i1text OFF reason=%s", reason);
+    }
+#endif
+    return coverageComplete;
 }
 
 void Gui::MsgRead(i32 param_1)
@@ -716,10 +983,10 @@ void GuiImpl::MsgRead(i32 msgIdx)
     this->msg.dialogueLines[0].anmFileIdx = -1;
     this->msg.dialogueLines[1].anmFileIdx = -1;
     this->msg.fontSize = 15;
-    this->msg.textColorsA[0] = 0xe8f0ff;
-    this->msg.textColorsA[1] = 0xffe8f0;
-    this->msg.textColorsB[0] = 0;
-    this->msg.textColorsB[1] = 0;
+    this->msg.textColorsA[0] = kMsgTextColorsA[0];
+    this->msg.textColorsA[1] = kMsgTextColorsA[1];
+    this->msg.textColorsB[0] = kMsgTextColorsB[0];
+    this->msg.textColorsB[1] = kMsgTextColorsB[1];
     this->msg.dialogueSkippable = 1;
     g_BulletManager.RemoveAllBullets(1);
     g_EnemyManager.RemoveAllEnemies(0, 0);
@@ -950,23 +1217,39 @@ ZunResult GuiImpl::RunMsg()
             if (g_GameManager.currentStage < 6)
             {
 #if defined(TH07_PSP)
-                // The desktop transition captures the 384x448 playfield into
-                // texture 4.  PSP stage reinitialization already skips the
-                // matching checkerboard effect; attempting the orphaned
-                // framebuffer readback here exits the guest before stage 2.
-                // The normal Stage Clear text, score calculation and next-
-                // level state change remain active.
-                this->stageClearTextVm.activeSpriteIdx = -1;
-                this->stageTransitionSnapshotVm.activeSpriteIdx = -1;
-                th07_psp_boot_note("stage results PSP transition capture skipped");
-#else
+                g_AnmManager->TakeScreenshotIfRequested();
+#endif
                 g_AnmManager->SetAnmIdxAndExecuteScript(&this->stageClearTextVm, 1566);
                 g_AnmManager->SetAnmIdxAndExecuteScript(&this->stageTransitionSnapshotVm, 1829);
-                g_AnmManager->CreateScreenshotTexture(
+                const i32 captureResult = g_AnmManager->CreateScreenshotTexture(
                     this->stageTransitionSnapshotVm.sprite->startPixelInclusive.x,
                     this->stageTransitionSnapshotVm.sprite->startPixelInclusive.y,
                     this->stageTransitionSnapshotVm.sprite->widthPx,
                     this->stageTransitionSnapshotVm.sprite->heightPx);
+#if defined(TH07_PSP)
+                // Draw has already produced the final gameplay frame, but the
+                // Stage Clear VMs above have not been drawn yet. Capture at
+                // this exact calc-chain point to match D3DSWAPEFFECT_COPY.
+                if (captureResult == 0)
+                {
+                    const bool captured = g_AnmManager->TakeScreenshotIfRequested();
+#if defined(TH07_PSP_DIRECT_GAME)
+                    if (captured)
+                    {
+                        th07_psp_boot_note("stage results snapshot ready");
+                    }
+#endif
+                    if (!captured)
+                    {
+                        this->stageTransitionSnapshotVm.activeSpriteIdx = -1;
+                        th07_psp_boot_note("stage results snapshot unavailable");
+                    }
+                }
+                else
+                {
+                    this->stageTransitionSnapshotVm.activeSpriteIdx = -1;
+                    th07_psp_boot_note("stage results snapshot unavailable");
+                }
 #endif
             }
             else
@@ -1267,7 +1550,8 @@ void Gui::UpdateGui()
         {
             this->impl->stageClearTextVm.activeSpriteIdx = -1;
         }
-        if (g_AnmManager->ExecuteScript(&this->impl->stageTransitionSnapshotVm) != 0)
+        if (this->impl->stageTransitionSnapshotVm.activeSpriteIdx >= 0 &&
+            g_AnmManager->ExecuteScript(&this->impl->stageTransitionSnapshotVm) != 0)
         {
             this->impl->stageTransitionSnapshotVm.activeSpriteIdx = -1;
         }
@@ -1381,7 +1665,9 @@ void Gui::DrawGameScene()
     AnmVm *vm;
     i32 i;
     f32 x;
+#if !defined(TH07_PSP_GUI_TILE_BATCH)
     f32 y;
+#endif
 
     g_AnmManager->Flush();
     g_Supervisor.viewport.x = 0;
@@ -1393,6 +1679,12 @@ void Gui::DrawGameScene()
     if (g_Supervisor.cfg.redrawEveryFrame || vm->currentInstruction ||
         g_Supervisor.renderSkipFrames != 0)
     {
+#if defined(TH07_PSP_GUI_TILE_BATCH)
+        g_AnmManager->DrawPspNoRotationGrid(
+            vm, 0.0f, 1.0f, 1.0f, 0.0f, 464.0f, 32.0f, 0.49f);
+        g_AnmManager->DrawPspNoRotationGrid(
+            vm, 416.0f, 624.0f, 32.0f, 16.0f, 464.0f, 32.0f, 0.49f);
+#else
         for (y = 0.0f; y < 464.0f; y = y + 32.0f)
         {
             vm->pos = ZunVec3(0.0f, y, 0.49f);
@@ -1406,7 +1698,12 @@ void Gui::DrawGameScene()
                 g_AnmManager->DrawNoRotation(vm);
             }
         }
+#endif
         vm = &this->impl->vms0[13];
+#if defined(TH07_PSP_GUI_TILE_BATCH)
+        g_AnmManager->DrawPspNoRotationGrid(
+            vm, 0.0f, 624.0f, 128.0f, 0.0f, 480.0f, 464.0f, 0.49f);
+#else
         for (x = 0.0f; x < 624.0f; x = x + 128.0f)
         {
             vm->pos = ZunVec3(x, 0.0f, 0.49f);
@@ -1414,6 +1711,7 @@ void Gui::DrawGameScene()
             vm->pos = ZunVec3(x, 464.0f, 0.49f);
             g_AnmManager->DrawNoRotation(vm);
         }
+#endif
         g_AnmManager->DrawNoRotation(this->impl->vms0);
         g_AnmManager->Draw(this->impl->vms0 + 1);
         g_AnmManager->DrawNoRotation(this->impl->vms0 + 2);
@@ -1721,7 +2019,10 @@ void Gui::DrawStageElements()
     if (this->impl->stageClearTextVm.activeSpriteIdx >= 0)
     {
         g_AnmManager->DrawNoRotation(&this->impl->stageClearTextVm);
-        g_AnmManager->DrawNoRotation(&this->impl->stageTransitionSnapshotVm);
+        if (this->impl->stageTransitionSnapshotVm.activeSpriteIdx >= 0)
+        {
+            g_AnmManager->DrawNoRotation(&this->impl->stageTransitionSnapshotVm);
+        }
         if (this->impl->stageClearBonusTextVm.activeSpriteIdx >= 0)
         {
             this->impl->stageClearBonusTextVm.pos = ZunVec3(304.0f, 448.0f, 0.0f);
@@ -1825,6 +2126,11 @@ ZunResult Gui::AddedCallback(Gui *arg)
 
 ZunResult Gui::DeletedCallback(Gui *arg)
 {
+#if defined(TH07_PSP) && !defined(TH07_PSP_1000)
+    Th07PspOptionalRamEndStage();
+#else
+    TextHelper::DetachStageTextCache();
+#endif
     g_AnmManager->ReleaseAnm(24);
     g_AnmManager->ReleaseAnm(28);
     g_AnmManager->ReleaseAnm(29);

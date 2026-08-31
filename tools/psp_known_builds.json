@@ -1,0 +1,28 @@
+{
+  "IME7-XMB": {
+    "sha256": "0C55C43BFC8EE55E0A3363767355ED99781842ADCE78F4E4D3AD98449617C2DD",
+    "pc_path": "TODO-Codex記入(I-ME7 XMB PBPのPC退避場所)",
+    "note": "実機合格済みI-ME7、XMB包装。遊べる基準版"
+  },
+  "_usage": "psp_stick.py restore <name> で復旧。実機合格した版は必ずここへ登録（sha256大文字・pc_pathはWSL絶対パス）",
+  "RID22-METER": {
+    "sha256": "3CEB2F02EA9B411ADAB26E63A335638053C42C7AF6B664AF579668CAA8A3FD67",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/ime7_usage_meter_mefix_20260831/EBOOT.IME7-METER-MEFIX.XMB.PBP",
+    "note": "実機合格・現行の遊べる基準版: I-ME7+タスクマネージャ+ME弾処理(RID22)"
+  },
+  "RID29-ITEM-UNCACHED": {
+    "sha256": "A52E45FF03AE4265B9DFAFDD18CD9979482B09418BE86670E8E8B40A5B5ADAA5",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/ime7_adaptive_item_uncached_rid29_20260831/EBOOT.RID29.XMB.PBP",
+    "note": "実機Stage 6完走・Item/Bullet selftest合格。A1-MOVEの固定比較元"
+  },
+  "RID30-A1-MOVE": {
+    "sha256": "743C14CC13C1188B2C56CC0D3F98E0D559B3D7E2EB645C28556FE1A294EDACBC",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/a1_item_motion_rid30_20260831/EBOOT.RID30.XMB.PBP",
+    "note": "実機機能合格・性能未判定。C1/C2の固定比較元"
+  },
+  "C1-UV16-M0": {
+    "sha256": "AA55040A1332E599224656F6665C597FB2165EC811BCDA2434F8BF51522A4159",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/c1_uv16_m0_deploy_20260901/EBOOT.C1-UV16.XMB.PBP",
+    "note": "実機不合格: N=0 OK後cleanup gateでタイトル前cold reboot。再投入禁止"
+  }
+}

@@ -21,6 +21,16 @@
 #define PSP_ECL_SKIP_UNTRACKED_BULLET(index)
 #endif
 
+#if defined(TH07_PSP_ME_BULLET_TRUSTED_SEED_AUTHORITY)
+// These EX instructions are the only writers that bypass BulletManager's
+// tracked-slot/bulk mutation APIs.  Advance the cross-frame seed authority
+// before touching any live Bullet so the next calc-12 pass fails closed.
+#define PSP_ECL_MARK_BULLET_MUTATION() \
+    g_BulletManager.PspMarkMeRenderMutation()
+#else
+#define PSP_ECL_MARK_BULLET_MUTATION()
+#endif
+
 EclExInstr g_EclExInstr[24] = {
     EnemyEclInstr::ExInsSetPosToBoss,
     EnemyEclInstr::ExInsAliceCurveBullets,
@@ -65,6 +75,8 @@ void EnemyEclInstr::ExInsSetPosToBoss(Enemy *enemy, EclRawInstr *instr)
 void EnemyEclInstr::ExInsAliceCurveBullets(Enemy *enemy, EclRawInstr *instr)
 {
     (void)enemy;
+
+    PSP_ECL_MARK_BULLET_MUTATION();
 
     f32 local_10;
     Bullet *bullet;
@@ -126,6 +138,8 @@ void EnemyEclInstr::ExInsAliceCurveBullets(Enemy *enemy, EclRawInstr *instr)
 
 void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy, EclRawInstr *instr)
 {
+    PSP_ECL_MARK_BULLET_MUTATION();
+
     Bullet *bullet;
     f32 distance;
     f32 local_e4;
@@ -193,6 +207,8 @@ void EnemyEclInstr::ExInsDespawnLargeBulletAndSavePos(Enemy *enemy, EclRawInstr 
 {
     (void)instr;
 
+    PSP_ECL_MARK_BULLET_MUTATION();
+
     Bullet *bullet;
     i32 i;
     EnemyBulletShooter bulletProps;
@@ -231,6 +247,8 @@ void EnemyEclInstr::ExInsCopyMainBossMovement(Enemy *enemy, EclRawInstr *instr)
 void EnemyEclInstr::ExInsSplitBulletsOrShootBackwards(Enemy *enemy, EclRawInstr *instr)
 {
     (void)enemy;
+
+    PSP_ECL_MARK_BULLET_MUTATION();
 
     Bullet *bullet;
     i32 i;
@@ -352,6 +370,8 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy, EclRawInstr *ins
 {
     (void)instr;
 
+    PSP_ECL_MARK_BULLET_MUTATION();
+
     ZunVec3 center;
     f32 cosine;
     i32 i;
@@ -419,8 +439,8 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy, EclRawInstr *ins
                                       g_Supervisor.effectiveFramerateMultiplier * bullet->speed);
                         bullet->state2 = 10;
                         bullet->AssignTypeSprites(g_BulletManager.bulletTypeTemplates[5]);
-                        g_AnmManager->SetActiveSprite(
-                            &bullet->sprites.spriteBullet,
+                        BulletManager::SetActiveBulletSprite(
+                            bullet,
                             (i32)bullet->sprites.spriteBullet.activeSpriteIdx +
                                 (i32)bullet->spriteOffset);
                     }
@@ -433,6 +453,8 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy, EclRawInstr *ins
 void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy, EclRawInstr *instr)
 {
     (void)instr;
+
+    PSP_ECL_MARK_BULLET_MUTATION();
 
     ZunVec3 center;
     f32 cosine;
@@ -502,9 +524,9 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy, EclRawInstr *instr
                         bullet->velocity.y = -dirY;
                     }
                     bullet->AssignTypeSprites(g_BulletManager.bulletTypeTemplates[5]);
-                    g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet,
-                                                  bullet->sprites.spriteBullet.activeSpriteIdx +
-                                                      bullet->spriteOffset);
+                    BulletManager::SetActiveBulletSprite(
+                        bullet, bullet->sprites.spriteBullet.activeSpriteIdx +
+                                    bullet->spriteOffset);
                     bullet->angle = atan2f(bullet->velocity.y, bullet->velocity.x);
                     AngleToVector(&bullet->velocity, bullet->angle, bullet->speed);
                     if (g_GameManager.difficulty < 2)
@@ -534,6 +556,8 @@ void EnemyEclInstr::ExInsYoumuSetGameSpeed(Enemy *enemy, EclRawInstr *instr)
 {
     (void)enemy;
 
+    PSP_ECL_MARK_BULLET_MUTATION();
+
     Bullet *bullet;
     i32 i;
 
@@ -554,7 +578,7 @@ void EnemyEclInstr::ExInsYoumuSetGameSpeed(Enemy *enemy, EclRawInstr *instr)
         if (bullet->sprites.spriteBullet.activeSpriteIdx >= 608 &&
             bullet->sprites.spriteBullet.activeSpriteIdx <= 623)
         {
-            g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet, 623);
+            BulletManager::SetActiveBulletSprite(bullet, 623);
         }
     }
 }
@@ -562,6 +586,8 @@ void EnemyEclInstr::ExInsYoumuSetGameSpeed(Enemy *enemy, EclRawInstr *instr)
 void EnemyEclInstr::ExInsYoumuRestoreGameSpeed(Enemy *enemy, EclRawInstr *instr)
 {
     (void)enemy;
+
+    PSP_ECL_MARK_BULLET_MUTATION();
 
     Bullet *bullet;
     f32 fps;
@@ -581,8 +607,8 @@ void EnemyEclInstr::ExInsYoumuRestoreGameSpeed(Enemy *enemy, EclRawInstr *instr)
         if (bullet->sprites.spriteBullet.activeSpriteIdx >= 608 &&
             bullet->sprites.spriteBullet.activeSpriteIdx <= 623)
         {
-            g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet,
-                                          bullet->sprites.spriteBullet.baseSpriteIdx);
+            BulletManager::SetActiveBulletSprite(
+                bullet, bullet->sprites.spriteBullet.baseSpriteIdx);
         }
     }
     g_Supervisor.effectiveFramerateMultiplier = 1.0f / (f32)instr->args[1].i;
@@ -597,6 +623,8 @@ void EnemyEclInstr::ExInsYoumuRestoreGameSpeed(Enemy *enemy, EclRawInstr *instr)
 
 void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
 {
+    PSP_ECL_MARK_BULLET_MUTATION();
+
     i32 j;
     Bullet *bullet;
     i32 i;
@@ -675,6 +703,8 @@ void EnemyEclInstr::ExInsYoumuCurveBulletsBelow(Enemy *enemy, EclRawInstr *instr
 {
     (void)instr;
 
+    PSP_ECL_MARK_BULLET_MUTATION();
+
     Bullet *bullet;
     i32 i;
 
@@ -701,6 +731,8 @@ void EnemyEclInstr::ExInsYoumuRedirectBulletsToPlayer(Enemy *enemy, EclRawInstr 
 {
     (void)enemy;
     (void)instr;
+
+    PSP_ECL_MARK_BULLET_MUTATION();
 
     Bullet *bullet;
     i32 i;
@@ -770,6 +802,8 @@ void EnemyEclInstr::ExInsYuyukoButterflySpawnEnemy(Enemy *enemy, EclRawInstr *in
 {
     (void)instr;
 
+    PSP_ECL_MARK_BULLET_MUTATION();
+
     f32 angleOffset;
     EclContextArgs args;
     Bullet *bullet;
@@ -829,6 +863,8 @@ void EnemyEclInstr::ExInsYuyukoCountButterflyBullets(Enemy *enemy, EclRawInstr *
 
 void EnemyEclInstr::ExInsBurstLargeBullets2(Enemy *enemy, EclRawInstr *instr)
 {
+    PSP_ECL_MARK_BULLET_MUTATION();
+
     i32 j;
     Bullet *bullet;
     i32 i;

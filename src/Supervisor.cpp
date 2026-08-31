@@ -243,6 +243,9 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                 }
                 break;
             case 8:
+#if defined(TH07_PSP)
+                th07_psp_boot_note("music chain register");
+#endif
                 if (MusicRoom::RegisterChain() != ZUN_SUCCESS)
                 {
                     return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
@@ -731,7 +734,15 @@ ZunResult Supervisor::AddedCallback(Supervisor *arg)
     {
         arg->midiOutput->ReadFileData(30, "bgm/init.mid");
     }
+#if defined(TH07_PSP_MECC_AUDIO_4M)
+    if (g_SoundPlayer.InitSoundBuffers() != ZUN_SUCCESS)
+    {
+        th07_psp_boot_note("MECC AUDIO4M SFX initialization failed");
+        return ZUN_ERROR;
+    }
+#else
     g_SoundPlayer.InitSoundBuffers();
+#endif
     if (g_AnmManager->LoadAnms(ANM_FILE_TEXT, "data/text.anm", ANM_OFFSET_TEXT) != ZUN_SUCCESS)
     {
         return ZUN_ERROR;

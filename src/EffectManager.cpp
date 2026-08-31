@@ -1,5 +1,14 @@
 #include "EffectManager.hpp"
 
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+#include "../psp/audio_me.h"
+
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <pspmath.h>
+#endif
+
 #include "AnmIdx.hpp"
 #include "AnmManager.hpp"
 #include "GameManager.hpp"
@@ -9,6 +18,23 @@
 #include "ZunMath.hpp"
 #include "ZunResult.hpp"
 #include "utils.hpp"
+
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+static_assert(sizeof(Effect) == 728u,
+              "I-ME8 Effect traversal ABI changed");
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+static_assert(__builtin_offsetof(Effect, vm) == 0u &&
+                  __builtin_offsetof(Effect, inUseFlag) == 716u &&
+                  __builtin_offsetof(Effect, is2D) == 720u &&
+                  __builtin_offsetof(Effect, next) == 724u,
+              "I-ME8 Effect field offsets changed");
+static_assert(__builtin_offsetof(AnmVm, pos.x) == 456u &&
+                  __builtin_offsetof(AnmVm, pos.y) == 460u &&
+                  __builtin_offsetof(AnmVm, pos.z) == 464u,
+              "I-ME8 Effect VM position offsets changed");
+#pragma GCC diagnostic pop
+#endif
 
 #if defined(TH07_PSP_1000)
 #include "../psp/fileio.hpp"
@@ -701,6 +727,15 @@ u32 EffectManager::OnUpdate(EffectManager *arg)
     arg->layer1.next = NULL;
     arg->layer2.next = NULL;
     arg->layer3.next = NULL;
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+    arg->pspMeEffectListCounts[0] = 0u;
+    arg->pspMeEffectListCounts[1] = 0u;
+#if defined(TH07_PSP_ME_ADAPTIVE_AUX_RENDER)
+    arg->pspMeEffectPreparedSerial = 0u;
+    arg->pspMeEffectPreparedCounts[0] = 0u;
+    arg->pspMeEffectPreparedCounts[1] = 0u;
+#endif
+#endif
     for (i = 0; i < kEffectCapacity; i++, effect++)
     {
 #if defined(TH07_PSP)
@@ -749,11 +784,17 @@ u32 EffectManager::OnUpdate(EffectManager *arg)
             {
                 arg->layerPtrs[3]->next = effect;
                 arg->layerPtrs[3] = effect;
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+                ++arg->pspMeEffectListCounts[1];
+#endif
             }
             else
             {
                 arg->layerPtrs[0]->next = effect;
                 arg->layerPtrs[0] = effect;
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+                ++arg->pspMeEffectListCounts[0];
+#endif
             }
         }
         else
@@ -763,6 +804,12 @@ u32 EffectManager::OnUpdate(EffectManager *arg)
         }
     }
     arg->frameCounter++;
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM) && \
+    !defined(TH07_PSP_ME_ADAPTIVE_AUX_RENDER)
+    // Legacy I-ME8 prepares every frame.  The adaptive profile defers this
+    // full list walk until the deterministic ME budget admits Effect.
+    (void)arg->PspPrepareMeEffectRenderStream();
+#endif
     if (arg->frameCounter % 300 == 100 && g_GameManager.CheckGameIntegrity())
     {
         return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
@@ -773,8 +820,399 @@ u32 EffectManager::OnUpdate(EffectManager *arg)
     }
 }
 
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+namespace
+{
+inline u32 PspMeEffectPhysicalAddress(const void *pointer)
+{
+    return static_cast<u32>(reinterpret_cast<uintptr_t>(pointer) &
+                            0x1fffffffu);
+}
+
+inline u32 PspMeEffectMemberOffset(const void *base, const void *member)
+{
+    return static_cast<u32>(reinterpret_cast<uintptr_t>(member) -
+                            reinterpret_cast<uintptr_t>(base));
+}
+
+inline void PspMeEffectSinCos(f32 angle, f32 *outSin, f32 *outCos)
+{
+    // Deliberately identical to AnmManager::Draw's PSP trig gate. ME consumes
+    // the result bits and never evaluates sin/cos independently.
+    if (std::isfinite(angle) && angle >= -16.0f * ZUN_PI &&
+        angle <= 16.0f * ZUN_PI)
+    {
+        vfpu_sincos(angle, outSin, outCos);
+        return;
+    }
+    sincosf(outSin, outCos, angle);
+}
+}
+
+bool EffectManager::PspPrepareMeEffectRenderStream()
+{
+    if (++this->pspMeEffectPrepareSerial == 0u)
+    {
+        ++this->pspMeEffectPrepareSerial;
+    }
+    this->pspMeEffectPreparedSerial = 0u;
+    this->pspMeEffectPreparedCounts[0] = 0u;
+    this->pspMeEffectPreparedCounts[1] = 0u;
+    if (!g_AnmManager)
+    {
+        return false;
+    }
+
+    u32 seen[(kEffectCapacity + 31u) / 32u] = {};
+    const uintptr_t poolBegin =
+        reinterpret_cast<uintptr_t>(&this->effects[0]);
+    const uintptr_t poolEnd = reinterpret_cast<uintptr_t>(
+        &this->effects[kEffectCapacity]);
+    const i32 layers[2] = {0, 3};
+    for (u32 segment = 0u; segment < 2u; ++segment)
+    {
+        Effect *effect = layers[segment] == 0 ? this->layer0.next
+                                              : this->layer3.next;
+        Effect *last = nullptr;
+        u32 count = 0u;
+        while (effect)
+        {
+            const uintptr_t address = reinterpret_cast<uintptr_t>(effect);
+            if (count >= static_cast<u32>(kEffectCapacity) ||
+                address < poolBegin || address >= poolEnd ||
+                ((address - poolBegin) % sizeof(Effect)) != 0u)
+            {
+                return false;
+            }
+            const u32 slot = static_cast<u32>(
+                (address - poolBegin) / sizeof(Effect));
+            const u32 bit = 1u << (slot & 31u);
+            if ((seen[slot >> 5u] & bit) != 0u ||
+                !this->PspIsEffectSlotTracked(static_cast<i32>(slot)) ||
+                !effect->inUseFlag || effect->is2D != 0 ||
+                this->pspMeEffectSlotGenerations[slot] == 0u ||
+                (layers[segment] == 0
+                     ? effect->vm.blendMode != 0
+                     : effect->vm.blendMode == 0))
+            {
+                return false;
+            }
+            seen[slot >> 5u] |= bit;
+
+            // These writes are observable after Draw in the original path.
+            // Commit them before publication even when the VM is invisible.
+            effect->vm.pos = effect->pos1;
+            effect->vm.pos.x += g_GameManager.arcadeRegionTopLeftPos.x;
+            effect->vm.pos.y += g_GameManager.arcadeRegionTopLeftPos.y;
+            f32 sine = 0.0f;
+            f32 cosine = 1.0f;
+            if (effect->vm.rotation.z != 0.0f)
+            {
+                PspMeEffectSinCos(effect->vm.rotation.z, &sine, &cosine);
+            }
+            this->pspMeEffectRenderSin[slot] = sine;
+            this->pspMeEffectRenderCos[slot] = cosine;
+
+            ++count;
+            last = effect;
+            effect = effect->next;
+        }
+        Effect *expectedTail = this->layerPtrs[layers[segment]];
+        if (count == 0u)
+        {
+            expectedTail = layers[segment] == 0 ? &this->layer0
+                                                : &this->layer3;
+        }
+        if ((count != 0u && expectedTail != last) ||
+            (last && last->next))
+        {
+            return false;
+        }
+        this->pspMeEffectPreparedCounts[segment] = count;
+    }
+    if (this->pspMeEffectPreparedCounts[0] +
+            this->pspMeEffectPreparedCounts[1] >
+        static_cast<u32>(kEffectCapacity))
+    {
+        return false;
+    }
+    this->pspMeEffectPreparedSerial = this->pspMeEffectPrepareSerial;
+    return true;
+}
+
+bool EffectManager::PspBuildMeEffectRenderLayout(
+    Th07PspMeRenderEffectLayout *layout, u32 itemRecordCount) const
+{
+    if (!layout || this->pspMeEffectPreparedSerial == 0u ||
+        this->pspMeEffectPreparedSerial != this->pspMeEffectPrepareSerial ||
+        itemRecordCount > TH07_PSP_ME_RENDER_STREAM_ITEM_MAX_RECORDS ||
+        this->pspMeEffectPreparedCounts[0] >
+            TH07_PSP_ME_RENDER_STREAM_EFFECT_MAX_RECORDS ||
+        this->pspMeEffectPreparedCounts[1] >
+            TH07_PSP_ME_RENDER_STREAM_EFFECT_MAX_RECORDS ||
+        itemRecordCount + this->pspMeEffectPreparedCounts[0] +
+                this->pspMeEffectPreparedCounts[1] >
+            TH07_PSP_ME_RENDER_STREAM_ITEM_MAX_RECORDS)
+    {
+        return false;
+    }
+
+    const Effect *layoutEffect = &this->effects[0];
+    const AnmVm *layoutVm = &layoutEffect->vm;
+    std::memset(layout, 0, sizeof(*layout));
+    layout->effectLayoutVersion = TH07_PSP_ME_RENDER_EFFECT_LAYOUT_VERSION;
+    layout->effectLayoutBytes = sizeof(*layout);
+    layout->effectBasePhys = PspMeEffectPhysicalAddress(&this->effects[0]);
+    layout->effectStride = sizeof(Effect);
+    layout->effectCount = kEffectCapacity;
+    layout->generationBasePhys = PspMeEffectPhysicalAddress(
+        &this->pspMeEffectSlotGenerations[0]);
+    layout->generationStride = sizeof(this->pspMeEffectSlotGenerations[0]);
+    layout->generationCount = kEffectCapacity;
+    layout->activeBitsPhys = PspMeEffectPhysicalAddress(
+        &this->pspActiveEffectBits[0]);
+    layout->activeBitsWordCount =
+        sizeof(this->pspActiveEffectBits) / sizeof(this->pspActiveEffectBits[0]);
+    layout->sinBasePhys = PspMeEffectPhysicalAddress(
+        &this->pspMeEffectRenderSin[0]);
+    layout->sinStride = sizeof(this->pspMeEffectRenderSin[0]);
+    layout->cosBasePhys = PspMeEffectPhysicalAddress(
+        &this->pspMeEffectRenderCos[0]);
+    layout->cosStride = sizeof(this->pspMeEffectRenderCos[0]);
+    layout->layer0HeadPhys = PspMeEffectPhysicalAddress(this->layer0.next);
+    layout->layer0TailPhys = this->pspMeEffectPreparedCounts[0]
+        ? PspMeEffectPhysicalAddress(this->layerPtrs[0]) : 0u;
+    layout->layer3HeadPhys = PspMeEffectPhysicalAddress(this->layer3.next);
+    layout->layer3TailPhys = this->pspMeEffectPreparedCounts[1]
+        ? PspMeEffectPhysicalAddress(this->layerPtrs[3]) : 0u;
+    layout->effectNextOffset = PspMeEffectMemberOffset(
+        layoutEffect, &layoutEffect->next);
+    layout->effectInUseOffset = PspMeEffectMemberOffset(
+        layoutEffect, &layoutEffect->inUseFlag);
+    layout->effectIs2DOffset = PspMeEffectMemberOffset(
+        layoutEffect, &layoutEffect->is2D);
+    layout->effectVmOffset = PspMeEffectMemberOffset(
+        layoutEffect, &layoutEffect->vm);
+    layout->vmPosXOffset = PspMeEffectMemberOffset(layoutVm,
+                                                   &layoutVm->pos.x);
+    layout->vmPosYOffset = PspMeEffectMemberOffset(layoutVm,
+                                                   &layoutVm->pos.y);
+    layout->vmPosZOffset = PspMeEffectMemberOffset(layoutVm,
+                                                   &layoutVm->pos.z);
+    layout->prepareSerialPhys = PspMeEffectPhysicalAddress(
+        &this->pspMeEffectPrepareSerial);
+    layout->preparedSerialPhys = PspMeEffectPhysicalAddress(
+        &this->pspMeEffectPreparedSerial);
+    layout->preparedCountsPhys = PspMeEffectPhysicalAddress(
+        &this->pspMeEffectPreparedCounts[0]);
+    layout->expectedPrepareSerial = this->pspMeEffectPreparedSerial;
+    layout->expectedLayer0Count = this->pspMeEffectPreparedCounts[0];
+    layout->expectedLayer3Count = this->pspMeEffectPreparedCounts[1];
+    return true;
+}
+
+bool EffectManager::PspMeEffectRenderAuthorityMatches(
+    const Th07PspMeRenderEffectLayout *layout) const
+{
+    if (!layout)
+    {
+        return false;
+    }
+    // Rebuild all 32 words from the live manager, not only serial/count/list
+    // endpoints. This binds READY to the exact pool, bitmap, generation,
+    // trig and ABI-offset identity that ME traversed. BuildLayout is const and
+    // has no renderer/VM side effect, so validation remains READY_SC-only.
+    Th07PspMeRenderEffectLayout expected{};
+    return this->PspBuildMeEffectRenderLayout(&expected, 0u) &&
+           std::memcmp(layout, &expected, sizeof(expected)) == 0;
+}
+
+void EffectManager::PspDrawCanonicalEffectLayer(i32 layer)
+{
+    Effect *effect = nullptr;
+    if (layer == 0)
+    {
+        effect = this->layer0.next;
+    }
+    else if (layer == 2)
+    {
+        effect = this->layer2.next;
+    }
+    else if (layer == 3)
+    {
+        effect = this->layer3.next;
+    }
+    else
+    {
+        return;
+    }
+    while (effect)
+    {
+        effect->vm.pos = effect->pos1;
+        if (layer != 2)
+        {
+            effect->vm.pos.x += g_GameManager.arcadeRegionTopLeftPos.x;
+            effect->vm.pos.y += g_GameManager.arcadeRegionTopLeftPos.y;
+            g_AnmManager->DrawPspFastSprite(&effect->vm);
+        }
+        else
+        {
+            g_AnmManager->DrawBillboard(&effect->vm);
+        }
+        effect = effect->next;
+    }
+}
+
+bool EffectManager::PspValidateMeEffectRenderStream(
+    const Th07PspMeRenderStreamJob *job,
+    const Th07PspMeRenderStreamReady *ready) const
+{
+    if (!job || !ready || !g_AnmManager ||
+        ready->token.slot != job->token.slot ||
+        ready->token.generation != job->token.generation ||
+        ready->vertexBytes % sizeof(Th07PspMeRenderStreamVertex) != 0u ||
+        (job->flags & TH07_PSP_ME_RENDER_STREAM_JOB_EFFECT_LIST) == 0u ||
+        job->version != TH07_PSP_ME_RENDER_STREAM_EFFECT_VERSION ||
+        !this->PspMeEffectRenderAuthorityMatches(&job->effectLayout) ||
+        ready->effectResult != TH07_PSP_ME_RENDER_STREAM_RESULT_OK ||
+        ready->effectLayer0RecordCount !=
+            job->effectLayout.expectedLayer0Count ||
+        ready->effectLayer3RecordCount !=
+            job->effectLayout.expectedLayer3Count ||
+        ready->itemRecordCount >
+            TH07_PSP_ME_RENDER_STREAM_ITEM_MAX_RECORDS ||
+        ready->effectLayer0RecordCount >
+            TH07_PSP_ME_RENDER_STREAM_ITEM_MAX_RECORDS -
+                ready->itemRecordCount ||
+        ready->effectLayer3RecordCount >
+            TH07_PSP_ME_RENDER_STREAM_ITEM_MAX_RECORDS -
+                ready->itemRecordCount - ready->effectLayer0RecordCount ||
+        ready->itemRunCount > ready->runCount ||
+        ready->effectLayer0RunCount >
+            ready->runCount - ready->itemRunCount ||
+        ready->effectLayer3RunCount >
+            ready->runCount - ready->itemRunCount -
+                ready->effectLayer0RunCount ||
+        ready->itemVertexCount >
+            ready->vertexBytes / sizeof(Th07PspMeRenderStreamVertex) ||
+        ready->effectLayer0VertexCount >
+            ready->vertexBytes / sizeof(Th07PspMeRenderStreamVertex) -
+                ready->itemVertexCount ||
+        ready->effectLayer3VertexCount >
+            ready->vertexBytes / sizeof(Th07PspMeRenderStreamVertex) -
+                ready->itemVertexCount - ready->effectLayer0VertexCount)
+    {
+        return false;
+    }
+
+    const u32 layer0FirstRun = ready->itemRunCount;
+    const u32 layer3FirstRun =
+        layer0FirstRun + ready->effectLayer0RunCount;
+    const u32 layer0FirstVertex = ready->itemVertexCount;
+    const u32 layer3FirstVertex =
+        layer0FirstVertex + ready->effectLayer0VertexCount;
+    const u32 firstRuns[2] = {layer0FirstRun, layer3FirstRun};
+    const u32 runCounts[2] = {ready->effectLayer0RunCount,
+                              ready->effectLayer3RunCount};
+    const u32 recordCounts[2] = {ready->effectLayer0RecordCount,
+                                 ready->effectLayer3RecordCount};
+    const u32 vertexCounts[2] = {ready->effectLayer0VertexCount,
+                                 ready->effectLayer3VertexCount};
+    const u32 firstVertices[2] = {layer0FirstVertex, layer3FirstVertex};
+    const u32 logicalLayers[2] = {0u, 3u};
+    const u32 allowedState = TH07_PSP_ME_RENDER_STREAM_RUN_BLEND_ADD |
+                             TH07_PSP_ME_RENDER_STREAM_RUN_ZWRITE_DISABLE;
+    for (u32 segment = 0u; segment < 2u; ++segment)
+    {
+        u32 recordsSeen = 0u;
+        u32 verticesSeen = 0u;
+        u32 previousRecordEnd = 0u;
+        for (u32 index = 0u; index < runCounts[segment]; ++index)
+        {
+            const Th07PspMeRenderStreamRun &run =
+                ready->runs[firstRuns[segment] + index];
+            const u32 verticesPerRecord =
+                run.primitive == TH07_PSP_ME_RENDER_STREAM_PRIMITIVE_SPRITES
+                    ? 2u
+                    : run.primitive ==
+                              TH07_PSP_ME_RENDER_STREAM_PRIMITIVE_QUADS
+                          ? 4u : 0u;
+            if (verticesPerRecord == 0u || run.recordCount == 0u ||
+                run.firstRecord >= recordCounts[segment] ||
+                run.firstRecord < previousRecordEnd ||
+                run.recordCount >
+                    recordCounts[segment] - run.firstRecord ||
+                run.vertexCount != run.recordCount * verticesPerRecord ||
+                run.firstVertex != firstVertices[segment] + verticesSeen ||
+                run.sourceFileIndex >= 264u ||
+                g_AnmManager->textures[run.sourceFileIndex].id == 0u ||
+                run.logicalState != logicalLayers[segment] ||
+                (run.renderStateFlags & ~allowedState) != 0u ||
+                (segment == 0u &&
+                 (run.renderStateFlags &
+                  TH07_PSP_ME_RENDER_STREAM_RUN_BLEND_ADD) != 0u) ||
+                (segment == 1u &&
+                 (run.renderStateFlags &
+                  TH07_PSP_ME_RENDER_STREAM_RUN_BLEND_ADD) == 0u))
+            {
+                return false;
+            }
+            recordsSeen += run.recordCount;
+            verticesSeen += run.vertexCount;
+            previousRecordEnd = run.firstRecord + run.recordCount;
+        }
+        if (recordsSeen > recordCounts[segment] ||
+            verticesSeen != vertexCounts[segment])
+        {
+            return false;
+        }
+    }
+
+    // READY_SC remains untouched. In particular, an Effect-only rejection
+    // cannot release/quarantine the independently valid Item/Bullet stream.
+    return true;
+}
+
+bool EffectManager::PspConsumeMeEffectRenderStream(
+    const Th07PspMeRenderStreamJob *job,
+    const Th07PspMeRenderStreamReady *ready,
+    Th07PspMeEffectSubmitRuns submitRuns, void *context)
+{
+    if (!submitRuns || !this->PspValidateMeEffectRenderStream(job, ready))
+    {
+        return false;
+    }
+    const u32 layer0FirstRun = ready->itemRunCount;
+    const u32 layer3FirstRun =
+        layer0FirstRun + ready->effectLayer0RunCount;
+    const u32 effectEndRun = layer3FirstRun + ready->effectLayer3RunCount;
+    // The caller must acquire the GE token only after Validate succeeds. Once
+    // the first callback becomes visible, fallback is no longer legal; keep
+    // the same owner open through priority-10 Item/Bullet consumption.
+    submitRuns(context, layer0FirstRun, layer3FirstRun);
+    this->PspDrawCanonicalEffectLayer(2);
+    // Layer 2 may leave native vertices queued in AnmManager. The following
+    // external run submission bypasses that queue, so flush unconditionally:
+    // without this fence a same-texture/state layer-2 batch could reach GE
+    // after the layer-3 direct list and invert canonical 0 -> 2 -> 3 order.
+    g_AnmManager->Flush();
+    submitRuns(context, layer3FirstRun, effectEndRun);
+    return true;
+}
+#endif
+
 u32 EffectManager::OnDraw(EffectManager *arg)
 {
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+    if (Th07PspTryConsumeMeEffectStream())
+    {
+        return CHAIN_CALLBACK_RESULT_CONTINUE;
+    }
+    arg->PspDrawCanonicalEffectLayer(0);
+    arg->PspDrawCanonicalEffectLayer(2);
+    arg->PspDrawCanonicalEffectLayer(3);
+    return CHAIN_CALLBACK_RESULT_CONTINUE;
+#else
     Effect *effect;
 
     effect = arg->layer0.next;
@@ -811,6 +1249,7 @@ u32 EffectManager::OnDraw(EffectManager *arg)
         effect = effect->next;
     }
     return CHAIN_CALLBACK_RESULT_CONTINUE;
+#endif
 }
 
 i32 EffectManager::UpdateSpecialEffect()
@@ -982,6 +1421,18 @@ ZunResult EffectManager::AddedCallback(EffectManager *arg)
 
 ZunResult EffectManager::DeletedCallback(EffectManager *arg)
 {
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+    // BulletManager normally drains command 10 before Effect teardown. Keep
+    // the local authority fail-closed as a second fence: no stale READY view
+    // may survive ANM texture release or a stage/manager reincarnation.
+    arg->pspMeEffectPreparedSerial = 0u;
+    arg->pspMeEffectPreparedCounts[0] = 0u;
+    arg->pspMeEffectPreparedCounts[1] = 0u;
+    if (++arg->pspMeEffectPrepareSerial == 0u)
+    {
+        ++arg->pspMeEffectPrepareSerial;
+    }
+#endif
     g_AnmManager->ReleaseAnm(17);
     g_AnmManager->ReleaseAnm(18);
     g_AnmManager->ReleaseAnm(19);

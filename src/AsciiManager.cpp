@@ -1053,60 +1053,72 @@ void AsciiManager::DrawPopups()
     }
     g_Supervisor.gfxDevice->SetDepthFunc(DEPTH_FUNC_ALWAYS);
 
-    for (i = 0; i < 723; i++, popup++)
+#if defined(TH07_PSP) && defined(TH07_PSP_ASCII_POPUP_BATCH)
+    const bool popupsDrawnByBatch =
+        g_AnmManager->DrawPspAsciiPopupBatch(&this->vm1, this->popups, 723,
+                                             g_Player.positionCenter.x,
+                                             g_Player.positionCenter.y) == ZUN_SUCCESS;
+#else
+    const bool popupsDrawnByBatch = false;
+#endif
+
+    if (!popupsDrawnByBatch)
     {
-        if (!popup->inUse)
+        for (i = 0; i < 723; i++, popup++)
         {
-            continue;
-        }
-
-        this->vm1.pos.x = popup->position.x - (f32)(popup->characterCount << 2);
-        this->vm1.pos.y = popup->position.y;
-        this->vm1.color.color = popup->color;
-
-        dx = g_Player.positionCenter.x - popup->position.x;
-        dy = g_Player.positionCenter.y - popup->position.y;
-        alpha = (i32)(dx * dx + dy * dy);
-
-        if (alpha > 4096)
-        {
-            alpha = 208;
-        }
-        else
-        {
-            if (alpha > 1024)
+            if (!popup->inUse)
             {
-                alpha = (alpha - 1024) * 128 / 3072 + 80;
+                continue;
+            }
+
+            this->vm1.pos.x = popup->position.x - (f32)(popup->characterCount << 2);
+            this->vm1.pos.y = popup->position.y;
+            this->vm1.color.color = popup->color;
+
+            dx = g_Player.positionCenter.x - popup->position.x;
+            dy = g_Player.positionCenter.y - popup->position.y;
+            alpha = (i32)(dx * dx + dy * dy);
+
+            if (alpha > 4096)
+            {
+                alpha = 208;
             }
             else
             {
-                alpha = 80;
-            }
-        }
-
-        digits = &popup->digits[popup->characterCount - 1];
-
-        for (j = popup->characterCount; j > 0; j--)
-        {
-            if (popup->timer < 52 || *digits == 10)
-            {
-                this->vm1.sprite = &g_AnmManager->sprites[*digits];
-                this->vm1.color.bytes.a = alpha;
-            }
-            else if (popup->timer < 56)
-            {
-                this->vm1.sprite = &g_AnmManager->sprites[*digits + 11];
-                this->vm1.color.bytes.a = alpha;
-            }
-            else
-            {
-                this->vm1.sprite = &g_AnmManager->sprites[*digits + 21];
-                this->vm1.color.bytes.a = alpha;
+                if (alpha > 1024)
+                {
+                    alpha = (alpha - 1024) * 128 / 3072 + 80;
+                }
+                else
+                {
+                    alpha = 80;
+                }
             }
 
-            g_AnmManager->DrawNoRotation(&this->vm1);
-            this->vm1.pos.x += 8.0f;
-            digits--;
+            digits = &popup->digits[popup->characterCount - 1];
+
+            for (j = popup->characterCount; j > 0; j--)
+            {
+                if (popup->timer < 52 || *digits == 10)
+                {
+                    this->vm1.sprite = &g_AnmManager->sprites[*digits];
+                    this->vm1.color.bytes.a = alpha;
+                }
+                else if (popup->timer < 56)
+                {
+                    this->vm1.sprite = &g_AnmManager->sprites[*digits + 11];
+                    this->vm1.color.bytes.a = alpha;
+                }
+                else
+                {
+                    this->vm1.sprite = &g_AnmManager->sprites[*digits + 21];
+                    this->vm1.color.bytes.a = alpha;
+                }
+
+                g_AnmManager->DrawNoRotation(&this->vm1);
+                this->vm1.pos.x += 8.0f;
+                digits--;
+            }
         }
     }
 

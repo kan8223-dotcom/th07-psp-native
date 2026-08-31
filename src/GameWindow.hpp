@@ -38,3 +38,12 @@ struct GameWindow
 };
 
 extern GameWindow g_GameWindow;
+
+#if defined(TH07_PSP_BULLET_WARM_QUEUE) || \
+    defined(TH07_PSP_ME_RENDER_PERFORMANCE)
+// The warm queue moves the next draw's idempotent Bullet/VM render preparation
+// into calc priority 12.  It may do so only when the next loop is guaranteed to
+// draw at 60 Hz; fixed-30 skipped draws and a SELECT transition both require
+// the untouched draw-time path.
+bool Th07PspCanCommitBulletWarmQueue();
+#endif

@@ -10,6 +10,22 @@
 #include "Player.hpp"
 #include "Rng.hpp"
 #include "SoundPlayer.hpp"
+#include "ZunMath.hpp"
+
+#if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
+#include "../psp/audio_me.h"
+#include "Supervisor.hpp"
+
+#include <cstring>
+#endif
+
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+#if !defined(TH07_PSP_ME_RENDER_DIRECT_LIST)
+#error TH07_PSP_ME_ITEM_RENDER_STREAM requires the I-ME5 direct-list owner
+#endif
+#include <pspmath.h>
+#include <cmath>
+#endif
 
 #if defined(TH07_PSP_1000)
 #include "../psp/fileio.hpp"
@@ -28,6 +44,325 @@ u8 g_ItemDropTable[32] = {0, 0, 1, 0, 1, 0, 0, 7, 1, 1, 0, 0, 7, 1, 1, 0,
                           1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 7, 1, 1, 1, 0, 2};
 
 ItemManager g_ItemManager;
+
+#if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
+namespace
+{
+struct PspMeItemMotionScView
+{
+    bool active;
+    bool authorityClosed;
+    Th07PspMeBulletCompactJob job;
+    const Th07PspMeItemMotionSeed *seed;
+    const Th07PspMeItemMotionOutput *output;
+    u32 candidates;
+    u32 adopted;
+    u32 slotRejects;
+    u32 globalRejects;
+};
+
+PspMeItemMotionScView gPspMeItemMotionScView{};
+
+inline u32 PspMeItemMotionFloatBits(float value)
+{
+    u32 bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+inline bool PspMeItemMotionGlobalsMatch(
+    const Th07PspMeBulletCompactJob &job)
+{
+    return g_Player.shooterData && g_GameManager.globals &&
+           static_cast<u32>(static_cast<u8>(g_Player.playerState)) ==
+               job.playerState &&
+           PspMeItemMotionFloatBits(g_Player.positionCenter.x) ==
+               job.itemPlayerPosXBits &&
+           PspMeItemMotionFloatBits(g_Player.positionCenter.y) ==
+               job.itemPlayerPosYBits &&
+           PspMeItemMotionFloatBits(
+               g_Player.shooterData->itemCollectSpeed) ==
+               job.itemCollectSpeedBits &&
+           PspMeItemMotionFloatBits(g_Player.shooterData->pocY) ==
+               job.itemPocYBits &&
+           PspMeItemMotionFloatBits(
+               g_Supervisor.effectiveFramerateMultiplier) ==
+               job.itemFramerateMultiplierBits &&
+           static_cast<i32>(g_GameManager.globals->currentPower) ==
+               job.itemCurrentPowerClass &&
+           g_GameManager.difficulty == job.itemDifficulty &&
+           static_cast<u32>(g_Player.hasBorder == 1) ==
+               job.itemHasBorder;
+}
+
+enum PspMeItemMotionAdoptRoute
+{
+    PSP_ME_ITEM_MOTION_CANONICAL = 0,
+    PSP_ME_ITEM_MOTION_TO_BOUNDS = 1,
+    PSP_ME_ITEM_MOTION_TO_COLLISION = 2
+};
+
+PspMeItemMotionAdoptRoute PspTryAdoptMeItemMotion(Item *item, u32 slot)
+{
+    PspMeItemMotionScView &view = gPspMeItemMotionScView;
+    if (!view.active || view.authorityClosed || !item ||
+        slot >= TH07_PSP_ME_ITEM_MOTION_MAX_SLOTS ||
+        !view.seed || !view.output)
+        return PSP_ME_ITEM_MOTION_CANONICAL;
+
+    const u32 bit = 1u << (slot & 31u);
+    const u32 word = slot >> 5u;
+    if ((view.seed->candidateBits[word] & bit) == 0u ||
+        (view.output->candidateBits[word] & bit) == 0u)
+        return PSP_ME_ITEM_MOTION_CANONICAL;
+    ++view.candidates;
+
+    if (!PspMeItemMotionGlobalsMatch(view.job))
+    {
+        view.authorityClosed = true;
+        ++view.globalRejects;
+        return PSP_ME_ITEM_MOTION_CANONICAL;
+    }
+
+    const Th07PspMeItemMotionSeedSlot &input = view.seed->slots[slot];
+    const Th07PspMeItemMotionSlotResult &result = view.output->slots[slot];
+#if defined(TH07_PSP_ME_ITEM_SEED_SLIM)
+    const u32 inputState =
+        ((view.seed->stateBit0[word] & bit) != 0u ? 1u : 0u) |
+        ((view.seed->stateBit1[word] & bit) != 0u ? 2u : 0u);
+    const u32 inputAuto =
+        (view.seed->autoCollectBits[word] & bit) != 0u ? 1u : 0u;
+    // A C2c candidate can only be captured from an Item whose inUse byte is
+    // exactly one.  candidateBits is therefore the compact inUse proof.
+    const u32 inputInUse = 1u;
+#else
+    const u32 inputState = input.stateAndFlags &
+        TH07_PSP_ME_ITEM_MOTION_INPUT_STATE_MASK;
+    const u32 inputAuto =
+        (input.stateAndFlags >>
+         TH07_PSP_ME_ITEM_MOTION_INPUT_AUTOCOLLECT_SHIFT) & 0xffu;
+    const u32 inputInUse =
+        (input.stateAndFlags >>
+         TH07_PSP_ME_ITEM_MOTION_INPUT_INUSE_SHIFT) & 0xffu;
+#endif
+
+    bool exact = item->isInUse == 1 && inputInUse == 1u &&
+        g_ItemManager.pspMeItemSlotGenerations[slot] == input.generation &&
+        result.generation == input.generation && input.generation != 0u &&
+        static_cast<u32>(static_cast<u8>(item->state)) == inputState &&
+        static_cast<u32>(static_cast<u8>(item->autoCollect)) == inputAuto &&
+        PspMeItemMotionFloatBits(item->currentPosition.x) == input.posXBits &&
+        PspMeItemMotionFloatBits(item->currentPosition.y) == input.posYBits &&
+        PspMeItemMotionFloatBits(item->currentPosition.z) == input.posZBits &&
+        PspMeItemMotionFloatBits(item->startPosition.x) == input.startXBits &&
+        PspMeItemMotionFloatBits(item->startPosition.y) == input.startYBits &&
+        PspMeItemMotionFloatBits(item->startPosition.z) == input.startZBits;
+    if (exact && inputState == 2u)
+    {
+        exact = PspMeItemMotionFloatBits(item->targetPosition.x) ==
+                    input.targetXBits &&
+                PspMeItemMotionFloatBits(item->targetPosition.y) ==
+                    input.targetYBits &&
+                PspMeItemMotionFloatBits(item->targetPosition.z) ==
+                    input.targetZBits &&
+                item->timer.current == input.timerCurrent &&
+                PspMeItemMotionFloatBits(item->timer.subFrame) ==
+                    input.timerSubFrameBits;
+    }
+    if (!exact)
+    {
+        ++view.slotRejects;
+        return PSP_ME_ITEM_MOTION_CANONICAL;
+    }
+
+    const u32 resultState = result.stateAndRoute &
+        TH07_PSP_ME_ITEM_MOTION_RESULT_STATE_MASK;
+    const u32 resultAuto =
+        (result.stateAndRoute >>
+         TH07_PSP_ME_ITEM_MOTION_RESULT_AUTOCOLLECT_SHIFT) & 0xffu;
+    const u32 route = result.stateAndRoute &
+        TH07_PSP_ME_ITEM_MOTION_RESULT_ROUTE_MASK;
+    const bool gotoCollision =
+        (result.stateAndRoute &
+         TH07_PSP_ME_ITEM_MOTION_RESULT_GOTO_COLLISION) != 0u;
+    constexpr u32 allowedResultBits =
+        TH07_PSP_ME_ITEM_MOTION_RESULT_STATE_MASK |
+        (0xffu << TH07_PSP_ME_ITEM_MOTION_RESULT_AUTOCOLLECT_SHIFT) |
+        TH07_PSP_ME_ITEM_MOTION_RESULT_CANDIDATE |
+        TH07_PSP_ME_ITEM_MOTION_RESULT_GOTO_COLLISION |
+        TH07_PSP_ME_ITEM_MOTION_RESULT_ROUTE_MASK;
+    if ((result.stateAndRoute & ~allowedResultBits) != 0u ||
+        (result.stateAndRoute &
+         TH07_PSP_ME_ITEM_MOTION_RESULT_CANDIDATE) == 0u)
+    {
+        ++view.slotRejects;
+        return PSP_ME_ITEM_MOTION_CANONICAL;
+    }
+    u32 expectedRoute;
+    u32 expectedState = inputState;
+    u32 expectedAuto = inputAuto;
+    bool expectedCollision = false;
+    if (inputState == 2u && input.timerCurrent < 60)
+    {
+        expectedRoute = TH07_PSP_ME_ITEM_MOTION_RESULT_ROUTE_INTERP;
+        expectedCollision = true;
+    }
+    else if (inputState == 2u)
+    {
+        if (input.timerCurrent == 60)
+        {
+            expectedRoute =
+                TH07_PSP_ME_ITEM_MOTION_RESULT_ROUTE_STATE2_60;
+            expectedState = 0u;
+        }
+        else
+        {
+            expectedRoute =
+                TH07_PSP_ME_ITEM_MOTION_RESULT_ROUTE_STATE2_LATE;
+        }
+    }
+    else
+    {
+        const float playerY = g_Player.positionCenter.y;
+        const bool pull = inputState == 1u ||
+            (((view.job.itemCurrentPowerClass >= 128 ||
+               view.job.itemDifficulty >= 4) &&
+              playerY < g_Player.shooterData->pocY) ||
+             view.job.itemHasBorder == 1u);
+        if (pull && view.job.playerState != 1u)
+        {
+            expectedRoute = TH07_PSP_ME_ITEM_MOTION_RESULT_ROUTE_HOME;
+            expectedState = 1u;
+            if (view.job.itemHasBorder == 1u)
+                expectedAuto = 1u;
+        }
+        else if (pull)
+        {
+            expectedRoute = TH07_PSP_ME_ITEM_MOTION_RESULT_ROUTE_SPAWN;
+            expectedState = 0u;
+        }
+        else
+        {
+            expectedRoute = TH07_PSP_ME_ITEM_MOTION_RESULT_ROUTE_FALL;
+        }
+    }
+    if (resultState != expectedState || resultAuto != expectedAuto ||
+        route != expectedRoute || gotoCollision != expectedCollision)
+    {
+        ++view.slotRejects;
+        return PSP_ME_ITEM_MOTION_CANONICAL;
+    }
+
+    std::memcpy(&item->currentPosition.x, &result.posXBits,
+                sizeof(item->currentPosition.x));
+    std::memcpy(&item->currentPosition.y, &result.posYBits,
+                sizeof(item->currentPosition.y));
+    std::memcpy(&item->currentPosition.z, &result.posZBits,
+                sizeof(item->currentPosition.z));
+    std::memcpy(&item->startPosition.x, &result.startXBits,
+                sizeof(item->startPosition.x));
+    std::memcpy(&item->startPosition.y, &result.startYBits,
+                sizeof(item->startPosition.y));
+    std::memcpy(&item->startPosition.z, &result.startZBits,
+                sizeof(item->startPosition.z));
+    item->state = static_cast<i8>(resultState);
+    item->autoCollect = static_cast<i8>(resultAuto);
+    ++view.adopted;
+    return gotoCollision ? PSP_ME_ITEM_MOTION_TO_COLLISION
+                         : PSP_ME_ITEM_MOTION_TO_BOUNDS;
+}
+}
+
+void PspSetMeItemMotionView(
+    const Th07PspMeBulletCompactJob *job,
+    const Th07PspMeItemMotionSeed *seed,
+    const Th07PspMeItemMotionOutput *output)
+{
+    gPspMeItemMotionScView = PspMeItemMotionScView{};
+    if (!job || !seed || !output ||
+        !th07_psp_me_item_motion_available())
+        return;
+    gPspMeItemMotionScView.active = true;
+    gPspMeItemMotionScView.job = *job;
+    gPspMeItemMotionScView.seed = seed;
+    gPspMeItemMotionScView.output = output;
+}
+
+void PspClearMeItemMotionView()
+{
+    gPspMeItemMotionScView = PspMeItemMotionScView{};
+}
+
+void PspTakeMeItemMotionFrameStats(
+    u32 *active, u32 *candidates, u32 *adopted,
+    u32 *slotRejects, u32 *globalRejects)
+{
+    if (active)
+        *active = gPspMeItemMotionScView.active ? 1u : 0u;
+    if (candidates)
+        *candidates = gPspMeItemMotionScView.candidates;
+    if (adopted)
+        *adopted = gPspMeItemMotionScView.adopted;
+    if (slotRejects)
+        *slotRejects = gPspMeItemMotionScView.slotRejects;
+    if (globalRejects)
+        *globalRejects = gPspMeItemMotionScView.globalRejects;
+}
+#endif
+
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+namespace
+{
+inline void PspMeItemRenderSinCos(float angle, float *outSin, float *outCos)
+{
+    // Deliberately identical to AnmManager::Draw's PSP trig gate. ME receives
+    // these exact result bits and never evaluates trigonometry itself.
+    if (std::isfinite(angle) && angle >= -16.0f * ZUN_PI &&
+        angle <= 16.0f * ZUN_PI)
+    {
+        vfpu_sincos(angle, outSin, outCos);
+        return;
+    }
+    sincosf(outSin, outCos, angle);
+}
+
+inline void PspApplyItemDrawPresentation(Item *item)
+{
+    item->sprite.pos.x =
+        g_GameManager.arcadeRegionTopLeftPos.x + item->currentPosition.x;
+    item->sprite.pos.y =
+        g_GameManager.arcadeRegionTopLeftPos.y + item->currentPosition.y;
+    item->sprite.pos.z = 0.01f;
+    if (item->currentPosition.y < -8.0f)
+    {
+        item->sprite.pos.y = 8.0f + g_GameManager.arcadeRegionTopLeftPos.y;
+        if (item->isOnscreen)
+        {
+            g_AnmManager->SetActiveSprite(&item->sprite,
+                                          item->itemType + 694);
+            item->isOnscreen = 0;
+            item->sprite.zWriteDisable = 1;
+        }
+        i32 alpha = 255 - static_cast<i32>(
+            (8.0f - item->currentPosition.y) * 255.0f / 128.0f);
+        if (alpha < 64)
+        {
+            alpha = 64;
+        }
+        item->sprite.color.color =
+            (item->sprite.color.color & 0x00ffffffu) |
+            static_cast<u32>(alpha) << 24u;
+    }
+    else if (!item->isOnscreen)
+    {
+        g_AnmManager->SetActiveSprite(&item->sprite, item->itemType + 684);
+        item->isOnscreen = 1;
+        item->sprite.color.color = 0xffffffffu;
+        item->sprite.zWriteDisable = 1;
+    }
+}
+}
+#endif
 
 void AngleToVector(ZunVec3 *vec, f32 angle, f32 speed)
 {
@@ -149,6 +484,12 @@ Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
 #if defined(TH07_PSP)
         this->PspTrackItemSlot(itemIndex);
 #endif
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+        if (++this->pspMeItemSlotGenerations[itemIndex] == 0u)
+        {
+            ++this->pspMeItemSlotGenerations[itemIndex];
+        }
+#endif
         item->currentPosition = *heading;
         item->startPosition.x = 0.0f;
         item->startPosition.y = -2.2f;
@@ -202,6 +543,17 @@ void ItemManager::OnUpdate()
     this->activeItemCount = 0;
     this->listTail = &this->listHead;
     this->listHead.next = NULL;
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+    this->pspMeItemListCount = 0u;
+#if defined(TH07_PSP_ME_ADAPTIVE_AUX_RENDER)
+    this->pspMeItemPreparedSerial = 0u;
+    this->pspMeItemPreparedCount = 0u;
+    this->pspMeItemPreparedPrefixCount = 0u;
+    this->pspMeItemPreparedPrefixTail = nullptr;
+    this->pspMeItemPreparedSuffixHead = nullptr;
+    this->pspMeItemRequestedPrefixCount = 0u;
+#endif
+#endif
 
     for (i = 0; i < kItemCapacity; i++)
     {
@@ -221,6 +573,18 @@ void ItemManager::OnUpdate()
         }
 
         this->activeItemCount++;
+#if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
+        const PspMeItemMotionAdoptRoute pspMeMotionRoute =
+            PspTryAdoptMeItemMotion(item, static_cast<u32>(i));
+        if (pspMeMotionRoute == PSP_ME_ITEM_MOTION_TO_COLLISION)
+        {
+            goto check_collision;
+        }
+        if (pspMeMotionRoute == PSP_ME_ITEM_MOTION_TO_BOUNDS)
+        {
+            goto check_bounds;
+        }
+#endif
         if (item->state == 2)
         {
             if (item->timer < 60)
@@ -272,6 +636,9 @@ void ItemManager::OnUpdate()
             }
         }
         item->currentPosition += item->startPosition * g_Supervisor.effectiveFramerateMultiplier;
+#if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
+    check_bounds:
+#endif
         if (g_GameManager.arcadeRegionSize.y + 16.0f <= item->currentPosition.y)
         {
             item->isInUse = 0;
@@ -292,6 +659,12 @@ void ItemManager::OnUpdate()
     check_collision:
         if (g_Player.CalcItemBoxCollision(&item->currentPosition, &local_20))
         {
+#if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
+            // Collection may change power, spawn/despawn Items or clear
+            // Bullets.  Close all remaining adoption for this canonical pass;
+            // the next frame gets a fresh post-update seed.
+            gPspMeItemMotionScView.authorityClosed = true;
+#endif
             g_ReplayManager->replayEventFlags |= 0x40;
             switch (item->itemType)
             {
@@ -588,13 +961,128 @@ void ItemManager::OnUpdate()
             this->listTail->next = item;
             item->next = NULL;
             this->listTail = item;
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+            ++this->pspMeItemListCount;
+#endif
         }
     }
     if (itemAcquired)
     {
         g_SoundPlayer.PlaySoundByIdx(SOUND_21, 0);
     }
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM) && \
+    !defined(TH07_PSP_ME_ADAPTIVE_AUX_RENDER)
+    // All acquisition side effects, including DespawnAllItems mutations of an
+    // earlier list node, must settle before presentation is prepared. This
+    // canonical-order walk replaces the old draw-time presentation walk and
+    // never publishes a partially prepared list.
+    PspPrepareMeItemRenderStream();
+#endif
 }
+
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+bool ItemManager::PspPrepareMeItemRenderStream()
+{
+    u32 prefixCount = this->pspMeItemRequestedPrefixCount;
+    if (prefixCount == 0u)
+    {
+        prefixCount = 0xffffffffu;
+    }
+    if (++this->pspMeItemPrepareSerial == 0u)
+    {
+        ++this->pspMeItemPrepareSerial;
+    }
+    this->pspMeItemPreparedSerial = 0u;
+    this->pspMeItemPreparedCount = 0u;
+    this->pspMeItemPreparedPrefixCount = 0u;
+    this->pspMeItemPreparedPrefixTail = nullptr;
+    this->pspMeItemPreparedSuffixHead = nullptr;
+    if (!g_AnmManager)
+    {
+        return false;
+    }
+
+    u32 seen[(kItemCapacity + 31u) / 32u] = {};
+    const uintptr_t poolBegin =
+        reinterpret_cast<uintptr_t>(this->ItemAt(0));
+    const uintptr_t poolEnd = reinterpret_cast<uintptr_t>(
+        this->ItemAt(kItemCapacity - 1)) + sizeof(Item);
+    Item *item = this->listHead.next;
+    Item *last = &this->listHead;
+    u32 count = 0u;
+    while (item)
+    {
+        const uintptr_t address = reinterpret_cast<uintptr_t>(item);
+        if (count >= static_cast<u32>(kItemCapacity) ||
+            address < poolBegin || address >= poolEnd ||
+            ((address - poolBegin) % sizeof(Item)) != 0u)
+        {
+            return false;
+        }
+        const u32 slot = static_cast<u32>(
+            (address - poolBegin) / sizeof(Item));
+        const u32 bit = 1u << (slot & 31u);
+        if ((seen[slot >> 5u] & bit) != 0u ||
+            !this->PspIsItemSlotTracked(static_cast<i32>(slot)) ||
+            !item->isInUse || this->pspMeItemSlotGenerations[slot] == 0u)
+        {
+            return false;
+        }
+        seen[slot >> 5u] |= bit;
+
+        PspApplyItemDrawPresentation(item);
+        const float rotation = item->sprite.rotation.z;
+        float sine = 0.0f;
+        float cosine = 1.0f;
+        if (rotation != 0.0f)
+        {
+            PspMeItemRenderSinCos(rotation, &sine, &cosine);
+        }
+        this->pspMeItemRenderSin[slot] = sine;
+        this->pspMeItemRenderCos[slot] = cosine;
+
+        ++count;
+        last = item;
+        item = item->next;
+        if (count == prefixCount)
+        {
+            this->pspMeItemPreparedPrefixTail = last;
+            this->pspMeItemPreparedSuffixHead = item;
+        }
+    }
+    if (this->listTail != last || (last != &this->listHead && last->next))
+    {
+        return false;
+    }
+    if (prefixCount == 0u)
+    {
+        return false;
+    }
+    if (prefixCount >= count)
+    {
+        prefixCount = count;
+        this->pspMeItemPreparedPrefixTail = count ? last : nullptr;
+        this->pspMeItemPreparedSuffixHead = nullptr;
+    }
+    if (prefixCount == 0u || !this->pspMeItemPreparedPrefixTail)
+    {
+        return false;
+    }
+    this->pspMeItemPreparedCount = count;
+    this->pspMeItemPreparedPrefixCount = prefixCount;
+    this->pspMeItemPreparedSerial = this->pspMeItemPrepareSerial;
+    return true;
+}
+
+void ItemManager::PspDrawCanonicalItemSuffix(Item *item)
+{
+    while (item)
+    {
+        g_AnmManager->Draw(&item->sprite);
+        item = item->next;
+    }
+}
+#endif
 
 void ItemManager::RemoveAllItems()
 {
@@ -686,11 +1174,22 @@ void ItemManager::ActivateAllItems()
 void ItemManager::OnDraw()
 {
     Item *item;
+#if !defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
     i32 local_8;
+#endif
 
     item = this->listHead.next;
     while (item)
     {
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+        // A rejected or missing Item segment still performs the exact
+        // canonical draw. Normal frames were prepared at the end of OnUpdate;
+        // unusual lifecycle draws prepare lazily before reading the VM.
+        if (!this->PspMeItemRenderStreamPrepared())
+        {
+            PspApplyItemDrawPresentation(item);
+        }
+#else
         item->sprite.pos.x = g_GameManager.arcadeRegionTopLeftPos.x + item->currentPosition.x;
         item->sprite.pos.y = g_GameManager.arcadeRegionTopLeftPos.y + item->currentPosition.y;
         item->sprite.pos.z = 0.01f;
@@ -720,6 +1219,7 @@ void ItemManager::OnDraw()
                 item->sprite.zWriteDisable = 1;
             }
         }
+#endif
         g_AnmManager->Draw(&item->sprite);
         item = item->next;
     }

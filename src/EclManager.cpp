@@ -1,6 +1,7 @@
 #include "EclManager.hpp"
 
 #include <cstdio>
+#include <cstring>
 
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
@@ -62,6 +63,7 @@ ZunResult EclManager::Load(const char *path)
 {
     i32 i;
 
+    this->eclFileSize = 0;
     this->eclFile = (EclRawHeader *)FileSystem::OpenFile(path, 0);
     if (!this->eclFile)
     {
@@ -69,6 +71,7 @@ ZunResult EclManager::Load(const char *path)
             "敵データの読み込みに失敗しました、データが壊れてるか失われています\n");
         return ZUN_ERROR;
     }
+    this->eclFileSize = g_LastFileSize;
 
     for (i = 0; i < 16; i++)
     {
@@ -96,6 +99,150 @@ void EclManager::Unload()
         free(this->eclFile);
     }
     this->eclFile = NULL;
+    this->eclFileSize = 0;
+}
+
+u32 EclManager::PreRenderSpellcardNames(AnmVm *nameVm, bool *sourceScanComplete)
+{
+    if (sourceScanComplete)
+    {
+        *sourceScanComplete = false;
+    }
+    if (!this->eclFile || !this->subTable || !nameVm || this->eclFileSize < sizeof(EclRawHeader) ||
+        this->eclFile->subCount <= 0 || !sourceScanComplete)
+    {
+        return 0;
+    }
+
+    const u32 subCount = static_cast<u32>(this->eclFile->subCount);
+    constexpr u32 kMaxEclSubCount = 1024;
+    if (subCount > kMaxEclSubCount ||
+        subCount > (this->eclFileSize - sizeof(EclRawHeader)) / sizeof(u32))
+    {
+        return 0;
+    }
+    const u32 headerBytes = sizeof(EclRawHeader) + subCount * sizeof(u32);
+    constexpr u32 kInstrAlignment = alignof(EclRawInstr);
+    static_assert((kInstrAlignment & (kInstrAlignment - 1u)) == 0,
+                  "ECL instruction alignment must be a power of two");
+    const u8 *const file = reinterpret_cast<const u8 *>(this->eclFile);
+    if ((reinterpret_cast<uintptr_t>(file) & (kInstrAlignment - 1u)) != 0)
+    {
+        return 0;
+    }
+    const i32 timelineCount = this->eclFile->timelineCount;
+    if (timelineCount < 0 || timelineCount > 16)
+    {
+        return 0;
+    }
+    for (i32 timeline = 0; timeline < timelineCount; ++timeline)
+    {
+        const u32 offset = this->eclFile->timelineOffsets[timeline];
+        if (offset < headerBytes || offset > this->eclFileSize ||
+            (offset & (kInstrAlignment - 1u)) != 0)
+        {
+            return 0;
+        }
+    }
+    for (u32 subIdx = 0; subIdx < subCount; ++subIdx)
+    {
+        const u32 offset = this->eclFile->subTableOffsets[subIdx];
+        if (offset < headerBytes || offset > this->eclFileSize - sizeof(EclRawInstr) ||
+            (offset & (kInstrAlignment - 1u)) != 0)
+        {
+            return 0;
+        }
+    }
+
+    u32 cachedCount = 0;
+    for (u32 subIdx = 0; subIdx < subCount; ++subIdx)
+    {
+        const u32 startOffset = this->eclFile->subTableOffsets[subIdx];
+
+        // Subroutines are normally stored in offset order, but deriving the
+        // nearest following section keeps this startup-only scan bounded even
+        // if the table is not sorted.
+        u32 endOffset = this->eclFileSize;
+        for (u32 other = 0; other < subCount; ++other)
+        {
+            const u32 candidate = this->eclFile->subTableOffsets[other];
+            if (candidate > startOffset && candidate < endOffset)
+            {
+                endOffset = candidate;
+            }
+        }
+        for (i32 timeline = 0; timeline < timelineCount; ++timeline)
+        {
+            const u32 candidate = this->eclFile->timelineOffsets[timeline];
+            if (candidate > startOffset && candidate < endOffset)
+            {
+                endOffset = candidate;
+            }
+        }
+
+        u32 cursor = startOffset;
+        bool reachedTerminator = false;
+        while (cursor < endOffset && endOffset - cursor >= sizeof(EclRawInstr))
+        {
+            const EclRawInstr *instr = reinterpret_cast<const EclRawInstr *>(file + cursor);
+            if (instr->size < static_cast<i16>(sizeof(EclRawInstr)) ||
+                static_cast<u32>(instr->size) > endOffset - cursor ||
+                (static_cast<u32>(instr->size) & (kInstrAlignment - 1u)) != 0)
+            {
+                return cachedCount;
+            }
+            // Real TH07 ECL subroutines always have this physical end marker.
+            // Some routines loop forever and therefore have no reachable
+            // opcode 1 return.  Accept only the complete on-disk signature,
+            // at the exact end of the bounded subroutine, so malformed input
+            // still fails closed.
+            const bool reachedPhysicalTerminator =
+                instr->time == 0xffffffffu && instr->id == -1 &&
+                instr->size == static_cast<i16>(sizeof(EclRawInstr)) &&
+                instr->unused_8 == 0 && instr->skipInstrOnDifficulty == 0xff &&
+                instr->paramMask == 0x00ff &&
+                cursor + static_cast<u32>(instr->size) == endOffset;
+            if (reachedPhysicalTerminator)
+            {
+                reachedTerminator = true;
+                break;
+            }
+            if (instr->id == 90 &&
+                (instr->skipInstrOnDifficulty & g_GameManager.difficultyMask) != 0)
+            {
+                if (instr->size < 64)
+                {
+                    return cachedCount;
+                }
+                char spellcardName[49];
+                std::memcpy(spellcardName, &instr->args[1], 48);
+                for (i32 i = 0; i < 48; ++i)
+                {
+                    spellcardName[i] = static_cast<u8>(spellcardName[i]) ^ 0xaa;
+                }
+                spellcardName[48] = '\0';
+                if (!std::memchr(spellcardName, '\0', 48))
+                {
+                    return cachedCount;
+                }
+                if (g_AnmManager->PreRenderString(nameVm, 0xfff0f0, 0, spellcardName))
+                {
+                    ++cachedCount;
+                }
+                else
+                {
+                    return cachedCount;
+                }
+            }
+            cursor += static_cast<u32>(instr->size);
+        }
+        if (!reachedTerminator)
+        {
+            return cachedCount;
+        }
+    }
+    *sourceScanComplete = true;
+    return cachedCount;
 }
 
 ZunResult EclManager::CallEclSub(EnemyEclContext *ctx, i16 subId)

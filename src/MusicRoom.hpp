@@ -47,12 +47,11 @@ struct MusicRoom
     AnmVm titleSprites[31];
     AnmVm descriptionSprites[8];
 #if defined(TH07_PSP)
-    // PSP fills only the visible rows, one per update.  This keeps room entry
-    // and scrolling from rasterising a whole page of Japanese strings in one
-    // blocking callback.
+    // The initial page is prepared before the entrance animation; scrolling
+    // renders only the newly exposed row.
     u8 titleRendered[31];
-    // Comments remain part of the normal room presentation, but rendering
-    // one line per update avoids a single long FreeType/atlas upload stall.
-    i32 descriptionRenderIdx;
+    // This occupies the byte which was tail padding after titleRendered, so
+    // the PSP MusicRoom object does not grow.
+    u8 initialDescriptionState;
 #endif
 };

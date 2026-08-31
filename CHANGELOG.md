@@ -2,6 +2,33 @@
 
 このプロジェクトは開発途中です。実機未確認の修正は、その旨を明記します。
 
+## 2026-09-01 — v0.2.0-beta（MEレンダーワーカー世代・大型更新）
+
+コードベースをMECC統合開発線（RID30系）へ全面更新しました。PSPの第2CPU（Media Engine）を
+ゲーム処理に本格投入した初の版です。**本版の実機検証はPSP-3000のみ**。PSP-1000プロファイルは
+ビルド可能ですが今期未検証です。
+
+- **MEレンダーワーカー**: 安定NORMAL弾の移動更新と頂点生成をMEが実行し、GEが直接消費します。
+  SC出力とのbit一致を起動時自己検査（30ケース）で毎回検証。実機で6面完走・ボス戦走行を確認済み。
+- **Item描画のME prefix / SC suffix分担**と決定論的予算器（record数×較正レート、80%閾値）。
+  幽々子撃破直後の実測でAVG −1.32ms、VSync MISS 85→32/120（約35→47fps）を確認済み。
+- **Item吸引移動のME更新（A1-MOVE）**: 実機で起動・自己検査合格（6経路bit一致）。
+  性能効果は比較可能区間で中立であり、対象場面での採用実証はまだ取れていません（検証継続中）。
+- **SC/ME使用率メーター**: XPタスクマネージャ風の履歴グラフ2枚をロゴ付近に常時表示
+  （SC=フレーム時間、ME=実測busyサイクル。100%超は赤で振切表示）。実機動作確認済み。
+  **今回Lトリガで表示トグルを追加（PC実装のみ・実機未確認）**。
+- **起動安全化**: Item系自己検査がclean失敗した場合、Itemのみ従来SC処理へ降格して
+  弾ME・ゲーム起動を継続します（XMBへ戻る強制再起動を廃止）。実機確認済み。
+- **MEキャッシュ安定化**: 連続ジョブ間のstale読みを排除するため、Item入力は
+  MEのuncached alias読みへ変更。実機確認済み。
+- 同梱: 実証済みGEラッパー `ge4wrap_texv1.prx`（SHA256はMakefile内に記載、ビルド時に検証）、
+  メモステ操作ツール `tools/psp_stick.py`、原作データ混入ガード
+  `tools/check_no_original_assets.py`、開発経緯ドキュメント `docs/devlog/`。
+- ビルド: `make psp3000-a1-item-motion-build`（MECCはCMakeで自動ビルド）。
+  原作の `th07.dat` / `thbgm.dat` 等は従来どおり各自の所有データを使用してください。
+  本リポジトリに原作データは一切含まれません（ガードで機械検証済み）。
+>>>>>>> 52e0783 (feat: v0.2.0-beta — ME render worker era (bullet/item ME offload, SC/ME usage meter with L-toggle, safe-demotion boot))
+
 ## 2026-08-27 — v0.1.7-beta（ARK-5 high-memory互換性更新）
 
 - PSP-3000 / ARK-5で64MB版を起動した際、ARK設定に`always, highmem, off`があるとゲームの

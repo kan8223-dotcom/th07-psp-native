@@ -5,6 +5,20 @@
 
 extern u8 g_ItemDropTable[32];
 
+#if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
+struct Th07PspMeBulletCompactJob;
+struct Th07PspMeItemMotionSeed;
+struct Th07PspMeItemMotionOutput;
+void PspSetMeItemMotionView(
+    const Th07PspMeBulletCompactJob *job,
+    const Th07PspMeItemMotionSeed *seed,
+    const Th07PspMeItemMotionOutput *output);
+void PspTakeMeItemMotionFrameStats(
+    u32 *active, u32 *candidates, u32 *adopted,
+    u32 *slotRejects, u32 *globalRejects);
+void PspClearMeItemMotionView();
+#endif
+
 void AngleToVector(ZunVec3 *out, f32 angle, f32 speed);
 
 typedef enum ItemType
@@ -111,6 +125,34 @@ struct ItemManager
     // Item embeds an AnmVm; probing empty slots costs far more cache
     // traffic than walking this 140-byte map first.
     u32 pspActiveItemBits[(kItemCapacity + 31) / 32];
+
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+    // I-ME7 leaves gameplay and ANM-script authority on SC. These sidecars
+    // describe only the immutable, post-update Item draw list consumed by the
+    // existing asynchronous render command. Keeping them manager-owned
+    // preserves Item's canonical 648-byte ABI.
+    u32 pspMeItemSlotGenerations[kItemCapacity];
+    f32 pspMeItemRenderSin[kItemCapacity];
+    f32 pspMeItemRenderCos[kItemCapacity];
+    u32 pspMeItemPrepareSerial;
+    u32 pspMeItemPreparedSerial;
+    u32 pspMeItemPreparedCount;
+    u32 pspMeItemPreparedPrefixCount;
+    Item *pspMeItemPreparedPrefixTail;
+    Item *pspMeItemPreparedSuffixHead;
+    u32 pspMeItemRequestedPrefixCount;
+    // Counted while the canonical list is already being linked.  Adaptive
+    // admission can therefore reject Item ME work without another pool walk.
+    u32 pspMeItemListCount;
+
+    bool PspPrepareMeItemRenderStream();
+    void PspDrawCanonicalItemSuffix(Item *suffixHead);
+    bool PspMeItemRenderStreamPrepared() const
+    {
+        return pspMeItemPreparedSerial != 0u &&
+               pspMeItemPreparedSerial == pspMeItemPrepareSerial;
+    }
+#endif
 
     bool PspIsItemSlotTracked(i32 index) const
     {

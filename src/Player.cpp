@@ -23,6 +23,11 @@
 #if defined(TH07_PSP)
 #include "fileio.hpp"
 #endif
+#if defined(TH07_PSP_PERF_PLAYER_SHOT)
+#include <pspkernel.h>
+
+#include "graphics/PspGuGraphics.hpp"
+#endif
 
 ShtFunc1 g_ShtFireFuncs[6] = {
     NULL,
@@ -718,6 +723,11 @@ void Player::DrawBullets()
 {
     PlayerBullet *bullet;
     i32 i;
+#if defined(TH07_PSP_PERF_PLAYER_SHOT)
+    const unsigned long long perfPlayerShotStartUs =
+        sceKernelGetSystemTimeWide();
+    unsigned int perfPlayerShotCount = 0;
+#endif
 
     bullet = this->bullets;
     for (i = 0; i < 96; i++, bullet++)
@@ -732,6 +742,9 @@ void Player::DrawBullets()
         {
             continue;
         }
+#if defined(TH07_PSP_PERF_PLAYER_SHOT)
+        ++perfPlayerShotCount;
+#endif
 
         if (bullet->vm.autoRotate)
         {
@@ -748,6 +761,12 @@ void Player::DrawBullets()
             bullet->drawCallback(this, bullet);
         }
     }
+#if defined(TH07_PSP_PERF_PLAYER_SHOT)
+    const unsigned long long perfPlayerShotEndUs =
+        sceKernelGetSystemTimeWide();
+    Th07PspPerfAddPlayerShotFrontendTime(
+        perfPlayerShotEndUs - perfPlayerShotStartUs, perfPlayerShotCount);
+#endif
 }
 
 void Player::DrawBulletExplosions()

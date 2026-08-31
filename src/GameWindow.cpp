@@ -7,6 +7,9 @@
 #include <filesystem>
 
 #include "AnmManager.hpp"
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+#include "BulletManager.hpp"
+#endif
 #include "Chain.hpp"
 #include "Controller.hpp"
 #include "FileSystem.hpp"
@@ -15,10 +18,17 @@
 #include "SoundPlayer.hpp"
 #include "Stage.hpp"
 #include "Supervisor.hpp"
+#if defined(TH07_PSP_BULLET_WARM_QUEUE) || \
+    defined(TH07_PSP_ME_RENDER_PERFORMANCE)
+#include "ReplayManager.hpp"
+#endif
 #if !defined(TH07_PSP)
 #include "graphics/Gles.hpp"
 #else
 #include <pspdisplay.h>
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+#include <pspkernel.h>
+#endif
 
 #include "graphics/PspGuGraphics.hpp"
 #include "fileio.hpp"
@@ -39,6 +49,16 @@ namespace
 bool g_PspFixed30Fps;
 bool g_PspDrawNextFrame = true;
 unsigned int g_PspLastPresentVcount;
+}
+#endif
+
+#if defined(TH07_PSP_BULLET_WARM_QUEUE) || \
+    defined(TH07_PSP_ME_RENDER_PERFORMANCE)
+bool Th07PspCanCommitBulletWarmQueue()
+{
+    return g_GameWindow.curFrame >= 0 && !g_PspFixed30Fps &&
+           !WAS_PRESSED_RAW(TH_BUTTON_FPS_TOGGLE) &&
+           !ReplayManager::MayRestartCalcChainAfterBulletUpdate();
 }
 #endif
 
@@ -146,7 +166,19 @@ RenderResult GameWindow::Render()
         }
         g_Supervisor.gfxDevice->SetViewport(savedViewport);
         g_Chain.RunDrawChain();
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+        const bool denseSliceActive = gTh07PspPerfDenseSliceActive != 0;
+        const unsigned long long densePostFlushStartUs =
+            denseSliceActive ? sceKernelGetSystemTimeWide() : 0ull;
+#endif
         g_AnmManager->Flush();
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+        if (denseSliceActive)
+        {
+            Th07PspPerfAddDensePostFlushTime(sceKernelGetSystemTimeWide() -
+                                             densePostFlushStartUs);
+        }
+#endif
         g_Supervisor.gfxDevice->BindTexture({0});
 
         g_Supervisor.viewport.x = 0;
@@ -156,6 +188,12 @@ RenderResult GameWindow::Render()
         g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
     }
 
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+    // Capture immediately before this exact pass. A priority<18 BREAK leaves
+    // the serial unchanged, so an earlier warm-up completion cannot publish.
+    const unsigned int meRenderCalcSerialBefore =
+        Th07PspMeRenderCaptureCalcSerial();
+#endif
     const i32 chainResult = g_Chain.RunCalcChain();
     g_SoundPlayer.ProcessQueues();
     if (!chainResult)
@@ -184,6 +222,20 @@ RenderResult GameWindow::Render()
     {
         g_PspDrawNextFrame = true;
     }
+
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+    // g_PspDrawNextFrame now describes the next Render() call.  Fixed-30
+    // update-only passes deliberately publish no ME work.
+    const unsigned long long meRenderPostCalcStartUs =
+        gTh07PspPerfDenseSliceActive ? sceKernelGetSystemTimeWide() : 0ull;
+    Th07PspMeRenderAfterCalc(meRenderCalcSerialBefore,
+                            !g_PspFixed30Fps || g_PspDrawNextFrame);
+    if (gTh07PspPerfDenseSliceActive)
+    {
+        Th07PspPerfAddMerwPostCalcTime(
+            sceKernelGetSystemTimeWide() - meRenderPostCalcStartUs);
+    }
+#endif
 
     if (drawThisFrame)
     {
