@@ -88,10 +88,12 @@ class PspMeBulletTrustedSeedAuthorityContracts(unittest.TestCase):
             "bullet->state != BULLET_NORMAL",
             "PspIsBulletSlotTracked",
             "candidateBits",
-            "pspMeRenderSlotGenerations[slot] != seedSlot.generation",
+            "TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, generation)",
+            "pspMeRenderSlotGenerations[slot] != seedGeneration",
             "seedSlot.reserved != 0u",
             "allowedSeedFlags",
-            "result.posXBits == seedSlot.nextPosXBits",
+            "result.posXBits == TH07_PSP_ME_BULLET_SEED_FIELD(",
+            "const u32 nextPosXBits =",
             "std::memcpy(&bullet->pos.x",
         ):
             self.assertIn(required, self.adopt)

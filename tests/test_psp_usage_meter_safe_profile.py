@@ -39,6 +39,7 @@ class UsageMeterSafeProfileTests(unittest.TestCase):
             encoding="utf-8"
         )
         cls.header = (ROOT / "psp/usage_meter.h").read_text(encoding="utf-8")
+        cls.source = (ROOT / "psp/usage_meter.c").read_text(encoding="utf-8")
         cls.audio_me = (ROOT / "psp/audio_me.c").read_text(encoding="utf-8")
         cls.bullets = (ROOT / "src/BulletManager.cpp").read_text(
             encoding="utf-8"
@@ -54,6 +55,18 @@ class UsageMeterSafeProfileTests(unittest.TestCase):
         self.assertIn("PSP_USAGE_METER=1", self.target)
         self.assertIn("PSP_AUDIO4M_BUILD_ID=0x26083121u", self.target)
         self.assertIn("TH07 PSP I-ME7 METER NO-ITEM", self.target)
+
+    def test_l_trigger_toggle_is_an_independent_default_off_feature(self) -> None:
+        self.assertIn("PSP_USAGE_METER_TOGGLE ?= 0", self.makefile)
+        self.assertIn(
+            "CFLAGS += -DTH07_PSP_USAGE_METER_TOGGLE", self.makefile
+        )
+        draw = function_body(self.source, "void th07_usage_meter_draw(void)")
+        toggle = draw[
+            draw.index("#if defined(TH07_PSP_USAGE_METER_TOGGLE)") :
+            draw.index("#endif")
+        ]
+        self.assertIn("PSP_CTRL_LTRIGGER", toggle)
 
     def test_mefix_profile_preserves_safe_path_with_new_identity(self) -> None:
         self.assertIn("PSP_USAGE_METER=1", self.mefix_target)

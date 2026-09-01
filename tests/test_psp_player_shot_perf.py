@@ -168,7 +168,13 @@ class PspPlayerShotPerfTests(unittest.TestCase):
             r"char acceptMessage\[320\];\s+#else\s+"
             r"char acceptMessage\[256\];\s+#endif",
         )
-        self.assertEqual(report.count('"PERF ACCEPT '), 1)
+        # The legacy ACCEPT observer and the RID30 A/B hardware-FPS observer
+        # each own one format string.  Player-shot raw totals stay confined to
+        # the legacy branch; the A/B branch is intentionally identical for ME
+        # and SC apart from its profile/RID.
+        self.assertEqual(report.count('"PERF ACCEPT '), 2)
+        self.assertEqual(report.count('"PERF ACCEPT S%d ST%d N%u HWFPS'), 1)
+        self.assertEqual(report.count('"PERF ACCEPT S%d ST%d N%u AVG'), 1)
         self.assertEqual(report.count("th07_psp_perf_note(acceptMessage)"), 1)
         for counter in (
             "gPerfPlayerShotFrontendUs",

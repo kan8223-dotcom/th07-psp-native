@@ -2,6 +2,24 @@
 
 このプロジェクトは開発途中です。実機未確認の修正は、その旨を明記します。
 
+## 2026-09-01 — v0.2.1-beta（断片化OOM修正・MSゴシックsubset・波ダッシュ）
+
+- **デモ放置/リプレイ後のタイトル復帰OOMを修正**しました。タイトル画面ANM（5,411KiB）の
+  連続確保が断片化ヒープで失敗する問題で、起動時予約の共有arenaへ常時ロードする方式に
+  変更。デモ4面→5面→3面放置、リプレイ5面終了→リザルト→タイトル復帰の実機テストを通過。
+  v0.2.0の既知問題「デモ3周目OOM」はこの版で解消です。
+- **フォントの使用文字subset方式を追加**。EBOOT隣の優先順は
+  `msgothic-subset.ttf` → `msgothic.ttc` → `NotoSansJP-Regular.ttf`（同梱）。
+  同梱ツール `tools/build_local_msgothic_subset.py` で、所有するWindowsの
+  msgothic.ttc から使用1,190字のsubset（約300KB、元の1/15）をローカル生成できます。
+  Microsoftフォント本体・subsetは配布物に含まれません。文字キャッシュの別確保
+  1,536KiBを廃止し、実行時RAMも削減。欠字があればsubset全体を不採用にして
+  次候補フォントへ戻るfail-closed設計です。
+- **波ダッシュ「～」の表示を修正**（SJIS 0x8160をWindows/MS Gothicと同じU+FF5Eへ）。
+- SC/ME使用率メーターのLトリガ表示切替は実機確認済みになりました。
+- 配布EBOOTは今回もネットワーク観測（SHIKIGAMI）をホスト未設定で完全休眠にしています。
+  ビルド再現: `make psp3000-dist-v021-build`。
+
 ## 2026-09-01 — v0.2.0-beta（MEレンダーワーカー世代・大型更新）
 
 コードベースをMECC統合開発線（RID30系）へ全面更新しました。PSPの第2CPU（Media Engine）を

@@ -499,6 +499,12 @@ stop:
 #if defined(TH07_PSP_SHIKIGAMI) && \
     !defined(TH07_PSP_ME_RENDER_GE_CONSUME)
     th07_shikigami_shutdown();
+#if defined(TH07_PSP_PERF_DIAG)
+    // The observer is now unable to read the RAM buffer.  This is the final
+    // recovery flush for SHIKIGAMI builds without the GE-consume shutdown
+    // path, including public/AB profiles whose destination is empty.
+    th07_psp_perf_log_flush();
+#endif
 #endif
     th07_psp_boot_note("main exited");
 #if defined(TH07_PSP_PERF_DIAG)

@@ -578,7 +578,19 @@ _Static_assert((sizeof(MeBulletFastMailbox) & 63u) == 0u,
 #endif
 
 #if defined(TH07_PSP_ME_BULLET_COMPACT_UPDATE)
-#if defined(TH07_PSP_ME_BULLET_SEED_SLIM)
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+#define ME_BULLET_COMPACT_SEED_METADATA_BYTES \
+    offsetof(Th07PspMeBulletCompactSeed, generation)
+_Static_assert(sizeof(Th07PspMeBulletCompactSeedSlot) == 64u,
+               "D1 keeps the legacy record solely as a transpose oracle");
+_Static_assert(TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE == 1040u,
+               "D1 SoA plane cache-set skew changed");
+_Static_assert(ME_BULLET_COMPACT_SEED_METADATA_BYTES == 320u &&
+                   (ME_BULLET_COMPACT_SEED_METADATA_BYTES & 63u) == 0u,
+               "D1 SoA metadata prefix must occupy whole cache lines");
+_Static_assert(sizeof(Th07PspMeBulletCompactSeed) == 58560u,
+               "D1 SoA compact seed bank ABI changed");
+#elif defined(TH07_PSP_ME_BULLET_SEED_SLIM)
 _Static_assert(sizeof(Th07PspMeBulletCompactSeedSlot) == 56u,
                "C2b compact seed slot must be exactly 56 bytes");
 _Static_assert(sizeof(Th07PspMeBulletCompactSeed) == 57664u,
@@ -1552,13 +1564,38 @@ static __attribute__((always_inline)) inline uint32_t me_render_float_bits(float
 static __attribute__((always_inline)) inline uint32_t me_render_read_fcr31(void)
 {
     uint32_t value;
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+    __asm__ volatile("cfc1 %0, $31" : "=r"(value) : : "memory");
+#else
     __asm__ volatile("cfc1 %0, $31" : "=r"(value));
+#endif
     return value;
 }
 
 static __attribute__((always_inline)) inline void me_render_write_fcr31(uint32_t value)
 {
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+    uint32_t drained;
+    // A render kernel may return with older scalar-FPU work still in flight.
+    // CFC1 is the architectural pipeline drain required before changing
+    // FCR31.  Keep the exact post-write readback gates: C5's hardware value
+    // 0x00003351 equals Allegrex FCR0/FIR rather than a plausible FCR31, so
+    // this ordering repair must be verified on hardware and must never be
+    // replaced by masking or accepting selected control/status bits.
+    __asm__ volatile(
+        "cfc1 %0, $31\n\t"
+        "nop\n\t"
+        "ctc1 %1, $31\n\t"
+        "nop\n\t"
+        "nop"
+        : "=&r"(drained)
+        : "r"(value)
+        : "memory");
+#else
     __asm__ volatile("ctc1 %0, $31\n\tnop\n\tnop" : : "r"(value) : "memory");
+#endif
 }
 
 static __attribute__((always_inline)) inline uint32_t me_render_read_count(void)
@@ -3730,6 +3767,27 @@ static void me_bullet_compact_capture_seed(
           halfHeight + nextPosY < 0.0f ||
           nextPosY - halfHeight > 448.0f);
 
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, generation) = generation;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posXBits) = values[0];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posYBits) = values[1];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posZBits) = values[2];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityXBits) = values[3];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityYBits) = values[4];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityZBits) = values[5];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteWidthBits) = values[6];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteHeightBits) = values[7];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeXBits) = values[8];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeYBits) = values[9];
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosXBits) = nextPosXBits;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosYBits) = nextPosYBits;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosZBits) = nextPosZBits;
+    const uint32_t bit = 1u << (slot & 31u);
+    const uint32_t word = slot >> 5u;
+    seed->inBoundsBits[word] &= ~bit;
+    if (inBounds)
+        seed->inBoundsBits[word] |= bit;
+#else
     Th07PspMeBulletCompactSeedSlot *out = &seed->slots[slot];
     out->generation = generation;
     out->posXBits = values[0];
@@ -3758,12 +3816,39 @@ static void me_bullet_compact_capture_seed(
     out->reserved = 0u;
     const uint32_t bit = 1u << (slot & 31u);
 #endif
+#endif
     if ((seed->candidateBits[slot >> 5u] & bit) == 0u)
     {
         seed->candidateBits[slot >> 5u] |= bit;
         ++seed->header.candidateCount;
     }
 }
+
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+static void me_bullet_compact_clear_seed_slot(
+    Th07PspMeBulletCompactSeed *seed, uint32_t slot)
+{
+    if (!seed || slot >= TH07_PSP_ME_BULLET_COMPACT_MAX_SLOTS)
+        return;
+    const uint32_t bit = 1u << (slot & 31u);
+    seed->candidateBits[slot >> 5u] &= ~bit;
+    seed->inBoundsBits[slot >> 5u] &= ~bit;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, generation) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posXBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posYBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posZBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityXBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityYBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityZBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteWidthBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteHeightBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeXBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeYBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosXBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosYBits) = 0u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosZBits) = 0u;
+}
+#endif
 
 #if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
 static int me_item_motion_float_bits_supported(uint32_t bits)
@@ -3970,6 +4055,94 @@ static uint32_t me_bullet_compact_update_kernel(
          wordIndex < TH07_PSP_ME_BULLET_COMPACT_ACTIVE_WORDS; ++wordIndex)
     {
         const uint32_t candidates = seed->candidateBits[wordIndex];
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+        const uint32_t inBoundsBits = seed->inBoundsBits[wordIndex];
+        if ((inBoundsBits & ~candidates) != 0u)
+            return TH07_PSP_ME_BULLET_COMPACT_RESULT_SEED;
+        for (uint32_t bitIndex = 0u; bitIndex < 32u; ++bitIndex)
+        {
+            const uint32_t slotBit = 1u << bitIndex;
+            if ((candidates & slotBit) == 0u)
+                continue;
+            const uint32_t slot = wordIndex * 32u + bitIndex;
+            *outFirstBadSlot = slot;
+            ++bitmapCount;
+            const uint32_t generation =
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, generation);
+            if (generation == 0u)
+                return TH07_PSP_ME_BULLET_COMPACT_RESULT_RECORD;
+            const uint32_t values[] = {
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posXBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posYBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posZBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityXBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityYBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityZBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteWidthBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteHeightBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeXBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeYBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosXBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosYBits),
+                TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosZBits)
+            };
+            for (uint32_t index = 0u;
+                 index < sizeof(values) / sizeof(values[0]); ++index)
+            {
+                if (!me_render_stream_float_bits_finite(values[index]))
+                    return TH07_PSP_ME_BULLET_COMPACT_RESULT_RECORD;
+            }
+
+            const float nextPosX =
+                me_render_bits_float(
+                    TH07_PSP_ME_BULLET_SEED_FIELD(
+                        seed, slot, nextPosXBits));
+            const float nextPosY =
+                me_render_bits_float(
+                    TH07_PSP_ME_BULLET_SEED_FIELD(
+                        seed, slot, nextPosYBits));
+
+            int collisionInputsValid = 0;
+            const int noCollision = me_bullet_compact_no_collision(
+                job, nextPosX, nextPosY,
+                me_render_bits_float(
+                    TH07_PSP_ME_BULLET_SEED_FIELD(
+                        seed, slot, grazeSizeXBits)),
+                me_render_bits_float(
+                    TH07_PSP_ME_BULLET_SEED_FIELD(
+                        seed, slot, grazeSizeYBits)),
+                &collisionInputsValid);
+            if (!collisionInputsValid)
+                return TH07_PSP_ME_BULLET_COMPACT_RESULT_RECORD;
+
+            Th07PspMeBulletCompactSlotResult *result =
+                &output->slots[slot];
+#if !defined(TH07_PSP_ME_BULLET_OUTPUT_SLIM)
+            result->posXBits = TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosXBits);
+            result->posYBits = TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosYBits);
+            result->posZBits = TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosZBits);
+#endif
+            result->generation = (uint16_t)generation;
+            result->flags = TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE;
+            output->candidateBits[wordIndex] |= slotBit;
+            ++*outCandidateCount;
+            if ((inBoundsBits & slotBit) != 0u)
+            {
+                result->flags |=
+                    TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS;
+                ++*outInBoundsCount;
+            }
+            if (noCollision)
+            {
+                result->flags |=
+                    TH07_PSP_ME_BULLET_COMPACT_SLOT_NO_COLLISION;
+                ++*outNoCollisionCount;
+            }
+        }
+#else
 #if defined(TH07_PSP_ME_BULLET_SEED_SLIM)
         const uint32_t inBoundsBits = seed->inBoundsBits[wordIndex];
         if ((inBoundsBits & ~candidates) != 0u)
@@ -4058,6 +4231,7 @@ static uint32_t me_bullet_compact_update_kernel(
                 ++*outNoCollisionCount;
             }
         }
+#endif
     }
     if (bitmapCount != seed->header.candidateCount)
         return TH07_PSP_ME_BULLET_COMPACT_RESULT_SEED;
@@ -4422,6 +4596,29 @@ static int me_render_stream_owned_pools_valid(
            runCapacity == sizeof(gMeRenderStreamRunAreas[slot].runs);
 }
 
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+static __attribute__((always_inline)) inline uint32_t
+me_render_stream_float_order_key(uint32_t bits)
+{
+    return (bits & 0x80000000u) ? ~bits : (bits ^ 0x80000000u);
+}
+
+static __attribute__((always_inline)) inline int
+me_render_stream_finite_bits_le(uint32_t lhsBits, uint32_t rhsBits)
+{
+    // Callers reject NaN/infinity first.  Ordered IEEE-754 binary32 values
+    // can then be compared as monotonic integer keys; treat -0 and +0 as the
+    // equality that COP1 comparison defines.  This validator runs before the
+    // render command installs its canonical FCR31, so it must not execute a
+    // c.lt.s/c.le.s that could leak FCC0 on an early bounds rejection.
+    if (((lhsBits | rhsBits) & 0x7fffffffu) == 0u)
+        return 1;
+    return me_render_stream_float_order_key(lhsBits) <=
+           me_render_stream_float_order_key(rhsBits);
+}
+#endif
+
 static int me_render_stream_bounds_valid(
     uint32_t version, uint32_t flags, uint32_t slot, uint32_t generation,
     const uint32_t bucketEnds[6], uint32_t recordCount,
@@ -4532,11 +4729,19 @@ static int me_render_stream_bounds_valid(
         !me_render_stream_float_bits_finite(viewportBottomBits))
         return 0;
 
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+    if (!me_render_stream_finite_bits_le(
+            viewportLeftBits, viewportRightBits) ||
+        !me_render_stream_finite_bits_le(
+            viewportTopBits, viewportBottomBits))
+#else
     const float left = me_render_bits_float(viewportLeftBits);
     const float top = me_render_bits_float(viewportTopBits);
     const float right = me_render_bits_float(viewportRightBits);
     const float bottom = me_render_bits_float(viewportBottomBits);
     if (left > right || top > bottom)
+#endif
         return 0;
 
     uint32_t inputStride = TH07_PSP_ME_RENDER_STREAM_RECORD_BYTES;
@@ -4711,14 +4916,47 @@ me_render_stream_pack_s16(float value, float scale, int16_t *packed)
 
 #if defined(TH07_PSP_ME_RENDER_UV16)
 static __attribute__((always_inline)) inline int
-me_render_stream_pack_u16(float value, float scale, uint16_t *packed)
+me_render_stream_pack_u16(uint32_t bits, uint16_t *packed)
 {
-    const float scaled = value * scale;
-    // PSP GE decodes GU_TEXTURE_16BIT as unsigned q/32768.  Ordered bounds
-    // reject NaN, negative UV and anything that would round past 65535.
-    if (!(scaled >= 0.0f && scaled < 65535.5f))
+    // PSP GE decodes GU_TEXTURE_16BIT as unsigned q/32768.  Convert the
+    // source IEEE-754 word to Q15 using integer arithmetic only: COP1 casts
+    // on the custom core can alter FCR31 even when the requested rounding is
+    // otherwise exact.  Preserve the old round-half-up domain, including
+    // accepting negative zero while rejecting every negative nonzero,
+    // NaN/infinity and anything that rounds beyond 65535.
+    const uint32_t magnitude = bits & 0x7fffffffu;
+    const uint32_t exponent = (magnitude >> 23u) & 0xffu;
+    const uint32_t fraction = magnitude & 0x007fffffu;
+    if (exponent == 0xffu || ((bits & 0x80000000u) && magnitude != 0u))
         return 0;
-    *packed = (uint16_t)(scaled + 0.5f);
+
+    // Zero and every binary32 subnormal are far below half of one Q15 unit.
+    if (exponent == 0u)
+    {
+        *packed = 0u;
+        return 1;
+    }
+    // A biased exponent of 128 is already at least +2.0 -> Q15 65536.
+    if (exponent >= 128u)
+        return 0;
+
+    const uint32_t significand = 0x00800000u | fraction;
+    const uint32_t rightShift = 135u - exponent;
+    const uint32_t roundedQ = rightShift >= 32u
+        ? 0u
+        : (significand + (1u << (rightShift - 1u))) >> rightShift;
+    // Legacy COP1 did the bias addition in binary32.  The single predecessor
+    // of +0.5 Q15 (scaled bits 0x3effffff) lands exactly halfway between the
+    // two floats below/at 1.0; round-to-nearest-even selected 1.0.  Preserve
+    // that observable byte result without executing COP1.
+    if (bits == 0x377fffffu)
+    {
+        *packed = 1u;
+        return 1;
+    }
+    if (roundedQ > 65535u)
+        return 0;
+    *packed = (uint16_t)roundedQ;
     return 1;
 }
 #endif
@@ -4730,10 +4968,8 @@ static int me_render_stream_write_vertex(
 #if defined(TH07_PSP_ME_RENDER_UV16)
     uint16_t packedU;
     uint16_t packedV;
-    if (!me_render_stream_pack_u16(
-            me_render_bits_float(uBits), 32768.0f, &packedU) ||
-        !me_render_stream_pack_u16(
-            me_render_bits_float(vBits), 32768.0f, &packedV))
+    if (!me_render_stream_pack_u16(uBits, &packedU) ||
+        !me_render_stream_pack_u16(vBits, &packedV))
         return 0;
 #endif
 #if defined(TH07_PSP_ME_RENDER_XYZ16)
@@ -5114,6 +5350,11 @@ me_render_stream_reconstruct_list_record(
             &compactSeed->candidateBits[slot >> 5u];
         if ((*compactWord & compactBit) != 0u)
         {
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+            me_bullet_compact_clear_seed_slot(compactSeed, slot);
+            if (compactSeed->header.candidateCount != 0u)
+                --compactSeed->header.candidateCount;
+#else
             *compactWord &= ~compactBit;
 #if defined(TH07_PSP_ME_BULLET_SEED_SLIM)
             compactSeed->inBoundsBits[slot >> 5u] &= ~compactBit;
@@ -5122,6 +5363,7 @@ me_render_stream_reconstruct_list_record(
                 --compactSeed->header.candidateCount;
             memset(&compactSeed->slots[slot], 0,
                    sizeof(compactSeed->slots[slot]));
+#endif
         }
     }
 #endif
@@ -7579,14 +7821,25 @@ static void process_render_stream_on_me(volatile MeSharedMailbox *box)
                                    sizeof(*compactSeed));
         if (me_bullet_compact_seed_guards_match_on_me(compactSeedBank))
         {
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+            memset(compactSeed, 0,
+                   ME_BULLET_COMPACT_SEED_METADATA_BYTES);
+#else
             memset(compactSeed, 0,
                    offsetof(Th07PspMeBulletCompactSeed, slots));
+#endif
             compactSeed->header.bank = compactSeedBank;
             compactSeed->header.frameSeq = box->renderStreamFrameSeq;
             compactSeed->header.committed = 0u;
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+            meLibDcacheWritebackRange(
+                (uint32_t)compactSeed,
+                ME_BULLET_COMPACT_SEED_METADATA_BYTES);
+#else
             meLibDcacheWritebackRange(
                 (uint32_t)compactSeed,
                 offsetof(Th07PspMeBulletCompactSeed, slots));
+#endif
         }
         else
         {
@@ -7941,29 +8194,79 @@ static void process_render_stream_on_me(volatile MeSharedMailbox *box)
 #endif
     const uint32_t kernelEnd = me_render_read_count();
     me_render_write_fcr31(originalFcr31);
+#if !defined(TH07_PSP_ME_RENDER_UV16) && \
+    !defined(TH07_PSP_ME_RENDER_XYZ16)
     box->renderStreamFcr31After = me_render_read_fcr31();
+#endif
 
     uint32_t outputBytes = 0u;
     uint32_t runBytes = 0u;
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+    uint32_t outputHash = 0u;
+    uint32_t runHash = 0u;
+#endif
     const uint32_t writebackStart = me_render_read_count();
     if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK &&
-        box->renderStreamFcr31Effective == 0u &&
-        box->renderStreamFcr31After == originalFcr31)
+        box->renderStreamFcr31Effective == 0u
+#if !defined(TH07_PSP_ME_RENDER_UV16) && \
+    !defined(TH07_PSP_ME_RENDER_XYZ16)
+        && box->renderStreamFcr31After == originalFcr31
+#endif
+        )
     {
         outputBytes = vertexCount * sizeof(Th07PspMeRenderStreamVertex);
         runBytes = runCount * sizeof(Th07PspMeRenderStreamRun);
         if ((box->renderStreamFlags &
              TH07_PSP_ME_RENDER_STREAM_JOB_HASH_OUTPUT) != 0u)
         {
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+            outputHash = me_render_stream_hash_bytes(vertices, outputBytes);
+            runHash = me_render_stream_hash_bytes(runs, runBytes);
+#else
             box->renderStreamOutputHash =
                 me_render_stream_hash_bytes(vertices, outputBytes);
             box->renderStreamRunHash =
                 me_render_stream_hash_bytes(runs, runBytes);
+#endif
         }
         if (outputBytes)
             meLibDcacheWritebackRange((uint32_t)vertices, outputBytes);
         if (runBytes)
             meLibDcacheWritebackRange((uint32_t)runs, runBytes);
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+    }
+
+    // C5/C6 hardware returned the Allegrex FIR/FCR0 identity (0x3351) when
+    // FCR31 was read immediately after restoring it at the end of a long C1
+    // stream.  Do not weaken the exact gate.  Instead, let the already-needed
+    // output/run cache writeback form an integer-only settling interval while
+    // the token is still ME-owned, then read FCR31 before publishing any
+    // sidecar commit marker, completion count, READY state or DONE status.
+    // A mismatch leaves only inaccessible provisional bytes and follows the
+    // existing protocol/quarantine path.
+    __asm__ volatile("sync" : : : "memory");
+    box->renderStreamFcr31After = me_render_read_fcr31();
+    if (box->renderStreamFcr31Effective != 0u ||
+        box->renderStreamFcr31After != originalFcr31)
+    {
+        outputBytes = 0u;
+        runBytes = 0u;
+        outputHash = 0u;
+        runHash = 0u;
+        vertexCount = 0u;
+        runCount = 0u;
+        result = TH07_PSP_ME_RENDER_STREAM_RESULT_PROTOCOL;
+        meLibDcacheInvalidateRange(
+            (uint32_t)vertices, box->renderStreamOutputCapacity);
+        meLibDcacheInvalidateRange(
+            (uint32_t)runs, box->renderStreamRunCapacity);
+    }
+    if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK)
+    {
+#endif
 #if defined(TH07_PSP_ME_BULLET_COMPACT_UPDATE)
 #if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
         if (itemMotionSeed && itemList &&
@@ -7995,13 +8298,21 @@ static void process_render_stream_on_me(volatile MeSharedMailbox *box)
             itemMotionSeed->header.committed = 0u;
             meLibDcacheWritebackRange(
                 (uint32_t)itemMotionSeed, sizeof(*itemMotionSeed));
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+            __asm__ volatile("sync" : : : "memory");
+#else
             __asm__ volatile("sync");
+#endif
             itemMotionSeed->header.committed =
                 TH07_PSP_ME_ITEM_MOTION_COMMITTED;
             meLibDcacheWritebackRange(
                 (uint32_t)&itemMotionSeed->header,
                 sizeof(itemMotionSeed->header));
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+            __asm__ volatile("sync" : : : "memory");
+#else
             __asm__ volatile("sync");
+#endif
             itemMotionSeedCommitted = 1u;
         }
 #endif
@@ -8032,19 +8343,35 @@ static void process_render_stream_on_me(volatile MeSharedMailbox *box)
             compactSeed->header.commitSequence =
                 box->renderStreamFrameSeq;
             compactSeed->header.reserved = 0u;
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+            compactSeed->header.committed = 0u;
+            meLibDcacheWritebackRange((uint32_t)compactSeed,
+                                      sizeof(*compactSeed));
+            __asm__ volatile("sync" : : : "memory");
+            compactSeed->header.committed =
+                TH07_PSP_ME_BULLET_COMPACT_SEED_COMMITTED;
+            meLibDcacheWritebackRange(
+                (uint32_t)&compactSeed->header,
+                sizeof(compactSeed->header));
+            __asm__ volatile("sync" : : : "memory");
+#else
             __asm__ volatile("sync");
             compactSeed->header.committed =
                 TH07_PSP_ME_BULLET_COMPACT_SEED_COMMITTED;
             meLibDcacheWritebackRange((uint32_t)compactSeed,
                                       sizeof(*compactSeed));
+#endif
             compactSeedCommitted = 1u;
         }
 #endif
     }
+#if !defined(TH07_PSP_ME_RENDER_UV16) && \
+    !defined(TH07_PSP_ME_RENDER_XYZ16)
     else if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK)
     {
         result = TH07_PSP_ME_RENDER_STREAM_RESULT_PROTOCOL;
     }
+#endif
 #if defined(TH07_PSP_ME_RENDER_RAW_LIVE) || \
     defined(TH07_PSP_ME_RENDER_UV16) || \
     defined(TH07_PSP_ME_RENDER_XYZ16)
@@ -8120,6 +8447,11 @@ static void process_render_stream_on_me(volatile MeSharedMailbox *box)
     box->renderStreamOutputBytes = outputBytes;
     box->renderStreamVertexCount = vertexCount;
     box->renderStreamRunCount = runCount;
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+    box->renderStreamOutputHash = outputHash;
+    box->renderStreamRunHash = runHash;
+#endif
     box->renderStreamFirstBadRecord = firstBadRecord;
     box->renderStreamResult = result;
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
@@ -11401,8 +11733,8 @@ int th07_psp_me_bullet_compact_poll(
     MeBulletCompactSeedArea *seedArea =
         &gMeBulletCompactSeedAreas[gMeBulletCompactPublishedJob.seedBank];
     // The p9 SC launcher already invalidated this immutable seed before
-    // publication. Command 12 only reads it, so invalidating all 65,728 bytes
-    // again here would discard the exact cache lines the p12 JIT adopter is
+    // publication. Command 12 only reads it, so invalidating the full seed
+    // bank again here would discard the exact cache lines the p12 JIT adopter is
     // about to consume. Only the ME-written output needs invalidation.
     const uint32_t outputInvalidateStart = sceKernelGetSystemTimeLow();
     sceKernelDcacheInvalidateRange(
@@ -12848,48 +13180,570 @@ static void me_render_stream_selftest_vertex(
 
 #if defined(TH07_PSP_ME_RENDER_UV16) || \
     defined(TH07_PSP_ME_RENDER_XYZ16)
+// Independent C1 M0 oracle.  Do not call me_render_stream_write_vertex():
+// this side must still catch a broken production packer.  The fixtures below
+// are finite and deliberately stay well inside every selected ABI's range.
+static void me_render_stream_c1_reference_vertex(
+    Th07PspMeRenderStreamVertex *vertex,
+#if defined(TH07_PSP_ME_RENDER_UV16)
+    uint16_t uQ, uint16_t vQ,
+#else
+    float u, float v,
+#endif
+    uint32_t color,
+    float x, float y, float z)
+{
+#if defined(TH07_PSP_ME_RENDER_UV16)
+    // The staircase constructs these exact Q15 values before creating the
+    // input floats.  Write them directly so the independent oracle cannot
+    // perturb or depend on SC COP1 state while diagnosing the ME packer.
+    vertex->u = uQ;
+    vertex->v = vQ;
+#else
+    vertex->uBits = float_bits(u);
+    vertex->vBits = float_bits(v);
+#endif
+    vertex->color = color;
+#if defined(TH07_PSP_ME_RENDER_XYZ16)
+    const float scaledX = x * 32.0f;
+    const float scaledY = y * 32.0f;
+    const float scaledZ = z * 32768.0f;
+    vertex->x = (int16_t)(scaledX + (scaledX >= 0.0f ? 0.5f : -0.5f));
+    vertex->y = (int16_t)(scaledY + (scaledY >= 0.0f ? 0.5f : -0.5f));
+    vertex->z = (int16_t)(scaledZ + (scaledZ >= 0.0f ? 0.5f : -0.5f));
+    vertex->reserved = 0u;
+#else
+    vertex->xBits = float_bits(x);
+    vertex->yBits = float_bits(y);
+    vertex->zBits = float_bits(z);
+#endif
+}
+
+// C1 M0 keeps the production retire path free of synchronous diagnostics.
+// If that path quarantines a completed candidate, the caller owns a stable,
+// non-recyclable slot and can reproduce the same validation after the
+// SC_TRANSITION has ended.  Keep these values aligned with the optional
+// retire diagnostics ABI, with OWNERSHIP as the C1-only extension.
+enum
+{
+    ME_RENDER_C1_DIAG_COMMAND = 1u << 0,
+    ME_RENDER_C1_DIAG_RESULT = 1u << 1,
+    ME_RENDER_C1_DIAG_TOKEN = 1u << 2,
+    ME_RENDER_C1_DIAG_VERSION = 1u << 3,
+    ME_RENDER_C1_DIAG_FLAGS = 1u << 4,
+    ME_RENDER_C1_DIAG_FRAME = 1u << 5,
+    ME_RENDER_C1_DIAG_TARGET = 1u << 6,
+    ME_RENDER_C1_DIAG_STAGE = 1u << 7,
+    ME_RENDER_C1_DIAG_MANAGER = 1u << 8,
+    ME_RENDER_C1_DIAG_REPLAY = 1u << 9,
+    ME_RENDER_C1_DIAG_SIGNATURE = 1u << 10,
+    ME_RENDER_C1_DIAG_RECORD_COUNT = 1u << 11,
+    ME_RENDER_C1_DIAG_PAYLOAD_HASH = 1u << 12,
+    ME_RENDER_C1_DIAG_BUCKET = 1u << 13,
+    ME_RENDER_C1_DIAG_VERTEX_COUNT = 1u << 14,
+    ME_RENDER_C1_DIAG_OUTPUT_BYTES = 1u << 15,
+    ME_RENDER_C1_DIAG_RUN_COUNT = 1u << 16,
+    ME_RENDER_C1_DIAG_FCR_EFFECTIVE = 1u << 17,
+    ME_RENDER_C1_DIAG_FCR_RESTORE = 1u << 18,
+    ME_RENDER_C1_DIAG_STACK = 1u << 19,
+    ME_RENDER_C1_DIAG_OUTPUT_BOUNDS = 1u << 20,
+    ME_RENDER_C1_DIAG_RUN_BOUNDS = 1u << 21,
+    ME_RENDER_C1_DIAG_GUARD_INPUT = 1u << 22,
+    ME_RENDER_C1_DIAG_GUARD_OUTPUT = 1u << 23,
+    ME_RENDER_C1_DIAG_GUARD_RUN = 1u << 24,
+    ME_RENDER_C1_DIAG_OUTPUT_HASH = 1u << 25,
+    ME_RENDER_C1_DIAG_RUN_HASH = 1u << 26,
+    ME_RENDER_C1_DIAG_ECHO_OTHER = 1u << 27,
+    ME_RENDER_C1_DIAG_OWNERSHIP = 1u << 28
+};
+
+typedef struct MeRenderC1RetireDiag
+{
+    uint32_t mask;
+    uint32_t detail;
+    uint32_t expected;
+    uint32_t actual;
+    uint32_t fatalMask;
+} MeRenderC1RetireDiag;
+
+// Set only by the C1 M0 caller after a completed command has been retired,
+// quarantined and independently reproved free of ownership/guard corruption.
+// The init path consumes it synchronously to stop Custom Core and continue as
+// the canonical all-SC renderer.  Every other C1 failure remains fail-stop.
+static int gMeRenderC1M0SafeFailure;
+
+static void me_render_stream_c1_note_fault(
+    MeRenderC1RetireDiag *diag, uint32_t faultBit, uint32_t detail,
+    uint32_t expected, uint32_t actual)
+{
+    if (diag->mask == 0u)
+    {
+        diag->detail = detail;
+        diag->expected = expected;
+        diag->actual = actual;
+    }
+    diag->mask |= faultBit;
+}
+
+static uint32_t me_render_stream_c1_guard_fault_bytes(
+    const unsigned char *bytes, uint32_t faultBit, uint32_t region,
+    uint32_t *firstDetail, uint32_t *firstActual)
+{
+    for (uint32_t index = 0u; index < ME_RENDER_STREAM_GUARD_BYTES; ++index)
+    {
+        if (bytes[index] == ME_RENDER_STREAM_GUARD_PATTERN)
+            continue;
+        if (*firstDetail == 0xffffffffu)
+        {
+            *firstDetail = (region << 16) | index;
+            *firstActual = bytes[index];
+        }
+        return faultBit;
+    }
+    return 0u;
+}
+
+static uint32_t me_render_stream_c1_guard_fault_mask(
+    uint32_t slot, uint32_t *firstDetail, uint32_t *firstActual)
+{
+    *firstDetail = 0xffffffffu;
+    *firstActual = 0u;
+    if (slot >= TH07_PSP_ME_RENDER_STREAM_SLOT_COUNT)
+        return ME_RENDER_C1_DIAG_GUARD_INPUT |
+               ME_RENDER_C1_DIAG_GUARD_OUTPUT |
+               ME_RENDER_C1_DIAG_GUARD_RUN;
+
+    MeRenderStreamInputArea *input = &gMeRenderStreamInputAreas[slot];
+    MeRenderStreamOutputArea *output = &gMeRenderStreamOutputAreas[slot];
+    MeRenderStreamRunArea *runs = &gMeRenderStreamRunAreas[slot];
+    sceKernelDcacheInvalidateRange(input->guard0, sizeof(input->guard0));
+    sceKernelDcacheInvalidateRange(input->guard1, sizeof(input->guard1));
+    sceKernelDcacheInvalidateRange(output->guard0, sizeof(output->guard0));
+    sceKernelDcacheInvalidateRange(output->guard1, sizeof(output->guard1));
+    sceKernelDcacheInvalidateRange(runs->guard0, sizeof(runs->guard0));
+    sceKernelDcacheInvalidateRange(runs->guard1, sizeof(runs->guard1));
+
+    uint32_t mask = 0u;
+    mask |= me_render_stream_c1_guard_fault_bytes(
+        input->guard0, ME_RENDER_C1_DIAG_GUARD_INPUT, 0u, firstDetail,
+        firstActual);
+    mask |= me_render_stream_c1_guard_fault_bytes(
+        input->guard1, ME_RENDER_C1_DIAG_GUARD_INPUT, 1u, firstDetail,
+        firstActual);
+    mask |= me_render_stream_c1_guard_fault_bytes(
+        output->guard0, ME_RENDER_C1_DIAG_GUARD_OUTPUT, 2u, firstDetail,
+        firstActual);
+    mask |= me_render_stream_c1_guard_fault_bytes(
+        output->guard1, ME_RENDER_C1_DIAG_GUARD_OUTPUT, 3u, firstDetail,
+        firstActual);
+    mask |= me_render_stream_c1_guard_fault_bytes(
+        runs->guard0, ME_RENDER_C1_DIAG_GUARD_RUN, 4u, firstDetail,
+        firstActual);
+    mask |= me_render_stream_c1_guard_fault_bytes(
+        runs->guard1, ME_RENDER_C1_DIAG_GUARD_RUN, 5u, firstDetail,
+        firstActual);
+    return mask;
+}
+
+static int me_render_stream_c1_diagnose_retire(
+    const Th07PspMeRenderStreamToken *token,
+    const Th07PspMeRenderStreamJob *job,
+    const Th07PspMeRenderStreamCompletion *completion,
+    MeRenderC1RetireDiag *diag)
+{
+    memset(diag, 0, sizeof(*diag));
+    const uint32_t slotState =
+        token && token->slot < TH07_PSP_ME_RENDER_STREAM_SLOT_COUNT
+            ? __atomic_load_n(&gMeRenderStreamSlots[token->slot].state,
+                              __ATOMIC_ACQUIRE)
+            : 0xffffffffu;
+    const int quarantined = me_render_stream_token_matches(
+        token, TH07_PSP_ME_RENDER_STREAM_STATE_QUARANTINED);
+    if (!quarantined)
+    {
+        // The worker or SC may still own the pools.  Do not inspect them.
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_OWNERSHIP, 0u,
+            TH07_PSP_ME_RENDER_STREAM_STATE_QUARANTINED, slotState);
+        diag->fatalMask = diag->mask;
+        return 0;
+    }
+
+    const uint32_t command = gMeMailboxUncached
+        ? gMeMailboxUncached->command
+        : 0xffffffffu;
+    const uint32_t stackFault = gMeMailboxUncached
+        ? gMeMailboxUncached->stackFault
+        : 0xffffffffu;
+    if (command != ME_CMD_NONE)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_COMMAND, 0u, ME_CMD_NONE, command);
+    uint32_t ownershipActual = 0u;
+    if (!gMeMailboxUncached || gMeMailboxUncached->status != ME_STAT_DONE)
+        ownershipActual |= 1u << 0;
+    if (!gMeMailboxUncached ||
+        gMeMailboxUncached->workerState != ME_WORKER_READY)
+        ownershipActual |= 1u << 1;
+    if (!gMeMailboxUncached || gMeMailboxUncached->suspendRequested != 0u)
+        ownershipActual |= 1u << 2;
+    if (__atomic_load_n(&gMeRenderStreamInFlightSlot,
+                        __ATOMIC_ACQUIRE) != 0xffffffffu)
+        ownershipActual |= 1u << 3;
+    if (__atomic_load_n(&gMeOwner, __ATOMIC_ACQUIRE) != ME_OWNER_NONE)
+        ownershipActual |= 1u << 4;
+    if (__atomic_load_n(&gMePoisoned, __ATOMIC_ACQUIRE))
+        ownershipActual |= 1u << 5;
+    if (__atomic_load_n(&gMeUnsafe, __ATOMIC_ACQUIRE))
+        ownershipActual |= 1u << 6;
+    if (!__atomic_load_n(&gMeActive, __ATOMIC_ACQUIRE))
+        ownershipActual |= 1u << 7;
+    if (!stack_guards_match_on_sc())
+        ownershipActual |= 1u << 8;
+    if (ownershipActual != 0u)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_OWNERSHIP, 1u, 0u,
+            ownershipActual);
+    if (completion->result != TH07_PSP_ME_RENDER_STREAM_RESULT_OK)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_RESULT, completion->firstBadRecord,
+            TH07_PSP_ME_RENDER_STREAM_RESULT_OK, completion->result);
+    if (completion->token.slot != job->token.slot)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_TOKEN, 0u, job->token.slot,
+            completion->token.slot);
+    if (completion->token.generation != job->token.generation)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_TOKEN, 1u, job->token.generation,
+            completion->token.generation);
+    if (completion->version != job->version)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_VERSION, 0u, job->version,
+            completion->version);
+    if (completion->flags != job->flags)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_FLAGS, 0u, job->flags,
+            completion->flags);
+    if (completion->frameSeq != job->frameSeq)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_FRAME, 0u, job->frameSeq,
+            completion->frameSeq);
+    if (completion->targetDrawSeq != job->targetDrawSeq)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_TARGET, 0u, job->targetDrawSeq,
+            completion->targetDrawSeq);
+    if (completion->stageEpoch != job->stageEpoch)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_STAGE, 0u, job->stageEpoch,
+            completion->stageEpoch);
+    if (completion->managerEpoch != job->managerEpoch)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_MANAGER, 0u, job->managerEpoch,
+            completion->managerEpoch);
+    if (completion->replayEpoch != job->replayEpoch)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_REPLAY, 0u, job->replayEpoch,
+            completion->replayEpoch);
+    if (completion->globalSignature != job->globalSignature)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_SIGNATURE, 0u, job->globalSignature,
+            completion->globalSignature);
+    if (completion->recordCount != job->recordCount)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_RECORD_COUNT, 0u, job->recordCount,
+            completion->recordCount);
+    if ((job->flags &
+         TH07_PSP_ME_RENDER_STREAM_JOB_VERIFY_INPUT_HASH) != 0u &&
+        completion->payloadHash != job->payloadHash)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_PAYLOAD_HASH, 0u, job->payloadHash,
+            completion->payloadHash);
+    for (uint32_t bucket = 0u; bucket < 6u; ++bucket)
+    {
+        if (completion->bucketEnds[bucket] != job->bucketEnds[bucket])
+            me_render_stream_c1_note_fault(
+                diag, ME_RENDER_C1_DIAG_BUCKET, bucket,
+                job->bucketEnds[bucket], completion->bucketEnds[bucket]);
+    }
+
+    const uint32_t echoFaultBits =
+        ME_RENDER_C1_DIAG_TOKEN | ME_RENDER_C1_DIAG_VERSION |
+        ME_RENDER_C1_DIAG_FLAGS | ME_RENDER_C1_DIAG_FRAME |
+        ME_RENDER_C1_DIAG_TARGET | ME_RENDER_C1_DIAG_STAGE |
+        ME_RENDER_C1_DIAG_MANAGER | ME_RENDER_C1_DIAG_REPLAY |
+        ME_RENDER_C1_DIAG_SIGNATURE | ME_RENDER_C1_DIAG_RECORD_COUNT |
+        ME_RENDER_C1_DIAG_PAYLOAD_HASH | ME_RENDER_C1_DIAG_BUCKET;
+    if (!me_render_stream_completion_echo_matches(completion, job) &&
+        (diag->mask & echoFaultBits) == 0u)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_ECHO_OTHER, 0u, 1u, 0u);
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+    if (!me_render_stream_item_completion_valid(completion, job))
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_ECHO_OTHER, 1u, 1u, 0u);
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+    if (!me_render_stream_effect_completion_valid(completion, job))
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_ECHO_OTHER, 2u, 1u, 0u);
+#endif
+#endif
+
+    const uint32_t vertexCapacity =
+        ME_RENDER_STREAM_POOL_MAX_VERTEX_BYTES /
+        sizeof(Th07PspMeRenderStreamVertex);
+    if (completion->vertexCount > vertexCapacity)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_VERTEX_COUNT, 0u, vertexCapacity,
+            completion->vertexCount);
+    else
+    {
+        const uint32_t expectedBytes =
+            completion->vertexCount *
+            sizeof(Th07PspMeRenderStreamVertex);
+        if (completion->outputBytes != expectedBytes)
+            me_render_stream_c1_note_fault(
+                diag, ME_RENDER_C1_DIAG_OUTPUT_BYTES, 0u, expectedBytes,
+                completion->outputBytes);
+    }
+    if (completion->runCount > ME_RENDER_STREAM_POOL_MAX_RUNS)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_RUN_COUNT, 0u,
+            ME_RENDER_STREAM_POOL_MAX_RUNS, completion->runCount);
+    if (completion->meFcr31Effective != 0u)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_FCR_EFFECTIVE, 0u, 0u,
+            completion->meFcr31Effective);
+    if (completion->meFcr31Before != completion->meFcr31After)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_FCR_RESTORE, 0u,
+            completion->meFcr31Before, completion->meFcr31After);
+    if (stackFault != 0u)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_STACK, 0u, 0u, stackFault);
+
+    const uint32_t outputCapacity =
+        sizeof(gMeRenderStreamOutputAreas[token->slot].vertices);
+    const uint32_t runCapacity =
+        sizeof(gMeRenderStreamRunAreas[token->slot].runs);
+    uint32_t runBytes = 0u;
+    const int outputExtentSafe = completion->outputBytes <= outputCapacity;
+    const int runExtentSafe =
+        completion->runCount <= ME_RENDER_STREAM_POOL_MAX_RUNS;
+    if (!outputExtentSafe)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_OUTPUT_BOUNDS, 0u, outputCapacity,
+            completion->outputBytes);
+    if (runExtentSafe)
+        runBytes = completion->runCount *
+                   sizeof(Th07PspMeRenderStreamRun);
+    if (!runExtentSafe || runBytes > runCapacity)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_RUN_BOUNDS, 0u, runCapacity,
+            runExtentSafe ? runBytes : completion->runCount);
+
+    uint32_t guardDetail = 0xffffffffu;
+    uint32_t guardActual = 0u;
+    const uint32_t guardMask = me_render_stream_c1_guard_fault_mask(
+        token->slot, &guardDetail, &guardActual);
+    if (guardMask & ME_RENDER_C1_DIAG_GUARD_INPUT)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_GUARD_INPUT, guardDetail,
+            ME_RENDER_STREAM_GUARD_PATTERN, guardActual);
+    if (guardMask & ME_RENDER_C1_DIAG_GUARD_OUTPUT)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_GUARD_OUTPUT, guardDetail,
+            ME_RENDER_STREAM_GUARD_PATTERN, guardActual);
+    if (guardMask & ME_RENDER_C1_DIAG_GUARD_RUN)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_GUARD_RUN, guardDetail,
+            ME_RENDER_STREAM_GUARD_PATTERN, guardActual);
+
+    if (completion->result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK &&
+        (job->flags & TH07_PSP_ME_RENDER_STREAM_JOB_HASH_OUTPUT) != 0u &&
+        outputExtentSafe && runExtentSafe && runBytes <= runCapacity)
+    {
+        const uint32_t outputHash = me_render_stream_hash_bytes(
+            gMeRenderStreamOutputAreas[token->slot].vertices,
+            completion->outputBytes);
+        const uint32_t runHash = me_render_stream_hash_bytes(
+            gMeRenderStreamRunAreas[token->slot].runs, runBytes);
+        if (completion->outputHash != outputHash)
+            me_render_stream_c1_note_fault(
+                diag, ME_RENDER_C1_DIAG_OUTPUT_HASH, 0u,
+                completion->outputHash, outputHash);
+        if (completion->runHash != runHash)
+            me_render_stream_c1_note_fault(
+                diag, ME_RENDER_C1_DIAG_RUN_HASH, 0u,
+                completion->runHash, runHash);
+    }
+
+    if (diag->mask == 0u)
+        me_render_stream_c1_note_fault(
+            diag, ME_RENDER_C1_DIAG_ECHO_OTHER, 0xffffffffu, 1u, 0u);
+
+    // Hash/shape/result faults prove C1 incorrect but are safe to disable and
+    // fall back from: ME is done, the token is quarantined, and no GE reader
+    // ever saw this M0 output.  A sole FCR restore mismatch is also safe for
+    // this C1-only path because the caller does not resume the worker: it
+    // closes admission, discards every slot, stops Custom Core, and continues
+    // with the canonical all-SC renderer.  FCR-effective, identity,
+    // ownership, bounds, guard and stack faults remain fatal.
+    const uint32_t fatalBits =
+        ME_RENDER_C1_DIAG_COMMAND | ME_RENDER_C1_DIAG_TOKEN |
+        ME_RENDER_C1_DIAG_VERSION | ME_RENDER_C1_DIAG_FLAGS |
+        ME_RENDER_C1_DIAG_FRAME | ME_RENDER_C1_DIAG_TARGET |
+        ME_RENDER_C1_DIAG_STAGE | ME_RENDER_C1_DIAG_MANAGER |
+        ME_RENDER_C1_DIAG_REPLAY | ME_RENDER_C1_DIAG_SIGNATURE |
+        ME_RENDER_C1_DIAG_RECORD_COUNT |
+        ME_RENDER_C1_DIAG_PAYLOAD_HASH | ME_RENDER_C1_DIAG_BUCKET |
+        ME_RENDER_C1_DIAG_FCR_EFFECTIVE | ME_RENDER_C1_DIAG_STACK |
+        ME_RENDER_C1_DIAG_OUTPUT_BOUNDS |
+        ME_RENDER_C1_DIAG_RUN_BOUNDS |
+        ME_RENDER_C1_DIAG_GUARD_INPUT |
+        ME_RENDER_C1_DIAG_GUARD_OUTPUT |
+        ME_RENDER_C1_DIAG_GUARD_RUN |
+        ME_RENDER_C1_DIAG_ECHO_OTHER |
+        ME_RENDER_C1_DIAG_OWNERSHIP;
+    diag->fatalMask = diag->mask & fatalBits;
+    return diag->fatalMask == 0u;
+}
+
+static int me_render_stream_c1_ready_fallback_safe(
+    const Th07PspMeRenderStreamToken *token,
+    const Th07PspMeRenderStreamJob *job,
+    const Th07PspMeRenderStreamCompletion *completion)
+{
+    if (!token || !job || !completion || !gMeMailboxUncached ||
+        !me_render_stream_token_matches(
+            token, TH07_PSP_ME_RENDER_STREAM_STATE_READY_SC) ||
+        gMeMailboxUncached->command != ME_CMD_NONE ||
+        gMeMailboxUncached->status != ME_STAT_DONE ||
+        gMeMailboxUncached->workerState != ME_WORKER_READY ||
+        gMeMailboxUncached->suspendRequested != 0u ||
+        gMeMailboxUncached->stackFault != 0u ||
+        __atomic_load_n(&gMeRenderStreamInFlightSlot,
+                        __ATOMIC_ACQUIRE) != 0xffffffffu ||
+        __atomic_load_n(&gMeOwner, __ATOMIC_ACQUIRE) != ME_OWNER_NONE ||
+        __atomic_load_n(&gMePoisoned, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&gMeUnsafe, __ATOMIC_ACQUIRE) ||
+        !__atomic_load_n(&gMeActive, __ATOMIC_ACQUIRE) ||
+        !stack_guards_match_on_sc() ||
+        completion->result != TH07_PSP_ME_RENDER_STREAM_RESULT_OK ||
+        !me_render_stream_completion_echo_matches(completion, job) ||
+        completion->meFcr31Effective != 0u ||
+        completion->meFcr31Before != completion->meFcr31After ||
+        completion->vertexCount >
+            ME_RENDER_STREAM_POOL_MAX_VERTEX_BYTES /
+                sizeof(Th07PspMeRenderStreamVertex) ||
+        completion->outputBytes !=
+            completion->vertexCount *
+                sizeof(Th07PspMeRenderStreamVertex) ||
+        completion->runCount > ME_RENDER_STREAM_POOL_MAX_RUNS)
+        return 0;
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+    if (!me_render_stream_item_completion_valid(completion, job))
+        return 0;
+#if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
+    if (!me_render_stream_effect_completion_valid(completion, job))
+        return 0;
+#endif
+#endif
+#if defined(TH07_PSP_ME_RENDER_RETIRE_DIAG)
+    if (completion->retireFaultMask != 0u)
+        return 0;
+#endif
+    return 1;
+}
+
 static int selftest_render_stream_c1_m0(void)
 {
-    // Candidate-only M0 staircase.  It measures the real command-10 pack and
-    // writeback path without submitting a GE command.  Pixel/depth equality
-    // remains a separate real-hardware readback gate.
+    // Candidate-only M0 staircase.  It measures the production command-10
+    // pack/writeback path without submitting a GE command.  Runtime direct
+    // jobs intentionally carry neither optional FNV flag; this M0 therefore
+    // uses the same contract and proves every output/run word against the
+    // independent oracle above.  Pixel/depth equality remains a separate
+    // real-hardware readback gate.
     static const uint32_t counts[4] = {0u, 128u, 512u, 1024u};
     static Th07PspMeRenderStreamVertex expected[2048]
         __attribute__((aligned(64)));
+    gMeRenderC1M0SafeFailure = 0;
     for (uint32_t caseIndex = 0u; caseIndex < 4u; ++caseIndex)
     {
         const uint32_t count = counts[caseIndex];
         Th07PspMeRenderStreamBuild build;
         if (!th07_psp_me_render_stream_acquire(&build))
             return 0;
+        // Alternate poison makes stale, duplicated and under-written output
+        // visible even when a slot is reused by a later staircase case.
+        memset(gMeRenderStreamOutputAreas[build.token.slot].vertices,
+               (caseIndex & 1u) ? 0xa5 : 0x5a,
+               sizeof(gMeRenderStreamOutputAreas[build.token.slot].vertices));
+        memset(gMeRenderStreamRunAreas[build.token.slot].runs,
+               (caseIndex & 1u) ? 0x3c : 0xc3,
+               sizeof(gMeRenderStreamRunAreas[build.token.slot].runs));
         memset(build.records, 0, count * sizeof(*build.records));
         for (uint32_t index = 0u; index < count; ++index)
         {
+            const uint32_t u0Q = 1024u + (index * 17u) % 8192u;
+            const uint32_t u1Q = u0Q + 4096u;
+            const uint32_t v0Q = 2048u + (index * 29u) % 8192u;
+            const uint32_t v1Q = v0Q + 4096u;
+            const float u0 = (float)u0Q * (1.0f / 32768.0f);
+            const float u1 = (float)u1Q * (1.0f / 32768.0f);
+            const float v0 = (float)v0Q * (1.0f / 32768.0f);
+            const float v1 = (float)v1Q * (1.0f / 32768.0f);
+            const float posX = 48.0f + (float)(index & 63u) * 8.0f;
+            const float posY = 48.0f + (float)((index >> 6u) & 15u) * 24.0f;
+            const float halfWidth = 2.0f + (float)(index & 3u);
+            const float halfHeight = 3.0f + (float)((index >> 2u) & 3u);
+            const uint32_t sourceColor =
+                0x80000000u | ((index * 0x001d3b57u) & 0x00ffffffu);
+            const uint32_t guColor =
+                (sourceColor & 0xff00ff00u) |
+                ((sourceColor & 0x00ff0000u) >> 16) |
+                ((sourceColor & 0x000000ffu) << 16);
             Th07PspMeRenderStreamRecord *record = &build.records[index];
-            record->posXBits = float_bits(100.0f);
-            record->posYBits = float_bits(100.0f);
+            record->posXBits = float_bits(posX);
+            record->posYBits = float_bits(posY);
             record->posZBits = float_bits(0.05f);
-            record->halfWidthBits = float_bits(4.0f);
-            record->halfHeightBits = float_bits(6.0f);
+            record->halfWidthBits = float_bits(halfWidth);
+            record->halfHeightBits = float_bits(halfHeight);
             record->sinBits = float_bits(0.0f);
             record->cosBits = float_bits(1.0f);
-            record->u0Bits = float_bits(0.25f);
-            record->u1Bits = float_bits(0.75f);
-            record->v0Bits = float_bits(0.125f);
-            record->v1Bits = float_bits(0.875f);
-            record->color = 0x80604020u;
+            record->u0Bits = float_bits(u0);
+            record->u1Bits = float_bits(u1);
+            record->v0Bits = float_bits(v0);
+            record->v1Bits = float_bits(v1);
+            record->color = sourceColor;
             record->sourceAndState = 1u | (10u << 16u);
             record->flags = TH07_PSP_ME_RENDER_STREAM_RECORD_DRAWABLE;
             record->slot = index;
             record->slotGeneration = index + 1u;
+
+            me_render_stream_c1_reference_vertex(
+                &expected[index * 2u],
+#if defined(TH07_PSP_ME_RENDER_UV16)
+                (uint16_t)u0Q, (uint16_t)v0Q,
+#else
+                u0, v0,
+#endif
+                guColor,
+                posX - halfWidth, posY - halfHeight, 0.05f);
+            me_render_stream_c1_reference_vertex(
+                &expected[index * 2u + 1u],
+#if defined(TH07_PSP_ME_RENDER_UV16)
+                (uint16_t)u1Q, (uint16_t)v1Q,
+#else
+                u1, v1,
+#endif
+                guColor,
+                posX + halfWidth, posY + halfHeight, 0.05f);
         }
 
         Th07PspMeRenderStreamJob job;
         memset(&job, 0, sizeof(job));
         job.token = build.token;
         job.version = TH07_PSP_ME_RENDER_STREAM_VERSION;
-        job.flags = TH07_PSP_ME_RENDER_STREAM_JOB_VERIFY_INPUT_HASH |
-                    TH07_PSP_ME_RENDER_STREAM_JOB_HASH_OUTPUT;
+        job.flags = 0u;
         job.frameSeq = 0xc100u + caseIndex;
         job.targetDrawSeq = 0xc200u + caseIndex;
         job.stageEpoch = 1u;
@@ -12900,8 +13754,7 @@ static int selftest_render_stream_c1_m0(void)
         for (uint32_t bucket = 0u; bucket < 6u; ++bucket)
             job.bucketEnds[bucket] = count;
         job.recordCount = count;
-        job.payloadHash = th07_psp_me_render_stream_hash(
-            build.records, count * sizeof(*build.records));
+        job.payloadHash = 0u;
         job.viewportLeftBits = float_bits(0.0f);
         job.viewportTopBits = float_bits(0.0f);
         job.viewportRightBits = float_bits(640.0f);
@@ -12927,17 +13780,43 @@ static int selftest_render_stream_c1_m0(void)
 
         Th07PspMeRenderStreamCompletion completion;
         Th07PspMeRenderStreamReady ready;
-        if (th07_psp_me_render_stream_retire(
-                &build.token, &completion, &ready) != 1)
-            return 0;
-        for (uint32_t index = 0u; index < count; ++index)
+        memset(&completion, 0, sizeof(completion));
+        memset(&ready, 0, sizeof(ready));
+        const int retireResult = th07_psp_me_render_stream_retire(
+            &build.token, &completion, &ready);
+        if (retireResult != 1)
         {
-            me_render_stream_selftest_vertex(
-                &expected[index * 2u], 0.25f, 0.125f, 0x80604020u,
-                96.0f, 94.0f, 0.05f);
-            me_render_stream_selftest_vertex(
-                &expected[index * 2u + 1u], 0.75f, 0.875f,
-                0x80604020u, 104.0f, 106.0f, 0.05f);
+            MeRenderC1RetireDiag diag;
+            const int safe = me_render_stream_c1_diagnose_retire(
+                &build.token, &job, &completion, &diag);
+            const int quarantined = me_render_stream_token_matches(
+                &build.token,
+                TH07_PSP_ME_RENDER_STREAM_STATE_QUARANTINED);
+            // This is the only synchronous failure report.  retire() has
+            // already ended SC_TRANSITION and made the slot non-recyclable.
+            th07_psp_boot_notef(
+                "MERW C1M0 RETIRE-NG F%lu N%lu RR%d M%08lx D%08lx "
+                "E%08lx A%08lx Z%08lx FB%08lx FA%08lx SAFE%d Q%d",
+                (unsigned long)(
+#if defined(TH07_PSP_ME_RENDER_UV16)
+                    1u |
+#endif
+#if defined(TH07_PSP_ME_RENDER_XYZ16)
+                    2u |
+#endif
+                    0u),
+                (unsigned long)count, retireResult,
+                (unsigned long)diag.mask,
+                (unsigned long)diag.detail,
+                (unsigned long)diag.expected,
+                (unsigned long)diag.actual,
+                (unsigned long)diag.fatalMask,
+                (unsigned long)completion.meFcr31Before,
+                (unsigned long)completion.meFcr31After,
+                safe, quarantined);
+            if (safe)
+                gMeRenderC1M0SafeFailure = 1;
+            return 0;
         }
         Th07PspMeRenderStreamRun expectedRun;
         memset(&expectedRun, 0, sizeof(expectedRun));
@@ -12954,19 +13833,43 @@ static int selftest_render_stream_c1_m0(void)
         const uint32_t expectedBytes =
             count * 2u * sizeof(Th07PspMeRenderStreamVertex);
         const uint32_t expectedRunCount = count ? 1u : 0u;
-        const int compared =
+        const int shapeValid =
             completion.result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK &&
             completion.vertexCount == count * 2u &&
             completion.outputBytes == expectedBytes &&
             completion.runCount == expectedRunCount &&
             ready.vertexBytes == expectedBytes &&
-            ready.runCount == expectedRunCount &&
-            th07_psp_me_render_stream_compare(
+            ready.runCount == expectedRunCount;
+        const int compareResult = shapeValid
+            ? th07_psp_me_render_stream_compare(
                 &build.token, expected, expectedBytes,
                 count ? &expectedRun : (const Th07PspMeRenderStreamRun *)0,
-                expectedRunCount, &mismatch) == 1;
+                expectedRunCount, &mismatch)
+            : -1;
+        const int compared = compareResult == 1;
+        // The token still owns READY_SC here.  Validate its guards while that
+        // ownership is stable, then release it before the synchronous boot
+        // note can enter Memory Stick I/O.  The former order logged first and
+        // reread guards after publishing FREE, so its N=0 hardware failure
+        // could not even distinguish release from an ownership-invalid guard
+        // read before the following 128-record case.
+        const int readyOwned = me_render_stream_token_matches(
+            &build.token, TH07_PSP_ME_RENDER_STREAM_STATE_READY_SC);
+        const int guardsValid = readyOwned &&
+            me_render_stream_guards_match_on_sc(build.token.slot);
+        const int exactMismatch = shapeValid && compareResult == 0 &&
+            (mismatch.kind == TH07_PSP_ME_RENDER_STREAM_MISMATCH_VERTEX ||
+             mismatch.kind == TH07_PSP_ME_RENDER_STREAM_MISMATCH_RUN);
+        const int safeExactMismatch = exactMismatch && guardsValid &&
+            me_render_stream_c1_ready_fallback_safe(
+                &build.token, &job, &completion);
+        const int released = (compared || safeExactMismatch) && guardsValid &&
+            th07_psp_me_render_stream_release_ready(&build.token);
+        if (safeExactMismatch && released)
+            gMeRenderC1M0SafeFailure = 1;
         th07_psp_boot_notef(
-            "MERW C1M0 F%lu N%lu VB%lu MI%lu MK%lu MW%lu OK%d",
+            "MERW C1M0 F%lu N%lu VB%lu H0 MI%lu MK%lu MW%lu "
+            "OK%d Q%d G%d R%d X%d S%d",
             (unsigned long)(
 #if defined(TH07_PSP_ME_RENDER_UV16)
                 1u |
@@ -12978,10 +13881,10 @@ static int selftest_render_stream_c1_m0(void)
             (unsigned long)count, (unsigned long)expectedBytes,
             (unsigned long)completion.meInvalidateCycles,
             (unsigned long)completion.meKernelCycles,
-            (unsigned long)completion.meWritebackCycles, compared);
-        if (!th07_psp_me_render_stream_release_ready(&build.token) ||
-            !compared || !me_render_stream_guards_match_on_sc(
-                             build.token.slot))
+            (unsigned long)completion.meWritebackCycles, compared,
+            readyOwned, guardsValid, released, exactMismatch,
+            safeExactMismatch && released);
+        if (!compared || !readyOwned || !guardsValid || !released)
             return 0;
     }
 
@@ -14814,6 +15717,39 @@ static int selftest_bullet_compact_update(void)
         for (uint32_t slot = 0u; slot < count; ++slot)
         {
             seed->candidateBits[slot >> 5u] |= 1u << (slot & 31u);
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, generation) =
+                0x10000u + slot + 1u;
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posXBits) =
+                me_render_float_bits(
+                64.0f + (float)(slot & 7u) * 0.5f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posYBits) =
+                me_render_float_bits(100.0f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posZBits) =
+                me_render_float_bits(0.25f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityXBits) =
+                me_render_float_bits(0.25f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityYBits) =
+                me_render_float_bits(-0.5f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityZBits) =
+                me_render_float_bits(0.125f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteWidthBits) =
+                me_render_float_bits(16.0f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteHeightBits) =
+                me_render_float_bits(16.0f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeXBits) =
+                me_render_float_bits(4.0f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeYBits) =
+                me_render_float_bits(4.0f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosXBits) =
+                me_render_float_bits(
+                64.25f + (float)(slot & 7u) * 0.5f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosYBits) =
+                me_render_float_bits(99.5f);
+            TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosZBits) =
+                me_render_float_bits(0.375f);
+            seed->inBoundsBits[slot >> 5u] |= 1u << (slot & 31u);
+#else
             Th07PspMeBulletCompactSeedSlot *record = &seed->slots[slot];
             record->generation = 0x10000u + slot + 1u;
             record->posXBits = me_render_float_bits(
@@ -14837,6 +15773,7 @@ static int selftest_bullet_compact_update(void)
             record->staticFlags =
                 TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE |
                 TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS;
+#endif
 #endif
         }
         __asm__ volatile("sync");
@@ -14899,6 +15836,24 @@ static int selftest_bullet_compact_update(void)
             const uint32_t slot = count - 1u;
             const Th07PspMeBulletCompactSlotResult *result =
                 &output->slots[slot];
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+#if !defined(TH07_PSP_ME_BULLET_OUTPUT_SLIM)
+            if (result->posXBits !=
+                    TH07_PSP_ME_BULLET_SEED_FIELD(
+                        publishedSeed, slot, nextPosXBits) ||
+                result->posYBits !=
+                    TH07_PSP_ME_BULLET_SEED_FIELD(
+                        publishedSeed, slot, nextPosYBits) ||
+                result->posZBits !=
+                    TH07_PSP_ME_BULLET_SEED_FIELD(
+                        publishedSeed, slot, nextPosZBits) ||
+                result->generation !=
+#else
+            if (result->generation !=
+#endif
+                    (uint16_t)TH07_PSP_ME_BULLET_SEED_FIELD(
+                        publishedSeed, slot, generation) ||
+#else
 #if !defined(TH07_PSP_ME_BULLET_OUTPUT_SLIM)
             if (result->posXBits !=
                     publishedSeed->slots[slot].nextPosXBits ||
@@ -14911,6 +15866,7 @@ static int selftest_bullet_compact_update(void)
             if (result->generation !=
 #endif
                     (uint16_t)publishedSeed->slots[slot].generation ||
+#endif
                 result->flags !=
                     (TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE |
                      TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS |
@@ -15074,6 +16030,23 @@ static void me_item_motion_selftest_prepare(
     bs->header.candidateCount = 1u;
     bs->header.commitSequence = bs->header.frameSeq;
     bs->candidateBits[0] = 1u;
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, generation) = 0x10001u;
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, posXBits) = me_render_float_bits(64.0f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, posYBits) = me_render_float_bits(100.0f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, posZBits) = me_render_float_bits(0.25f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, velocityXBits) = me_render_float_bits(0.25f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, velocityYBits) = me_render_float_bits(-0.5f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, velocityZBits) = me_render_float_bits(0.125f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, spriteWidthBits) = me_render_float_bits(16.0f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, spriteHeightBits) = me_render_float_bits(16.0f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, grazeSizeXBits) = me_render_float_bits(4.0f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, grazeSizeYBits) = me_render_float_bits(4.0f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, nextPosXBits) = me_render_float_bits(64.25f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, nextPosYBits) = me_render_float_bits(99.5f);
+    TH07_PSP_ME_BULLET_SEED_FIELD(bs, 0u, nextPosZBits) = me_render_float_bits(0.375f);
+    bs->inBoundsBits[0] = 1u;
+#else
     bs->slots[0].generation = 0x10001u;
     bs->slots[0].posXBits = me_render_float_bits(64.0f);
     bs->slots[0].posYBits = me_render_float_bits(100.0f);
@@ -15094,6 +16067,7 @@ static void me_item_motion_selftest_prepare(
     bs->slots[0].staticFlags =
         TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE |
         TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS;
+#endif
 #endif
     __asm__ volatile("sync");
     bs->header.committed = TH07_PSP_ME_BULLET_COMPACT_SEED_COMMITTED;
@@ -16179,6 +17153,46 @@ int th07_psp_me_audio_init(void)
 #endif
     if (!renderStreamSelftestPassed)
     {
+#if defined(TH07_PSP_ME_RENDER_UV16) || \
+    defined(TH07_PSP_ME_RENDER_XYZ16)
+        if (gMeRenderC1M0SafeFailure)
+        {
+            // C1 is optional.  Its M0 worker is DONE, no ME/GE owner remains,
+            // every guard is intact, and the bad slot has never reached GE.
+            // Close all admission first, discard the boot-only quarantined
+            // pools, then stop Custom Core before returning the established
+            // init result 0 (main.cpp selects the canonical all-SC path).
+            __atomic_store_n(&gMeActive, 0, __ATOMIC_RELEASE);
+#if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
+            __atomic_store_n(&gMeItemRenderEnabled, 0u,
+                             __ATOMIC_RELEASE);
+            gMeItemSelftestInProgress = 0u;
+#endif
+#if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
+            __atomic_store_n(&gMeItemMotionEnabled, 0u,
+                             __ATOMIC_RELEASE);
+            __atomic_store_n(&gMeItemMotionOutputValid, 0u,
+                             __ATOMIC_RELEASE);
+            gMeItemMotionSelftestInProgress = 0u;
+#endif
+            initialize_render_stream_slots();
+            th07_psp_boot_note(
+                "MERW C1M0 CLEAN NG -> C1/ME OFF; STOP FOR ALL SC");
+            th07_psp_me_audio_shutdown();
+            if (!__atomic_load_n(&gMeStarted, __ATOMIC_ACQUIRE) &&
+                !__atomic_load_n(&gMeUnsafe, __ATOMIC_ACQUIRE) &&
+                !__atomic_load_n(&gMePowerLocked, __ATOMIC_ACQUIRE))
+            {
+                th07_psp_boot_note(
+                    "MERW C1 OFF; CANONICAL SC CONTINUE");
+                return 0;
+            }
+            __atomic_store_n(&gMeUnsafe, 1, __ATOMIC_RELEASE);
+            th07_psp_boot_note(
+                "MERW C1 FALLBACK STOP NG -> COLD REBOOT");
+            return -1;
+        }
+#endif
         __atomic_store_n(&gMeActive, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&gMeUnsafe, 1, __ATOMIC_RELEASE);
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)

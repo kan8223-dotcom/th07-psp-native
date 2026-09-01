@@ -92,7 +92,12 @@ uint32_t PerfLogCrc32(const char *data, std::size_t bytes)
 
 const char *PerfProfileToken()
 {
-#if defined(TH07_PSP_PERF_ATTRIB) && defined(TH07_PSP_PERF_M2)
+#if defined(TH07_PSP_PERF_AB_COMPARE) && \
+    defined(TH07_PSP_ME_RENDER_WORKER)
+    return "ABME";
+#elif defined(TH07_PSP_PERF_AB_COMPARE)
+    return "ABSC";
+#elif defined(TH07_PSP_PERF_ATTRIB) && defined(TH07_PSP_PERF_M2)
     return "M2";
 #elif defined(TH07_PSP_PERF_ATTRIB) && defined(TH07_PSP_PERF_M3)
     return "M3";
@@ -561,14 +566,16 @@ extern "C" void th07_psp_perf_log_flush()
     {
         return;
     }
-    char endMarker[80];
-    std::snprintf(endMarker, sizeof(endMarker), "PERF END VALID=%u DROP=%u",
-                  gPerfLogInvalid ? 0u : 1u, gPerfLogDroppedLines);
-    th07_psp_perf_note(endMarker);
+    // GameManager already flushes at the gameplay boundary.  The process-exit
+    // recovery call must not manufacture a second empty PERF END record.
     if (gPerfLogUsed == 0 && gPerfLogDroppedLines == 0)
     {
         return;
     }
+    char endMarker[80];
+    std::snprintf(endMarker, sizeof(endMarker), "PERF END VALID=%u DROP=%u",
+                  gPerfLogInvalid ? 0u : 1u, gPerfLogDroppedLines);
+    th07_psp_perf_note(endMarker);
     const bool bootLogLockAvailable = gBootLogSema >= 0;
     const bool bootLogLocked = LockBootLog();
     if (bootLogLockAvailable && !bootLogLocked)

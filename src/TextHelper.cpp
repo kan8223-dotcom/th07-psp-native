@@ -20,6 +20,12 @@
 #include "fileio.hpp"
 #include "graphics/PspGuGraphics.hpp"
 #include "optional_ram_budget.hpp"
+#if defined(TH07_PSP_LOCAL_FONT_SUBSET)
+#include "Th07FontCoverage.hpp"
+#endif
+#if defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+#include "pbg4/Pbg4Archive.hpp"
+#endif
 #if defined(TH07_PSP_TEXT_PREWARM_PROFILE)
 #include <pspkernel.h>
 #endif
@@ -27,6 +33,115 @@
 
 static TTF_Font *g_Font = nullptr;
 static TextHelper g_TextWorkBuffer;
+
+#if defined(TH07_PSP) && defined(TH07_PSP_LOCAL_FONT_SUBSET)
+namespace
+{
+constexpr std::size_t kExpectedStockFontCodepointCount = 1190u;
+constexpr std::size_t kExpectedNameEntryCodepointCount = 94u;
+static_assert(kTh07PspStockFontCodepointCount == kExpectedStockFontCodepointCount,
+              "the local font profile must pin the audited 1190-codepoint stock union");
+static_assert(kTh07PspNameEntryCodepointCount == kExpectedNameEntryCodepointCount,
+              "the local font profile must include the complete name-entry charset");
+static_assert(sizeof(kTh07PspStockFontCodepoints) /
+                      sizeof(kTh07PspStockFontCodepoints[0]) ==
+                  kExpectedStockFontCodepointCount,
+              "the local font coverage array and count must agree");
+
+struct PspDefaultFontCandidate
+{
+    const char *filename;
+    const char *logName;
+    long faceIndex;
+};
+
+constexpr PspDefaultFontCandidate kPspDefaultFontCandidates[] = {
+    {"msgothic-subset.ttf", "subset", 0},
+    {"msgothic.ttc", "msgothic", 0},
+    {"NotoSansJP-Regular.ttf", "noto", 0},
+};
+
+long g_DefaultFontFaceIndex = 0;
+
+bool FontProvidesStockCoverage(TTF_Font *font, u32 *firstMissing,
+                               std::size_t *providedCount)
+{
+    if (firstMissing)
+    {
+        *firstMissing = 0;
+    }
+    if (providedCount)
+    {
+        *providedCount = 0;
+    }
+    if (!font)
+    {
+        return false;
+    }
+
+    std::size_t provided = 0;
+    u32 missing = 0;
+    for (std::size_t i = 0; i < kExpectedStockFontCodepointCount; ++i)
+    {
+        const u32 codepoint = static_cast<u32>(kTh07PspStockFontCodepoints[i]);
+        if (TTF_GlyphIsProvided32(font, static_cast<Uint32>(codepoint)) != 0)
+        {
+            ++provided;
+        }
+        else if (!missing)
+        {
+            missing = codepoint;
+        }
+    }
+    if (firstMissing)
+    {
+        *firstMissing = missing;
+    }
+    if (providedCount)
+    {
+        *providedCount = provided;
+    }
+    return provided == kExpectedStockFontCodepointCount;
+}
+
+TTF_Font *OpenCoverageCheckedFont(const PspDefaultFontCandidate &candidate,
+                                  char *fontPath, std::size_t fontPathBytes)
+{
+    const char *resolvedPath =
+        th07_psp_resolve_path(candidate.filename, fontPath, fontPathBytes);
+    TTF_Font *font = TTF_OpenFontIndex(resolvedPath, 10, candidate.faceIndex);
+    if (!font)
+    {
+        th07_psp_boot_notef(
+            "FONT COVERAGE candidate=%s face=%ld result=open-fail provided=0/%u missing=n/a",
+            candidate.logName, candidate.faceIndex,
+            static_cast<unsigned int>(kExpectedStockFontCodepointCount));
+        return nullptr;
+    }
+
+    u32 firstMissing = 0;
+    std::size_t provided = 0;
+    if (!FontProvidesStockCoverage(font, &firstMissing, &provided))
+    {
+        th07_psp_boot_notef(
+            "FONT COVERAGE candidate=%s face=%ld result=reject provided=%u/%u missing=U+%04X",
+            candidate.logName, candidate.faceIndex, static_cast<unsigned int>(provided),
+            static_cast<unsigned int>(kExpectedStockFontCodepointCount),
+            static_cast<unsigned int>(firstMissing));
+        TTF_CloseFont(font);
+        return nullptr;
+    }
+
+    g_DefaultFontFaceIndex = candidate.faceIndex;
+    th07_psp_boot_notef(
+        "FONT COVERAGE candidate=%s face=%ld result=ok provided=%u/%u missing=none",
+        candidate.logName, candidate.faceIndex,
+        static_cast<unsigned int>(kExpectedStockFontCodepointCount),
+        static_cast<unsigned int>(kExpectedStockFontCodepointCount));
+    return font;
+}
+} // namespace
+#endif
 
 #if defined(TH07_PSP) && !defined(TH07_PSP_1000)
 namespace
@@ -173,6 +288,14 @@ void RememberDefaultFontPath(const char *path)
     std::snprintf(g_DefaultFontPath, sizeof(g_DefaultFontPath), "%s", path);
 }
 
+#if defined(TH07_PSP_LOCAL_FONT_SUBSET)
+void RememberDefaultFontSelection(const char *path, long faceIndex)
+{
+    RememberDefaultFontPath(path);
+    g_DefaultFontFaceIndex = faceIndex;
+}
+#endif
+
 void ResetDefaultFontRuntimeTracking()
 {
     g_LastPreRenderFont = nullptr;
@@ -201,6 +324,34 @@ void ReleaseDefaultFontMainRamBacking()
     }
     g_DefaultFontMainRamData = nullptr;
     g_DefaultFontMainRamBytes = 0;
+}
+
+void ReleaseDefaultFontMainRamBackingPreserveWorkspace()
+{
+    if (g_DefaultFontMainRamStream)
+    {
+        SDL_RWclose(g_DefaultFontMainRamStream);
+    }
+    g_DefaultFontMainRamStream = nullptr;
+    if (g_DefaultFontMainRamData)
+    {
+        Th07PspOptionalRamReleaseFontBufferPreserveWorkspace(
+            g_DefaultFontMainRamData);
+    }
+    g_DefaultFontMainRamData = nullptr;
+    g_DefaultFontMainRamBytes = 0;
+}
+
+void ReleaseDefaultFontPromotionBuffer(void *fontData)
+{
+#if defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+    // A failed promotion must return a shared FONT lease to IDLE without
+    // destroying the title recovery arena.  For a legacy standalone font
+    // allocation the owner still performs an ordinary free.
+    Th07PspOptionalRamReleaseFontBufferPreserveWorkspace(fontData);
+#else
+    Th07PspOptionalRamReleaseFontBuffer(fontData);
+#endif
 }
 #endif
 
@@ -511,6 +662,22 @@ static TTF_Font *OpenDefaultFont()
 {
 #if defined(TH07_PSP)
     char fontPath[768];
+#if defined(TH07_PSP_LOCAL_FONT_SUBSET)
+    for (const PspDefaultFontCandidate &candidate : kPspDefaultFontCandidates)
+    {
+        TTF_Font *font =
+            OpenCoverageCheckedFont(candidate, fontPath, sizeof(fontPath));
+        if (!font)
+        {
+            continue;
+        }
+#if defined(TH07_PSP_FONT_MAIN_RAM) && !defined(TH07_PSP_1000)
+        RememberDefaultFontSelection(fontPath, candidate.faceIndex);
+#endif
+        return font;
+    }
+    return nullptr;
+#else
     // Match the final TH06 PSP port: a locally supplied MS Gothic is the
     // first choice because its hinted strokes survive an 8-9 pixel physical
     // glyph much better.  Noto remains the redistributable release fallback;
@@ -537,6 +704,7 @@ static TTF_Font *OpenDefaultFont()
 #endif
     }
     return font;
+#endif
 #else
     return TTF_OpenFont("msgothic.ttc", 10);
 #endif
@@ -583,7 +751,7 @@ bool TextHelper::PromoteDefaultFontToMainRam()
     SDL_RWclose(fileStream);
     if (bytesRead != static_cast<std::size_t>(fileBytes))
     {
-        Th07PspOptionalRamReleaseFontBuffer(fontData);
+        ReleaseDefaultFontPromotionBuffer(fontData);
         ReportDefaultFontMainRamFailureOnce("read");
         return false;
     }
@@ -592,18 +760,24 @@ bool TextHelper::PromoteDefaultFontToMainRam()
         SDL_RWFromConstMem(fontData, static_cast<int>(fileBytes));
     if (!memoryStream)
     {
-        Th07PspOptionalRamReleaseFontBuffer(fontData);
+        ReleaseDefaultFontPromotionBuffer(fontData);
         ReportDefaultFontMainRamFailureOnce("rw");
         return false;
     }
     // Keep the RWops and its borrowed backing explicitly alive until the font
-    // is closed. TTF_OpenFontRW receives freesrc=0 so teardown order is fully
-    // visible and cannot free the owner allocation behind FreeType's back.
+    // is closed. The TTF_OpenFont*RW call receives freesrc=0 so teardown order
+    // is fully visible and cannot free the owner allocation behind FreeType's
+    // back.
+#if defined(TH07_PSP_LOCAL_FONT_SUBSET)
+    TTF_Font *memoryFont =
+        TTF_OpenFontIndexRW(memoryStream, 0, 10, g_DefaultFontFaceIndex);
+#else
     TTF_Font *memoryFont = TTF_OpenFontRW(memoryStream, 0, 10);
+#endif
     if (!memoryFont)
     {
         SDL_RWclose(memoryStream);
-        Th07PspOptionalRamReleaseFontBuffer(fontData);
+        ReleaseDefaultFontPromotionBuffer(fontData);
         ReportDefaultFontMainRamFailureOnce("ttf");
         return false;
     }
@@ -633,7 +807,12 @@ bool TextHelper::DemoteDefaultFontToFile()
     }
     // Open the established selected file before dropping the RAM-backed font.
     // If this fails, keep the known-good memory font and its backing untouched.
+#if defined(TH07_PSP_LOCAL_FONT_SUBSET)
+    TTF_Font *fileFont =
+        TTF_OpenFontIndex(g_DefaultFontPath, 10, g_DefaultFontFaceIndex);
+#else
     TTF_Font *fileFont = TTF_OpenFont(g_DefaultFontPath, 10);
+#endif
     if (!fileFont)
     {
         return false;
@@ -655,6 +834,38 @@ bool TextHelper::IsDefaultFontInMainRam()
 {
 #if defined(TH07_PSP) && defined(TH07_PSP_FONT_MAIN_RAM) && !defined(TH07_PSP_1000)
     return g_Font && g_DefaultFontMainRamData && g_DefaultFontMainRamStream;
+#else
+    return false;
+#endif
+}
+
+bool TextHelper::DemoteDefaultFontToFileForTitleLoad()
+{
+#if defined(TH07_PSP) && defined(TH07_PSP_FONT_MAIN_RAM) && \
+    defined(TH07_PSP_TITLE_FONT_HOLE_SWAP) && !defined(TH07_PSP_1000)
+    if (!g_Font || !g_DefaultFontMainRamData || !g_DefaultFontMainRamStream ||
+        !g_DefaultFontPath[0])
+    {
+        return false;
+    }
+#if defined(TH07_PSP_LOCAL_FONT_SUBSET)
+    TTF_Font *fileFont =
+        TTF_OpenFontIndex(g_DefaultFontPath, 10, g_DefaultFontFaceIndex);
+#else
+    TTF_Font *fileFont = TTF_OpenFont(g_DefaultFontPath, 10);
+#endif
+    if (!fileFont)
+    {
+        return false;
+    }
+    TTF_SetFontStyle(fileFont, TTF_STYLE_BOLD);
+
+    TTF_CloseFont(g_Font);
+    ReleaseDefaultFontMainRamBackingPreserveWorkspace();
+    g_Font = fileFont;
+    ResetDefaultFontRuntimeTracking();
+    th07_psp_boot_note("font Main RAM released for A6V3 title hole");
+    return true;
 #else
     return false;
 #endif
@@ -1368,6 +1579,13 @@ ZunResult TextHelper::CreateTextBuffer()
     // The optional PSP-2000+ profile performs one contiguous read at process
     // startup. Every stage then uses the exact selected font bytes from Main
     // RAM; failure leaves the established file-backed path active.
+#if defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+    // A6v3 reserves title01.anm's exact decompressed size first. The RAM font
+    // borrows this same process arena until the next title load, avoiding the
+    // A6v1 font+workspace double allocation.
+    Th07PspOptionalRamReserveTitleFontWorkspace(
+        g_Pbg4Archive.GetEntrySize("title01.anm"));
+#endif
     PromoteDefaultFontToMainRam();
 
     // Pay FreeType's one-time Japanese charmap/glyph setup cost while the

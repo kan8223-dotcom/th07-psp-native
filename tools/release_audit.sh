@@ -3,7 +3,7 @@ set -eu
 
 fail=0
 debug_eboot_pattern='TH07 PSP stage debug|TH07 PSP music perf|TH07 PSP perf diag|Touhou 7 PSP SHIKIGAMI|SHIKIGAMI TH07|direct game|direct transition test|text render [0-9]|se_power0 caller|PERF S%d|PERF S[0-9]|PERF DRAW|PERF GPU'
-forbidden_pattern='(^|/)(th07\.dat|thbgm\.dat|music_bg\.rgb565|title01\.psp1000\.(cache|tmp)|msgothic\.ttc|score\.dat|th07\.cfg|TH07PSP_BOOT\.LOG|SETTINGS\.TXT)$|\.rpy$'
+forbidden_pattern='(^|/)(th07\.dat|thbgm\.dat|music_bg\.rgb565|title01\.psp1000\.(cache|tmp)|msgothic[^/]*\.(ttc|ttf|otf)|score\.dat|th07\.cfg|TH07PSP_BOOT\.LOG|SETTINGS\.TXT)$|\.rpy$'
 
 archive_member_hash()
 {

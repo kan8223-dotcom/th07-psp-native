@@ -532,7 +532,11 @@ static_assert(__builtin_offsetof(BulletCommand, type) == 16u &&
 #endif
 #if defined(TH07_PSP_ME_BULLET_COMPACT_UPDATE)
 static_assert(sizeof(Th07PspMeBulletCompactSeedHeader) == 64u &&
-#if defined(TH07_PSP_ME_BULLET_SEED_SLIM)
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+                  sizeof(Th07PspMeBulletCompactSeedSlot) == 64u &&
+                  TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE == 1040u &&
+                  sizeof(Th07PspMeBulletCompactSeed) == 58560u &&
+#elif defined(TH07_PSP_ME_BULLET_SEED_SLIM)
                   sizeof(Th07PspMeBulletCompactSeedSlot) == 56u &&
                   sizeof(Th07PspMeBulletCompactSeed) == 57664u &&
 #else
@@ -1405,6 +1409,74 @@ bool PspMeBulletCompactTryAdoptSeed(
         return false;
     }
 
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+    const u32 seedGeneration =
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, generation);
+    const u32 seedFlags = TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE |
+        (((seed->inBoundsBits[slot >> 5u] &
+           (1u << (slot & 31u))) != 0u)
+             ? TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS : 0u);
+    if (manager->pspMeRenderSlotGenerations[slot] != seedGeneration ||
+        seedGeneration == 0u ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posXBits) !=
+            PspMeRenderFloatBits(bullet->pos.x) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posYBits) !=
+            PspMeRenderFloatBits(bullet->pos.y) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, posZBits) !=
+            PspMeRenderFloatBits(bullet->pos.z) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityXBits) !=
+            PspMeRenderFloatBits(bullet->velocity.x) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityYBits) !=
+            PspMeRenderFloatBits(bullet->velocity.y) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, velocityZBits) !=
+            PspMeRenderFloatBits(bullet->velocity.z) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteWidthBits) !=
+            PspMeRenderFloatBits(
+            bullet->sprites.spriteBullet.sprite->widthPx) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, spriteHeightBits) !=
+            PspMeRenderFloatBits(
+            bullet->sprites.spriteBullet.sprite->heightPx) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeXBits) !=
+            PspMeRenderFloatBits(bullet->sprites.grazeSize.x) ||
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, grazeSizeYBits) !=
+            PspMeRenderFloatBits(bullet->sprites.grazeSize.y))
+    {
+        return false;
+    }
+
+    u16 flags = static_cast<u16>(seedFlags);
+    if (output &&
+        (output->candidateBits[slot >> 5u] &
+         (1u << (slot & 31u))) != 0u)
+    {
+        const Th07PspMeBulletCompactSlotResult &result =
+            output->slots[slot];
+        constexpr u16 allowedOutputFlags =
+            TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE |
+            TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS |
+            TH07_PSP_ME_BULLET_COMPACT_SLOT_NO_COLLISION;
+        if (result.generation == static_cast<u16>(seedGeneration) &&
+            (result.flags & ~allowedOutputFlags) == 0u &&
+            (result.flags &
+             TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE) != 0u &&
+#if !defined(TH07_PSP_ME_BULLET_OUTPUT_SLIM)
+            result.posXBits == TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosXBits) &&
+            result.posYBits == TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosYBits) &&
+            result.posZBits == TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosZBits) &&
+#endif
+            (result.flags &
+             TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS) ==
+                (seedFlags &
+                 TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS))
+        {
+            flags = result.flags;
+        }
+    }
+
+#else
     const Th07PspMeBulletCompactSeedSlot &seedSlot = seed->slots[slot];
 #if !defined(TH07_PSP_ME_BULLET_SEED_SLIM)
     constexpr u32 allowedSeedFlags =
@@ -1476,12 +1548,25 @@ bool PspMeBulletCompactTryAdoptSeed(
         }
     }
 
+#endif
+#if !defined(TH07_PSP_ME_BULLET_SEED_SOA)
     std::memcpy(&bullet->pos.x, &seedSlot.nextPosXBits,
                 sizeof(bullet->pos.x));
     std::memcpy(&bullet->pos.y, &seedSlot.nextPosYBits,
                 sizeof(bullet->pos.y));
     std::memcpy(&bullet->pos.z, &seedSlot.nextPosZBits,
                 sizeof(bullet->pos.z));
+#else
+    const u32 nextPosXBits =
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosXBits);
+    const u32 nextPosYBits =
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosYBits);
+    const u32 nextPosZBits =
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosZBits);
+    std::memcpy(&bullet->pos.x, &nextPosXBits, sizeof(bullet->pos.x));
+    std::memcpy(&bullet->pos.y, &nextPosYBits, sizeof(bullet->pos.y));
+    std::memcpy(&bullet->pos.z, &nextPosZBits, sizeof(bullet->pos.z));
+#endif
     *outFlags = flags;
     return true;
 }
@@ -1515,6 +1600,52 @@ bool PspMeBulletCompactTryAdoptTrustedSeed(
     // Keep only the compact record's structural proof and the full-u32 slot
     // generation here; the ten scattered AoS reloads belong solely to the
     // canonical/JIT fallback path.
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+    const u32 seedGeneration =
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, generation);
+    const u32 seedFlags = TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE |
+        (((seed->inBoundsBits[slot >> 5u] &
+           (1u << (slot & 31u))) != 0u)
+             ? TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS : 0u);
+    if (manager->pspMeRenderSlotGenerations[slot] != seedGeneration ||
+        seedGeneration == 0u)
+    {
+        return false;
+    }
+
+    u16 flags = static_cast<u16>(seedFlags);
+    if (output &&
+        (output->candidateBits[slot >> 5u] &
+         (1u << (slot & 31u))) != 0u)
+    {
+        const Th07PspMeBulletCompactSlotResult &result =
+            output->slots[slot];
+        constexpr u16 allowedOutputFlags =
+            TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE |
+            TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS |
+            TH07_PSP_ME_BULLET_COMPACT_SLOT_NO_COLLISION;
+        if (result.generation == static_cast<u16>(seedGeneration) &&
+            (result.flags & ~allowedOutputFlags) == 0u &&
+            (result.flags &
+             TH07_PSP_ME_BULLET_COMPACT_SLOT_CANDIDATE) != 0u &&
+#if !defined(TH07_PSP_ME_BULLET_OUTPUT_SLIM)
+            result.posXBits == TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosXBits) &&
+            result.posYBits == TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosYBits) &&
+            result.posZBits == TH07_PSP_ME_BULLET_SEED_FIELD(
+                seed, slot, nextPosZBits) &&
+#endif
+            (result.flags &
+             TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS) ==
+                (seedFlags &
+                 TH07_PSP_ME_BULLET_COMPACT_SLOT_IN_BOUNDS))
+        {
+            flags = result.flags;
+        }
+    }
+
+#else
     const Th07PspMeBulletCompactSeedSlot &seedSlot = seed->slots[slot];
 #if !defined(TH07_PSP_ME_BULLET_SEED_SLIM)
     constexpr u32 allowedSeedFlags =
@@ -1569,12 +1700,25 @@ bool PspMeBulletCompactTryAdoptTrustedSeed(
         }
     }
 
+#endif
+#if !defined(TH07_PSP_ME_BULLET_SEED_SOA)
     std::memcpy(&bullet->pos.x, &seedSlot.nextPosXBits,
                 sizeof(bullet->pos.x));
     std::memcpy(&bullet->pos.y, &seedSlot.nextPosYBits,
                 sizeof(bullet->pos.y));
     std::memcpy(&bullet->pos.z, &seedSlot.nextPosZBits,
                 sizeof(bullet->pos.z));
+#else
+    const u32 nextPosXBits =
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosXBits);
+    const u32 nextPosYBits =
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosYBits);
+    const u32 nextPosZBits =
+        TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, nextPosZBits);
+    std::memcpy(&bullet->pos.x, &nextPosXBits, sizeof(bullet->pos.x));
+    std::memcpy(&bullet->pos.y, &nextPosYBits, sizeof(bullet->pos.y));
+    std::memcpy(&bullet->pos.z, &nextPosZBits, sizeof(bullet->pos.z));
+#endif
     *outFlags = flags;
     return true;
 }
@@ -1725,7 +1869,7 @@ u32 PspMeItemMotionCandidateLimitFor(
     if (base >= kPspMeAdaptiveBudgetTicks)
         return 0u;
 
-    // Do not inspect the 70-KiB seed payload here: command 10 produced it on
+    // Do not inspect the full seed payload here: command 10 produced it on
     // ME and this p9 gate intentionally invalidates only guards/header.  Use
     // the worst-case trig charge for every header-authenticated candidate;
     // DONE poll performs the one required full invalidation before JIT use.

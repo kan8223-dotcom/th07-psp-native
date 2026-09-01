@@ -64,6 +64,17 @@
     defined(TH07_PSP_1000)
 #error "C2 compact arenas are PSP-2000+ research only"
 #endif
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA) && \
+    !defined(TH07_PSP_ME_BULLET_COMPACT_UPDATE)
+#error "D1 SoA requires TH07_PSP_ME_BULLET_COMPACT_UPDATE"
+#endif
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA) && \
+    defined(TH07_PSP_ME_BULLET_SEED_SLIM)
+#error "D1 SoA and TH07_PSP_ME_BULLET_SEED_SLIM are mutually exclusive"
+#endif
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA) && defined(TH07_PSP_1000)
+#error "D1 SoA is PSP-2000+ research only"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -352,6 +363,11 @@ int th07_psp_me_bullet_fast_update_run(
 #endif
 
 #if defined(TH07_PSP_ME_BULLET_COMPACT_UPDATE)
+#if defined(TH07_PSP_ME_BULLET_SEED_SLIM) || \
+    defined(TH07_PSP_ME_BULLET_SEED_SOA)
+#define TH07_PSP_ME_BULLET_SEED_HAS_PLANES 1
+#endif
+
 // I-ME7 removes I-ME6's second scattered traversal.  I-ME5 emits this
 // immutable, contiguous seed as a side effect of the direct-list render walk;
 // a following asynchronous ME job consumes it without touching Bullet or
@@ -375,16 +391,30 @@ enum
 #else
     TH07_PSP_ME_ITEM_SEED_ABI_BIAS = 0u,
 #endif
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+    TH07_PSP_ME_BULLET_SEED_SOA_ABI_BIAS = 0x00000800u,
+#else
+    TH07_PSP_ME_BULLET_SEED_SOA_ABI_BIAS = 0u,
+#endif
     TH07_PSP_ME_BULLET_COMPACT_VERSION =
         0x4d453137u + TH07_PSP_ME_BULLET_OUTPUT_ABI_BIAS +
         TH07_PSP_ME_BULLET_SEED_ABI_BIAS +
-        TH07_PSP_ME_ITEM_SEED_ABI_BIAS,
-#if defined(TH07_PSP_ME_BULLET_SEED_SLIM)
+        TH07_PSP_ME_ITEM_SEED_ABI_BIAS +
+        TH07_PSP_ME_BULLET_SEED_SOA_ABI_BIAS,
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+    TH07_PSP_ME_BULLET_COMPACT_SEED_VERSION = 0x42533133u, // "BS13"
+#elif defined(TH07_PSP_ME_BULLET_SEED_SLIM)
     TH07_PSP_ME_BULLET_COMPACT_SEED_VERSION = 0x42533132u, // "BS12"
 #else
     TH07_PSP_ME_BULLET_COMPACT_SEED_VERSION = 0x42533131u, // "BS11"
 #endif
     TH07_PSP_ME_BULLET_COMPACT_MAX_SLOTS = 1024,
+    // D1 planes carry 1,024 logical slots plus one 64-byte cache-line skew.
+    // A 4-KiB pitch would make the same slot in all fourteen planes contend
+    // for the same small set of Allegrex D-cache sets.  The extra line rotates
+    // each successive plane while leaving the logical slot ABI unchanged.
+    TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE =
+        TH07_PSP_ME_BULLET_COMPACT_MAX_SLOTS + 16,
     TH07_PSP_ME_BULLET_COMPACT_ACTIVE_WORDS = 32,
     TH07_PSP_ME_BULLET_COMPACT_BANKS = 2,
     TH07_PSP_ME_BULLET_COMPACT_BACKEND_MAIN_RAM = 0,
@@ -617,12 +647,45 @@ typedef struct Th07PspMeBulletCompactSeed
 {
     Th07PspMeBulletCompactSeedHeader header;
     unsigned int candidateBits[TH07_PSP_ME_BULLET_COMPACT_ACTIVE_WORDS];
-#if defined(TH07_PSP_ME_BULLET_SEED_SLIM)
+#if defined(TH07_PSP_ME_BULLET_SEED_HAS_PLANES)
     unsigned int inBoundsBits[TH07_PSP_ME_BULLET_COMPACT_ACTIVE_WORDS];
 #endif
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+    // D1A transposes the exact BS12 logical record into field planes.  The
+    // slot remains the array index, and every plane covers all 1,024 stable
+    // IDs.  Sixteen trailing words skew successive planes by one cache line;
+    // they are padding and never become logical slots.  No float conversion
+    // or semantic packing is introduced.
+    unsigned int generation[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int posXBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int posYBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int posZBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int velocityXBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int velocityYBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int velocityZBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int spriteWidthBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int spriteHeightBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int grazeSizeXBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int grazeSizeYBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int nextPosXBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int nextPosYBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+    unsigned int nextPosZBits[TH07_PSP_ME_BULLET_COMPACT_SOA_PLANE_STRIDE];
+#else
     Th07PspMeBulletCompactSeedSlot
         slots[TH07_PSP_ME_BULLET_COMPACT_MAX_SLOTS];
+#endif
 } Th07PspMeBulletCompactSeed;
+
+// A single spelling lets the SC and ME contracts use the same logical field
+// names in legacy AoS, C2b and D1 SoA builds.  The macro is an lvalue so it is
+// also used by the capture producer; slot bounds are proved by its caller.
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+#define TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, field) \
+    ((seed)->field[(slot)])
+#else
+#define TH07_PSP_ME_BULLET_SEED_FIELD(seed, slot, field) \
+    ((seed)->slots[(slot)].field)
+#endif
 
 // Captured after Player priority 8.  A priority-9 launcher may overlap Enemy,
 // Effect and Item; SC must clear use of NO_COLLISION if these exact global

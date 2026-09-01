@@ -228,21 +228,17 @@ class PspFinal60ProfilerTests(unittest.TestCase):
         accept = perf.split("#elif defined(TH07_PSP_PERF_ACCEPT)", 1)[1].split(
             "        ResetPerfWindowCounters();", 1
         )[0]
-        dense_start, dense_end, dense = preprocessor_block(
-            accept, "#if defined(TH07_PSP_PERF_DENSE_SLICE)"
-        )
-        plain_accept = accept[:dense_start] + accept[dense_end:]
-        dense_without_merw = without_preprocessor_blocks(
-            dense, "#if defined(TH07_PSP_ME_RENDER_WORKER)"
-        )
-        self.assertEqual(plain_accept.count("th07_psp_perf_note("), 1)
-        self.assertEqual(dense_without_merw.count("th07_psp_perf_note("), 1)
-        self.assertIn("PERF ACCEPT", plain_accept)
-        self.assertIn("PERF DENSE", dense_without_merw)
-        self.assertIn("th07_psp_perf_note(merwMessage)", dense)
-        self.assertIn("th07_psp_perf_note(merwTimingMessage)", dense)
-        self.assertNotIn("PERF DRAW", plain_accept)
-        self.assertNotIn("PERF GPU", plain_accept)
+        # Legacy detail profiles may emit their owned DENSE/MERW lines above,
+        # while the final ACCEPT record itself remains exactly one line.  The
+        # RID30 A/B branch deliberately drains those counters without logging.
+        format_tail = accept[accept.index("const unsigned int critical10") :]
+        self.assertEqual(format_tail.count("th07_psp_perf_note("), 1)
+        self.assertIn("PERF ACCEPT", format_tail)
+        self.assertIn("PERF DENSE", accept)
+        self.assertIn("th07_psp_perf_note(merwMessage)", accept)
+        self.assertIn("th07_psp_perf_note(merwTimingMessage)", accept)
+        self.assertNotIn("PERF DRAW", format_tail)
+        self.assertNotIn("PERF GPU", format_tail)
 
     def test_dense_slice_is_bounded_to_current_stack_and_stage6_windows(self) -> None:
         self.assertIn("PSP_PERF_DENSE_SLICE ?= 0", self.makefile)
@@ -304,9 +300,6 @@ class PspFinal60ProfilerTests(unittest.TestCase):
 
     def test_dense_slice_closure_and_probe_cost_are_hard_gates(self) -> None:
         report = function_body(self.graphics, "void ReportPerfWindow")
-        _, _, dense = preprocessor_block(
-            report, "#if defined(TH07_PSP_PERF_DENSE_SLICE)"
-        )
         for required in (
             "updateErrorUs == 0ull",
             "drawErrorUs == 0ull",
@@ -316,7 +309,23 @@ class PspFinal60ProfilerTests(unittest.TestCase):
             "kDenseProbeLimitQ8 = 50ull * 256ull",
             "PERF DENSE",
         ):
-            self.assertIn(required, dense)
+            self.assertIn(required, report)
+
+    def test_rid30_ab_fps_is_psp_wall_clock_only(self) -> None:
+        report = function_body(self.graphics, "void ReportPerfWindow")
+        self.assertIn(
+            "defined(TH07_PSP_PERF_ATTRIB) || defined(TH07_PSP_PERF_AB_COMPARE)",
+            report,
+        )
+        self.assertIn("const unsigned long long elapsedUs = geEndUs - mPerfStartUs;", report)
+        self.assertIn("mPerfFrames * 10000000ull /", report)
+        self.assertIn("HWFPS%u.%u ELUS%llu", report)
+        self.assertNotIn("curFps", report)
+        self.assertIn('return "ABME";', self.fileio)
+        self.assertIn('return "ABSC";', self.fileio)
+        self.assertIn("psp3000-rid30-ab-me-build", self.makefile)
+        self.assertIn("psp3000-rid30-ab-sc-build", self.makefile)
+        self.assertIn("PSP_PERF_AB_COMPARE=1", self.makefile)
 
     def test_overflow_is_latched_and_release_perf_note_is_noop(self) -> None:
         note = function_body(self.fileio, 'extern "C" void th07_psp_perf_note')

@@ -101,6 +101,7 @@ void th07_shikigami_record_fatal(const char *message);
  * Latch a sealed RAM-log snapshot at a non-gameplay boundary.  The caller
  * never performs network work; the observer drains the request later.
  */
+int th07_shikigami_perf_log_transport_ready(void);
 void th07_shikigami_request_perf_log(void);
 #endif
 

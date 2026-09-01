@@ -1,15 +1,33 @@
 #include "FileSystem.hpp"
 
 #include <cstdio>
+#include <cstring>
 
 #include "GameErrorContext.hpp"
 #include "Supervisor.hpp"
 #include "pbg4/Pbg4Archive.hpp"
 #if defined(TH07_PSP)
 #include "fileio.hpp"
+#include "optional_ram_budget.hpp"
 #endif
 #if defined(TH07_PSP_1000)
 #include "../psp/psp1000_arena.hpp"
+#endif
+
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT) && \
+    !defined(TH07_PSP_1000)
+namespace
+{
+bool IsTitleWorkspaceTransientAnm(const char *filename)
+{
+    if (!filename || std::strncmp(filename, "face_", 5u) != 0)
+    {
+        return false;
+    }
+    const std::size_t length = std::strlen(filename);
+    return length > 9u && std::strcmp(filename + length - 4u, ".anm") == 0;
+}
+} // namespace
 #endif
 
 u32 g_LastFileSize;
@@ -53,6 +71,26 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
         {
             Supervisor::DebugPrint("%s Decode ... \n", filename);
             buf = NULL;
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE) && \
+    !defined(TH07_PSP_1000)
+            // title01.anm is a 5.4 MiB temporary source.  Its first load occurs
+            // before gameplay fragments the heap, so retain that successful
+            // block as a process workspace and decompress every later title
+            // return into the same contiguous address.
+            if (strcmp(filename, "title01.anm") == 0)
+            {
+                buf = static_cast<u8 *>(Th07PspOptionalRamAcquireTitleArchive(fsize));
+            }
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT)
+            else if (IsTitleWorkspaceTransientAnm(filename))
+            {
+                // Every face_*.anm call site enters through LoadAnms.  A6v2's
+                // compact path must release this serial whole-workspace loan
+                // before returning; any non-compact source is rejected there.
+                buf = static_cast<u8 *>(Th07PspOptionalRamAcquireTransientArchive(fsize));
+            }
+#endif
+#endif
 #if defined(TH07_PSP_1000)
             const char *extension = strrchr(filename, '.');
             // Small/non-embedded ANMs may intentionally retain their source
@@ -133,6 +171,11 @@ void FileSystem::ReleaseFile(void *buffer)
 {
     if (!buffer)
         return;
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE) && \
+    !defined(TH07_PSP_1000)
+    if (Th07PspOptionalRamReleaseArchiveWorkspace(buffer))
+        return;
+#endif
 #if defined(TH07_PSP_1000)
     if (th07_psp_1000_release_anm(buffer))
         return;

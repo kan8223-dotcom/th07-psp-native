@@ -201,6 +201,7 @@ class AdaptiveItemMeTests(unittest.TestCase):
                 "PSP_TEXT_BLIT_FAST": "1",
                 "PSP_TEXT_PREWARM_PROFILE": "1",
                 "PSP_USAGE_METER": "1",
+                "PSP_USAGE_METER_TOGGLE": "0",
                 "PSP_EASY_MIST_AUDIO": "0",
             },
         )

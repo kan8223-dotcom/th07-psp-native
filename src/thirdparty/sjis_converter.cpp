@@ -14,7 +14,9 @@ char *sjis2utf8(const char *input)
 
     while (indexInput < len)
     {
-        char arraySection = ((uint8_t)input[indexInput]) >> 4;
+        const uint8_t firstByte = (uint8_t)input[indexInput];
+        const char arraySection = firstByte >> 4;
+        uint16_t sourceValue = firstByte;
 
         size_t arrayOffset;
         if (arraySection == 0x8)
@@ -29,16 +31,25 @@ char *sjis2utf8(const char *input)
         // determining real array offset
         if (arrayOffset)
         {
-            arrayOffset += (((uint8_t)input[indexInput]) & 0xf) << 8;
+            arrayOffset += (firstByte & 0xf) << 8;
             indexInput++;
             if (indexInput >= len)
                 break;
+            sourceValue = (uint16_t)((firstByte << 8) |
+                                     (uint8_t)input[indexInput]);
         }
         arrayOffset += (uint8_t)input[indexInput++];
         arrayOffset <<= 1;
 
         // unicode number is...
         uint16_t unicodeValue = (shiftJIS_convTable[arrayOffset] << 8) | shiftJIS_convTable[arrayOffset + 1];
+
+        // TH07's Windows assets are CP932, not strict JIS Shift-JIS.  The
+        // legacy table maps 0x8160 to U+301C, while Windows/MS Gothic and the
+        // local font authority correctly use U+FF5E.  Preserve that original
+        // PC rendering without adding a duplicate glyph to the subset.
+        if (sourceValue == 0x8160u)
+            unicodeValue = 0xff5eu;
 
         // converting to UTF8
         if (unicodeValue < 0x80)

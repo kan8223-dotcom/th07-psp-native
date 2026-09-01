@@ -12,7 +12,8 @@ GUI_SOURCE = ROOT / "src" / "Gui.cpp"
 
 
 def function_body(source: str, signature: str, next_signature: str) -> str:
-    return source[source.index(signature) : source.index(next_signature)]
+    start = source.index(signature)
+    return source[start : source.index(next_signature, start)]
 
 
 class PspTextPrewarmProfileContractTest(unittest.TestCase):

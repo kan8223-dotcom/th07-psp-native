@@ -134,25 +134,33 @@ class PspMeBulletCompactUpdateI7Contracts(unittest.TestCase):
             self.render,
             "compactSeed->header.committed = 0u;",
             "me_render_stream_expand_kernel(",
-            "if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK &&",
+            "renderStreamFcr31After != originalFcr31",
+            "if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK)",
             "compactSeed->header.payloadHash = 0u;",
+            "compactSeed->header.committed = 0u;",
+            "meLibDcacheWritebackRange((uint32_t)compactSeed,",
+            '__asm__ volatile("sync" : : : "memory");',
             'compactSeed->header.committed =\n                TH07_PSP_ME_BULLET_COMPACT_SEED_COMMITTED;',
+            "(uint32_t)&compactSeed->header,",
+            '__asm__ volatile("sync" : : : "memory");',
             "compactSeedCommitted = 1u;",
-            "else if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK)",
             "if (compactSeed && !compactSeedCommitted)",
             "meLibDcacheInvalidateRange((uint32_t)compactSeed",
         )
-        success_start = self.render.index(
-            "if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK &&"
+        strict_gate = self.render.index(
+            "renderStreamFcr31After != originalFcr31"
         )
-        success_end = self.render.index(
-            "else if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK)",
-            success_start,
+        success_start = self.render.index(
+            "if (result == TH07_PSP_ME_RENDER_STREAM_RESULT_OK)",
+            strict_gate,
         )
         commit = self.render.index(
             "TH07_PSP_ME_BULLET_COMPACT_SEED_COMMITTED", success_start
         )
-        self.assertLess(commit, success_end)
+        cleanup = self.render.index(
+            "if (compactSeed && !compactSeedCommitted)", commit
+        )
+        self.assertLess(commit, cleanup)
 
     def test_seed_capture_has_its_own_second_generation_bracket(self) -> None:
         assert_order(

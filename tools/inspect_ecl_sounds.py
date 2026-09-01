@@ -50,7 +50,8 @@ def decompress(src: bytes, expected_size: int) -> bytes:
 
 
 def extract_entry(archive_path: str, wanted_name: str) -> bytes:
-    archive = open(archive_path, "rb").read()
+    with open(archive_path, "rb") as stream:
+        archive = stream.read()
     magic, count, header_offset, header_size = struct.unpack_from("<4sIII", archive)
     if magic != b"PBG4":
         raise ValueError(f"bad PBG4 magic: {magic!r}")

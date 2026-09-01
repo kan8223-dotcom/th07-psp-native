@@ -24,6 +24,9 @@
 #include "fileio.hpp"
 #include "graphics/PspGuGraphics.hpp"
 #endif
+#if defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+#include "title_font_hole_swap.hpp"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -2539,7 +2542,18 @@ ZunResult MainMenu::ActualAddedCallback()
 #if defined(TH07_PSP_PERF_DIAG)
     th07_psp_heap_note("menu pre title anm");
 #endif
-    if (g_AnmManager->LoadAnms(ANM_FILE_TITLE, "data/title01.anm", ANM_OFFSET_TITLE) != ZUN_SUCCESS)
+#if defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+    // A6v3 opens the RAM-font allocation as a temporary contiguous hole only
+    // across title01.anm's synchronous load. A failed load keeps the file font
+    // for Supervisor's trim/retry; the successful attempt restores RAM mode.
+    const Th07PspTitleFontHoleSwap titleFontSwap = Th07PspBeginTitleFontHoleSwap();
+#endif
+    const i32 titleLoadResult =
+        g_AnmManager->LoadAnms(ANM_FILE_TITLE, "data/title01.anm", ANM_OFFSET_TITLE);
+#if defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+    Th07PspEndTitleFontHoleSwap(titleFontSwap, titleLoadResult == ZUN_SUCCESS);
+#endif
+    if (titleLoadResult != ZUN_SUCCESS)
     {
         return ZUN_ERROR;
     }

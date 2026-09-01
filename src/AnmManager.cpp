@@ -28,6 +28,10 @@
 
 #include "fileio.hpp"
 #include "graphics/PspGuGraphics.hpp"
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT) || \
+    defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+#include "optional_ram_budget.hpp"
+#endif
 #endif
 #if defined(TH07_PSP_1000)
 #include "psp1000_arena.hpp"
@@ -926,6 +930,13 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
         g_GameErrorContext.Fatal("アニメが読み込めません。データが失われてるか壊れています\n");
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+    const bool sourceUsesSynchronousWorkspace =
+        Th07PspOptionalRamIsArchiveWorkspace(entry);
+#elif defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT)
+    const bool sourceUsesSynchronousWorkspace =
+        Th07PspOptionalRamIsTransientArchive(entry);
+#endif
 #if defined(TH07_PSP_PERF_DIAG)
     th07_psp_boot_notef("ANM BEGIN %s %uK", path ? path : "?", g_LastFileSize / 1024u);
 #endif
@@ -1049,6 +1060,21 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
 #if defined(TH07_PSP_PERF_DIAG)
         th07_psp_boot_notef("ANM COMPACT SKIP %s SRC%uK META%uK VALID%u", path ? path : "?",
                             sourceSize / 1024u, compactSize / 1024u, canCompact ? 1u : 0u);
+#endif
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT) || \
+    defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
+        if (sourceUsesSynchronousWorkspace)
+        {
+            // The workspace is synchronous decode scratch, never a lifetime
+            // owner.  Keeping a non-compact source here would let later ANMs
+            // overwrite live scripts/pixels.  Release and fail this optional
+            // stage registration cleanly instead.
+            th07_psp_boot_notef("ANM WORKSPACE REJECT %s VALID%u META%uK",
+                                path ? path : "?", canCompact ? 1u : 0u,
+                                compactSize / 1024u);
+            FileSystem::ReleaseFile(sourceBase);
+            return ZUN_ERROR;
+        }
 #endif
     }
 #endif

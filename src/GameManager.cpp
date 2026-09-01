@@ -979,13 +979,18 @@ ZunResult GameManager::DeletedCallback(GameManager *arg)
     // Commit timed windows only after gameplay has stopped.
     Th07PspPerfFinalizeGameplayWindow();
 #if defined(TH07_PSP_SHIKIGAMI) && !defined(TH07_PSP_1000)
-    // Seal and latch only.  Returning from a replay to the title is enough for
-    // the observer to transmit the RAM log; the main thread performs no
-    // network call/allocation/I/O and does not wait for a Memory Stick flush.
-    // main's stop path retains the original synchronous flush as the final
-    // fallback when telemetry is unavailable or incomplete.
-    th07_psp_perf_log_seal();
-    th07_shikigami_request_perf_log();
+    // A compiled-in observer is not necessarily a live transport: public and
+    // A/B builds deliberately leave its destination empty.  Only suppress the
+    // post-game bulk write when the UDP worker actually completed setup.
+    if (th07_shikigami_perf_log_transport_ready())
+    {
+        th07_psp_perf_log_seal();
+        th07_shikigami_request_perf_log();
+    }
+    else
+    {
+        th07_psp_perf_log_flush();
+    }
 #else
     // Non-SHIKIGAMI diagnostics retain their proven per-game bulk flush.
     th07_psp_perf_log_flush();

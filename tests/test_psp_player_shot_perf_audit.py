@@ -173,7 +173,12 @@ class PspPlayerShotPerfIndependentAudit(unittest.TestCase):
         )
         self.assertIn('"AVGUS%u MAXUS%u P99US%u "', accept)
         self.assertIn('"M%u.%u PSD%llu PSN%llu PSF%u "', accept)
-        self.assertEqual(accept.count('"PERF ACCEPT '), 1)
+        # One legacy player-shot line plus one compact RID30 A/B hardware-FPS
+        # line.  The raw PL/M counters below must still occur only in the
+        # legacy branch.
+        self.assertEqual(accept.count('"PERF ACCEPT '), 2)
+        self.assertEqual(accept.count('"PERF ACCEPT S%d ST%d N%u HWFPS'), 1)
+        self.assertEqual(accept.count('"PERF ACCEPT S%d ST%d N%u AVG'), 1)
         self.assertEqual(accept.count("th07_psp_perf_note(acceptMessage)"), 1)
         for counter in (
             "gPerfPlayerShotFrontendUs",

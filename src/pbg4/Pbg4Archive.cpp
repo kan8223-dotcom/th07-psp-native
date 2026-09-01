@@ -10,6 +10,9 @@
 #if defined(TH07_PSP_1000)
 #include "../../psp/psp1000_arena.hpp"
 #endif
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE) && !defined(TH07_PSP_1000)
+#include "optional_ram_budget.hpp"
+#endif
 
 Pbg4Archive g_UnusedPbg4ArchiveArray[20];
 
@@ -95,6 +98,20 @@ u8 *Pbg4Archive::ReadDecompressEntry(const char *filename, u8 *buf)
     dstLen = entry->decompressedSize;
 #if defined(TH07_PSP_1000)
     if (th07_psp_1000_arena_owns(buf))
+    {
+        if (!this->fileAbstraction->Seek(entry->dataOffset, g_SeekModes[0]))
+        {
+            goto err;
+        }
+        return Lzss::DecompressFile(this->fileAbstraction, static_cast<u32>(dwBytes), buf,
+                                    static_cast<u32>(dstLen));
+    }
+#endif
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE) && !defined(TH07_PSP_1000)
+    // A6's output is borrowed because the fragmented heap cannot supply a
+    // multi-MiB block.  Avoid reintroducing that same failure through the
+    // compressed-input malloc: stream with the PSP1000-proven decoder path.
+    if (Th07PspOptionalRamIsArchiveWorkspace(buf))
     {
         if (!this->fileAbstraction->Seek(entry->dataOffset, g_SeekModes[0]))
         {

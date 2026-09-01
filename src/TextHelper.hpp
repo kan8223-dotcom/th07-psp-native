@@ -67,6 +67,7 @@ struct TextHelper
     static bool PromoteDefaultFontToMainRam();
     static bool DemoteDefaultFontToFile();
     static bool IsDefaultFontInMainRam();
+    static bool DemoteDefaultFontToFileForTitleLoad();
     // The stage cache stores final 16-pixel-high RGBA upload rows in borrowed
     // Main RAM.  optional_ram_budget is the sole allocator/owner; TextHelper
     // only attaches, validates and detaches the pointer.  A disabled/rejected

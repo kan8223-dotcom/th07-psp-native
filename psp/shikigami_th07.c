@@ -217,6 +217,12 @@ typedef struct PerfLogTransfer
 static const char g_target_ipv4[] = TH07_SHIKIGAMI_HOST_IPV4;
 static volatile int g_running;
 static SceUID g_worker_thread = -1;
+#if defined(TH07_PSP_PERF_DIAG)
+/* True only after the UDP observer has completed setup.  A compiled-in
+ * observer with an empty destination must not suppress the Memory Stick
+ * fallback for the RAM performance log. */
+static volatile int g_perf_log_transport_ready;
+#endif
 
 /* One main-thread writer and one worker reader use this sequence counter. */
 static volatile uint32_t g_snapshot_sequence;
@@ -550,6 +556,11 @@ void th07_shikigami_record_fatal(const char *message)
 }
 
 #if defined(TH07_PSP_PERF_DIAG)
+int th07_shikigami_perf_log_transport_ready(void)
+{
+    return __atomic_load_n(&g_perf_log_transport_ready, __ATOMIC_ACQUIRE);
+}
+
 void th07_shikigami_request_perf_log(void)
 {
     uint32_t request =
@@ -1290,6 +1301,9 @@ static int observer_worker(SceSize args, void *argp)
     if (result < 0)
         goto cleanup;
     failure_stage = SHIKIGAMI_STAGE_NONE;
+#if defined(TH07_PSP_PERF_DIAG)
+    __atomic_store_n(&g_perf_log_transport_ready, 1, __ATOMIC_RELEASE);
+#endif
 
     ge_aperture_bytes = (uint32_t)sceGeEdramGetSize();
     read_snapshot(&current);
@@ -1364,6 +1378,9 @@ static int observer_worker(SceSize args, void *argp)
                          &sequence, &identity);
 
 cleanup:
+#if defined(TH07_PSP_PERF_DIAG)
+    __atomic_store_n(&g_perf_log_transport_ready, 0, __ATOMIC_RELEASE);
+#endif
     if (failure_stage != SHIKIGAMI_STAGE_NONE)
         publish_notice(SHIKIGAMI_NOTICE_SETUP_FAILED, failure_stage, result);
     if (socket_id >= 0)
@@ -1388,10 +1405,18 @@ int th07_shikigami_start(void)
     int result;
 
     if (g_target_ipv4[0] == '\0')
+    {
+#if defined(TH07_PSP_PERF_DIAG)
+        __atomic_store_n(&g_perf_log_transport_ready, 0, __ATOMIC_RELEASE);
+#endif
         return 0;
+    }
     if (g_worker_thread >= 0)
         return 1;
 
+#if defined(TH07_PSP_PERF_DIAG)
+    __atomic_store_n(&g_perf_log_transport_ready, 0, __ATOMIC_RELEASE);
+#endif
     __atomic_store_n(&g_running, 1, __ATOMIC_RELEASE);
     g_worker_thread = sceKernelCreateThread("th07_shikigami_observer",
                                             observer_worker, 0x30, 0x4000,
@@ -1423,6 +1448,9 @@ void th07_shikigami_shutdown(void)
 
     if (g_worker_thread < 0)
         return;
+#if defined(TH07_PSP_PERF_DIAG)
+    __atomic_store_n(&g_perf_log_transport_ready, 0, __ATOMIC_RELEASE);
+#endif
     __atomic_store_n(&g_running, 0, __ATOMIC_RELEASE);
     timeout = 2u * 1000u * 1000u;
     result = sceKernelWaitThreadEnd(g_worker_thread, &timeout);

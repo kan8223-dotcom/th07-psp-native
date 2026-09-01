@@ -4685,7 +4685,7 @@ class PspGuGraphics final : public ZunGraphics
 
         th07_psp_perf_set_window_id(++mPerfWindowSerial);
 
-#if defined(TH07_PSP_PERF_ATTRIB)
+#if defined(TH07_PSP_PERF_ATTRIB) || defined(TH07_PSP_PERF_AB_COMPARE)
         const unsigned long long elapsedUs = geEndUs - mPerfStartUs;
         const unsigned int fps10 = elapsedUs
                                        ? static_cast<unsigned int>(mPerfFrames * 10000000ull /
@@ -5193,6 +5193,44 @@ class PspGuGraphics final : public ZunGraphics
 #endif
 #elif defined(TH07_PSP_PERF_ACCEPT)
         int acceptProfileValid = th07_psp_perf_log_valid();
+        unsigned int abMeAverageUs = 0u;
+        unsigned int abMeFaults = 0u;
+#if defined(TH07_PSP_PERF_AB_COMPARE)
+        // The A/B build writes exactly one compact timing record per window.
+        // Drain normal diagnostic accumulators without formatting their
+        // multi-line reports, which would otherwise penalize only the ME
+        // build at every 120-frame boundary.
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
+        Th07PspDenseSliceWindow abDense{};
+        Th07PspTakeDenseSliceWindow(&abDense);
+        Th07PspEnemyP5WarmWindow abEnemyP5{};
+        Th07PspTakeEnemyP5WarmWindow(&abEnemyP5);
+#endif
+#if defined(TH07_PSP_ME_RENDER_WORKER)
+        Th07PspMeRenderShadowWindow abMerw{};
+        Th07PspTakeMeRenderShadowWindow(&abMerw);
+        unsigned int abAudioJobs = 0u;
+        unsigned int abAudioFallbacks = 0u;
+        unsigned int abAudioTimeouts = 0u;
+        unsigned int abAudioMaxWaitUs = 0u;
+        th07_psp_me_audio_diag_window(
+            &abAudioJobs, &abAudioFallbacks, &abAudioTimeouts,
+            &abAudioMaxWaitUs);
+        const unsigned long long abMeCycles =
+            abMerw.meInvalidateCycles + abMerw.meKernelCycles +
+            abMerw.meWritebackCycles + abMerw.compactKernelCycles;
+        const unsigned long long abMeTotalUs = abMeCycles * 2ull / 333ull;
+        abMeAverageUs = static_cast<unsigned int>(
+            abMeTotalUs / std::max(mPerfFrames, 1u));
+        abMeFaults =
+            abMerw.timeouts + abMerw.protocolFault +
+            abMerw.streamMismatch + abMerw.streamSizeMismatch +
+            abMerw.streamVertexMismatch + abMerw.streamRunMismatch +
+            abMerw.streamHashMismatch + abMerw.compactProtocolFault +
+            abAudioTimeouts;
+        acceptProfileValid = acceptProfileValid && abMeFaults == 0u;
+#endif
+#else
 #if defined(TH07_PSP_ME_RENDER_WORKER)
         Th07PspMeRenderShadowWindow merw{};
         Th07PspTakeMeRenderShadowWindow(&merw);
@@ -6178,6 +6216,7 @@ class PspGuGraphics final : public ZunGraphics
             gPerfDrawOutOfRange == 0u;
         PerfM3ClearWindowTransferCounters();
 #endif
+#endif /* TH07_PSP_PERF_AB_COMPARE */
         const unsigned int critical10 = cpu10 + ge10;
         const unsigned int criticalAverageUs = static_cast<unsigned int>(
             (mPerfCpuUs + mPerfGeUs) / mPerfFrames);
@@ -6190,6 +6229,27 @@ class PspGuGraphics final : public ZunGraphics
         const unsigned int matrices10 =
             mMatrixSubmissions * 10u / mPerfFrames;
 #endif
+#if defined(TH07_PSP_PERF_AB_COMPARE)
+        char acceptMessage[320];
+        std::snprintf(
+            acceptMessage, sizeof(acceptMessage),
+            "PERF ACCEPT S%d ST%d N%u HWFPS%u.%u ELUS%llu "
+            "AVG%u.%u MAX%u.%u P99%u.%u OVR%u MISS%u "
+            "AVGUS%u MAXUS%u P99US%u MEAVGUS%u MEFAULT%u "
+            "H%u/%u/%u/%u/%u/%u/%u/%u/%u/%u V%d",
+            mPerfWindowState, mPerfWindowStage, mPerfFrames,
+            fps10 / 10, fps10 % 10, elapsedUs,
+            critical10 / 10, critical10 % 10, max10 / 10, max10 % 10,
+            p9910 / 10, p9910 % 10, mPerfOverBudgetFrames, mPerfVsyncMisses,
+            criticalAverageUs, static_cast<unsigned int>(mPerfMaxFrameUs),
+            p99Us, abMeAverageUs, abMeFaults,
+            mPerfCriticalHistogram[0], mPerfCriticalHistogram[1],
+            mPerfCriticalHistogram[2], mPerfCriticalHistogram[3],
+            mPerfCriticalHistogram[4], mPerfCriticalHistogram[5],
+            mPerfCriticalHistogram[6], mPerfCriticalHistogram[7],
+            mPerfCriticalHistogram[8], mPerfCriticalHistogram[9],
+            acceptProfileValid);
+#else
 #if defined(TH07_PSP_PERF_PLAYER_SHOT)
         char acceptMessage[320];
 #else
@@ -6218,6 +6278,7 @@ class PspGuGraphics final : public ZunGraphics
             mPerfCriticalHistogram[6], mPerfCriticalHistogram[7],
             mPerfCriticalHistogram[8], mPerfCriticalHistogram[9],
             acceptProfileValid);
+#endif /* TH07_PSP_PERF_AB_COMPARE */
         th07_psp_perf_note(acceptMessage);
 #endif
 

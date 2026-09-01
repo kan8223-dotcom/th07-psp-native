@@ -24,5 +24,60 @@
     "sha256": "AA55040A1332E599224656F6665C597FB2165EC811BCDA2434F8BF51522A4159",
     "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/c1_uv16_m0_deploy_20260901/EBOOT.C1-UV16.XMB.PBP",
     "note": "実機不合格: N=0 OK後cleanup gateでタイトル前cold reboot。再投入禁止"
+  },
+  "RID30-AB-ME-C1-UV16-M0F": {
+    "sha256": "960FCCB71183AFFBFD31970574FAF99651822BB30FB9D4BAC3460D23B8A1E469",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_ab_me_c1_uv16_m0f_pc_20260901/EBOOT.PBP",
+    "note": "実機不合格: N=0 PASS後N=128でFCR_RESTORE、GE未到達。UV単独原因説はC5で棄却。ログADE4FC00...。再投入・restore禁止"
+  },
+  "RID30-AB-ME-C1-UV16-M0I": {
+    "sha256": "CE0B0644EAF79AC8813FA5B15B429057323FD672F8D81878597F5A27573619D4",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_ab_me_c1_uv16_m0i_pc_20260901/EBOOT.PBP",
+    "note": "実機不合格: N=0 PASS後N=128でFB=0/FA=3351のFCR_RESTORE、GE未到達。D:現行だが再投入・restore禁止"
+  },
+  "RID30-AB-ME-C1-UV16-M0J": {
+    "sha256": "08814B04D292739BF7CB266622A39D5C2E81067FF262106345354D398ABFF7F0",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_ab_me_c1_uv16_m0j_pc_20260901/EBOOT.PBP",
+    "note": "実機C1不合格: N128でFA=3351のFCR_RESTORE再現。ただしcanonical all-SC fallbackでタイトル起動は合格。C1/ME有効とは扱わない"
+  },
+  "RID30-AB-ME-C1-UV16-M0K": {
+    "sha256": "A6E6A0F824331F25580AFD54534D8AE364D37C0C8F83B1CFB066FF3120919186",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_ab_me_c1_uv16_m0k_pc_20260901/EBOOT.PBP",
+    "note": "D投入readback一致。実機C1 M0 N=0/128/512/1024 + range-reject全PASS、FCR fault/SC降格なしでME ONのままタイトル到達。GE0 READBACK-PENDINGのため色深度/見た目/FPSは未確認"
+  },
+  "RID30-AB-HWFPS-ME": {
+    "sha256": "8B943583EB83CA933843EC3D4D5B3666284EB6C8517208A5F35C43E03B7BFA37",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_ab_hwfps_me_pc_20260901/EBOOT.PBP",
+    "note": "実機Stage 6同一Lunatic A/B完走。PSP HWFPS/ELUS計測ME版"
+  },
+  "RID30-A6-TITLE-WORKSPACE": {
+    "sha256": "B43F60466E34FF4BFC2828FE38E16983FA8B2EA4E7398D0470009D20FCC13308",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6_title_workspace_pc_20260901/EBOOT.PBP",
+    "note": "実機不合格・再投入禁止。title workspace保持でface_*.anm各2050KiBが確保不能となりstage 3/4/5 demoが即teardown。ログSHA EFC490C3...37802。DはRID30へ復旧済み"
+  },
+  "RID30-A6V2-FULL-LOAN": {
+    "sha256": "77802E02D0A49AF3A0EF136D25BF6FB2AABBBFA70534DCC3572DDD1825BEA405",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6v2_full_loan_pc_20260901/EBOOT.PBP",
+    "note": "PC総合ゲートのみ合格・D未投入・実機未確認。title/face full-workspace serial loan + PBG streaming、build ID 0x260901a7。A6v3が外れた場合の二の矢、明示承認までdeploy禁止"
+  },
+  "RID30-A6V3-TITLE-FONT-SHARED": {
+    "sha256": "817DF4C2F923C62223DD69E52D110BA8DB6899351CB4CA0C47476C075B3E4AC4",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6v3_title_font_hole_pc_20260901/EBOOT.PBP",
+    "note": "PC合格・D投入readback一致・実機未確認。title01 5411KiB arenaをFONT/TITLE排他共有し、不要データを破棄・必要時再readするA6v3。build ID 0x260901a8。旧RID30はPRE-20260901-185536.8B943583に退避済み"
+  },
+  "RID30-AB-HWFPS-SC": {
+    "sha256": "633B55DECDEEFE99D616130052BC4D8B66DF0C73E8091EC098481A83375EB330",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_ab_hwfps_sc_pc_20260901/EBOOT.PBP",
+    "note": "実機Stage 6同一Lunatic A/B完走。PSP HWFPS/ELUS計測SC-only版"
+  },
+  "RID30-A6V4-LOCAL-FONT-SUBSET": {
+    "sha256": "4E32A4A1F51B42E832E74BC2049376F818B6EA55B70215CA5352113DE0C54653",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6v4_local_font_subset_pc_20260901/EBOOT.PBP",
+    "note": "実機合格。local MS Gothic subset 300364Bを1190/1190 coverageで選択、stage 1-5すべてfont-tail 1536K loan、5面終了後title01 5411K再読込とFONT復帰成功。異常0。ログSHA 5275F24F...EE5AC95"
+  },
+  "RID30-A6V4W-CP932-WAVE": {
+    "sha256": "DAF87978883A918597452B13510B7810D7CA9D931F7FFDF4E0BD02BCD3427B92",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6v4w_cp932_wave_dash_pc_20260901/EBOOT.PBP",
+    "note": "A6v4実機合格経路＋CP932 0x8160をWindows/MS GothicのU+FF5Eへ補正。748 tests・PSP-3000 build・MECC監査・D readback合格。subsetは同一300364B。実機波ダッシュ確認待ち"
   }
 }

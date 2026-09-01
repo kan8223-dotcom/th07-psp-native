@@ -9,7 +9,9 @@
  */
 #if defined(TH07_PSP_USAGE_METER)
 
+#if defined(TH07_PSP_USAGE_METER_TOGGLE)
 #include <pspctrl.h>
+#endif
 #include <pspgu.h>
 #include "usage_meter.h"
 
@@ -139,6 +141,7 @@ static void um_panel(int px, int py, const unsigned char *hist)
 
 void th07_usage_meter_draw(void)
 {
+#if defined(TH07_PSP_USAGE_METER_TOGGLE)
     /* Lトリガの立ち上がりで表示トグル（田中さん依頼）。ペーク読みなので
      * ゲーム側の入力消費とは干渉しない。非表示中も記録は継続する。 */
     static unsigned int sVisible = 1u;
@@ -157,6 +160,7 @@ void th07_usage_meter_draw(void)
     {
         return;
     }
+#endif
 
     /* 必要状態を明示設定（不透明オーバーレイ、Z非書込・非判定） */
     sceGuDisable(GU_TEXTURE_2D);
