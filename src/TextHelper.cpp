@@ -34,6 +34,22 @@
 static TTF_Font *g_Font = nullptr;
 static TextHelper g_TextWorkBuffer;
 
+#if !defined(TH07_PSP_1000)
+// SDL_ttf owns the active point size inside TTF_Font.  Keep the mirror at file
+// scope so every font-replacement path can invalidate it.  A function-local
+// cache is unsafe here: FreeType's allocator may reuse the same TTF_Font
+// address after the title/font arena swap even though the replacement font was
+// opened at 10 pt.
+static i32 g_CurrentFontSize = 0;
+static TTF_Font *g_CurrentFontSizeOwner = nullptr;
+
+static void ResetFontSizeTracking()
+{
+    g_CurrentFontSizeOwner = nullptr;
+    g_CurrentFontSize = 0;
+}
+#endif
+
 #if defined(TH07_PSP) && defined(TH07_PSP_LOCAL_FONT_SUBSET)
 namespace
 {
@@ -300,6 +316,7 @@ void ResetDefaultFontRuntimeTracking()
 {
     g_LastPreRenderFont = nullptr;
     g_LastPreRenderFontSize = 0;
+    ResetFontSizeTracking();
 }
 
 void ReportDefaultFontMainRamFailureOnce(const char *step)
@@ -1612,6 +1629,12 @@ void TextHelper::ReleaseTextBuffer()
         TTF_CloseFont(g_Font);
     }
     g_Font = nullptr;
+#if !defined(TH07_PSP_1000)
+    // Invalidate even when the Main-RAM font profile is disabled.  A later
+    // CreateTextBuffer/OpenDefaultFont may receive the same pointer value for
+    // a newly opened 10 pt font.
+    ResetFontSizeTracking();
+#endif
 #if defined(TH07_PSP) && defined(TH07_PSP_FONT_MAIN_RAM) && !defined(TH07_PSP_1000)
     // FreeType may read the source at any point until TTF_CloseFont returns.
     // Close the borrowed RWops next, then ask the sole owner to free its data.
@@ -1699,13 +1722,11 @@ void TextHelper::RenderTextToTextureBold(i32 xPos, i32 yPos, i32 spriteWidth, i3
     // flushes it and forces a full FreeType re-raster of every glyph, measured
     // at ~0.5 s per Music Room row on PSP-3000 hardware (R7 boot log).
     // A (re)opened font has an unknown active size, so track it per font.
-    static i32 currentFontSize;
-    static TTF_Font *currentFont;
-    if (currentFont != g_Font || currentFontSize != fontSize)
+    if (g_CurrentFontSizeOwner != g_Font || g_CurrentFontSize != fontSize)
     {
         TTF_SetFontSize(g_Font, fontSize);
-        currentFont = g_Font;
-        currentFontSize = fontSize;
+        g_CurrentFontSizeOwner = g_Font;
+        g_CurrentFontSize = fontSize;
 #if defined(TH07_PSP_TEXT_PREWARM_PROFILE)
         if (profilePrewarm)
         {

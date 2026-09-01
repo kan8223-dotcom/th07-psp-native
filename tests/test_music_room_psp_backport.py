@@ -341,9 +341,11 @@ class TextHelperSourceInvariantTest(unittest.TestCase):
         psp1000_branch = render[font_guard:font_else]
         self.assertIn(call, psp1000_branch)
         guarded_branch = render[font_else:font_end]
-        self.assertIn("currentFont != g_Font || currentFontSize != fontSize",
+        self.assertIn("g_CurrentFontSizeOwner != g_Font || g_CurrentFontSize != fontSize",
                       guarded_branch)
         self.assertIn(call, guarded_branch)
+        self.assertNotIn("static i32 currentFontSize", render)
+        self.assertNotIn("static TTF_Font *currentFont", render)
         self.assertLess(render.index("if (!g_Font)"),
                         render.index("#if defined(TH07_PSP_1000)"))
 

@@ -50,6 +50,26 @@ class PspTitleFontHoleSwapTest(unittest.TestCase):
                         MAKEFILE.index("# A6v3 is an alternative")]
         self.assertIn("PSP_RID30_AB_ME_TITLE_FONT_HOLE_SWAP=0", a6v2)
 
+    def test_music_room_font_fix_is_one_delta_from_a6v4w(self) -> None:
+        target = MAKEFILE[
+            MAKEFILE.index("psp3000-a6v4w-music-room-fontfix-build:") :
+            MAKEFILE.index("# SC member of the pair")
+        ]
+        for token in (
+            "PSP_RID30_AB_ME_UV16=0",
+            "PSP_RID30_AB_ME_XYZ16=0",
+            "PSP_RID30_AB_ME_C1_GE_EXPERIMENT=0",
+            "PSP_RID30_AB_ME_TRUSTED_SEED_AUTHORITY=0",
+            "PSP_RID30_AB_ME_SEED_SOA=0",
+            "PSP_RID30_AB_ME_TITLE_WORKSPACE=1",
+            "PSP_RID30_AB_ME_TITLE_TRANSIENT=0",
+            "PSP_RID30_AB_ME_TITLE_FONT_HOLE_SWAP=1",
+            "PSP_RID30_AB_ME_LOCAL_FONT_SUBSET=1",
+            "PSP_RID30_AB_ME_BUILD_ID=0x260901abu",
+            "TH07 A6V4W MUSIC FONT FIX",
+        ):
+            self.assertIn(token, target)
+
     def test_swap_wraps_exact_title_load_and_restores_before_return(self) -> None:
         menu = MAIN_MENU[MAIN_MENU.index("ZunResult MainMenu::ActualAddedCallback()") :
                          MAIN_MENU.index("ZunResult MainMenu::AddedCallback(")]

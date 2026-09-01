@@ -13,8 +13,8 @@ psp/audio_me.c:4251:40:me_item_motion_cos	0	static
 psp/audio_me.c:4256:40:me_item_motion_sin	0	static
 psp/audio_me.c:4261:17:me_item_motion_update_kernel	248	static
 psp/audio_me.c:3282:13:me_item_motion_reset_arenas_on_sc	24	static
-psp/audio_me.c:16715:13:initialize_render_stream_slots	56	static
-psp/audio_me.c:16667:13:me_item_motion_selftest_cleanup	16	static
+psp/audio_me.c:16722:13:initialize_render_stream_slots	56	static
+psp/audio_me.c:16674:13:me_item_motion_selftest_cleanup	16	static
 psp/audio_me.c:9559:12:me_render_stream_guards_match_on_sc	40	static
 psp/audio_me.c:3185:12:me_item_motion_seed_guards_match.part.0	0	static
 psp/audio_me.c:10220:12:me_render_stream_item_completion_valid	0	static
@@ -102,9 +102,9 @@ psp/audio_me.c:12533:5:th07_psp_me_sfx_mix	0	static
 psp/audio_me.c:12540:6:th07_psp_me_sfx_extent	0	static
 psp/audio_me.c:12549:5:th07_psp_me_audio_stack_guard_ok	16	static
 psp/audio_me.c:12562:5:th07_psp_me_audio_power_locked	0	static
-psp/audio_me.c:16682:6:th07_psp_me_render_bench_snapshot	0	static
-psp/audio_me.c:16770:5:th07_psp_me_item_render_available	0	static
-psp/audio_me.c:16776:6:th07_psp_me_item_render_diag_snapshot	0	static
-psp/audio_me.c:17388:6:th07_psp_me_audio_shutdown	72	static
-psp/audio_me.c:16817:5:th07_psp_me_audio_init	1144	static
-psp/audio_me.c:17535:6:th07_psp_me_audio_diag_window	0	static
+psp/audio_me.c:16689:6:th07_psp_me_render_bench_snapshot	0	static
+psp/audio_me.c:16777:5:th07_psp_me_item_render_available	0	static
+psp/audio_me.c:16783:6:th07_psp_me_item_render_diag_snapshot	0	static
+psp/audio_me.c:17395:6:th07_psp_me_audio_shutdown	72	static
+psp/audio_me.c:16824:5:th07_psp_me_audio_init	1144	static
+psp/audio_me.c:17542:6:th07_psp_me_audio_diag_window	0	static

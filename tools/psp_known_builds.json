@@ -78,6 +78,11 @@
   "RID30-A6V4W-CP932-WAVE": {
     "sha256": "DAF87978883A918597452B13510B7810D7CA9D931F7FFDF4E0BD02BCD3427B92",
     "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6v4w_cp932_wave_dash_pc_20260901/EBOOT.PBP",
-    "note": "A6v4実機合格経路＋CP932 0x8160をWindows/MS GothicのU+FF5Eへ補正。748 tests・PSP-3000 build・MECC監査・D readback合格。subsetは同一300364B。実機波ダッシュ確認待ち"
+    "note": "実機合格。A6v4経路＋CP932 0x8160をWindows/MS GothicのU+FF5Eへ補正し、田中さんが波ダッシュ表示を確認。748 tests・PSP-3000 build・MECC監査・D readback合格。subsetは同一300364B"
+  },
+  "A6V4W-MUSIC-FONTFIX": {
+    "sha256": "B5BB8A199063DA414AB6286A38B0BE32E00C4648044E2EEBB26394E8E8380A1E",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6v4w_music_room_fontfix_pc_20260901/EBOOT.PBP",
+    "note": "PC合格・D未投入・実機未確認。A6V4W一差分: font close/reopen時のSDL_ttf size-owner失効修正。761 tests、PSP-3000 build、MECC監査合格。build ID 0x260901ab。"
   }
 }

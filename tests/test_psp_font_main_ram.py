@@ -105,6 +105,34 @@ class PspFontMainRamOwnershipTest(unittest.TestCase):
         self.assertIn("g_DefaultFontMainRamData = nullptr", backing)
         self.assertIn("g_DefaultFontMainRamBytes = 0", backing)
 
+    def test_font_replacement_invalidates_resettable_size_owner(self) -> None:
+        self.assertIn("static i32 g_CurrentFontSize = 0", self.text)
+        self.assertIn("static TTF_Font *g_CurrentFontSizeOwner = nullptr", self.text)
+        reset = function_body(
+            self.text,
+            "void ResetDefaultFontRuntimeTracking()",
+            "void ReportDefaultFontMainRamFailureOnce(",
+        )
+        self.assertIn("ResetFontSizeTracking()", reset)
+
+        for signature, next_signature in (
+            ("bool TextHelper::PromoteDefaultFontToMainRam()",
+             "bool TextHelper::DemoteDefaultFontToFile()"),
+            ("bool TextHelper::DemoteDefaultFontToFile()",
+             "bool TextHelper::IsDefaultFontInMainRam()"),
+            ("bool TextHelper::DemoteDefaultFontToFileForTitleLoad()",
+             "// stolen from"),
+        ):
+            body = function_body(self.text, signature, next_signature)
+            self.assertIn("ResetDefaultFontRuntimeTracking()", body)
+
+        release = function_body(
+            self.text,
+            "void TextHelper::ReleaseTextBuffer()",
+            "void TextHelper::RenderTextToTextureBold(",
+        )
+        self.assertIn("ResetFontSizeTracking()", release)
+
 
 class PspFontMainRamPathTest(unittest.TestCase):
     def setUp(self) -> None:

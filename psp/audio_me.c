@@ -15935,6 +15935,13 @@ static int selftest_bullet_compact_update(void)
             &gMeBulletCompactSeedAreas[bank],
             sizeof(gMeBulletCompactSeedAreas[bank]));
     }
+#if defined(TH07_PSP_ME_BULLET_SEED_SOA)
+    // Keep hardware logs self-identifying.  The build ID distinguishes the
+    // trusted-reader half of the D1 matrix; this line proves that the worker
+    // and SC agreed on the BS13 plane ABI before gameplay is allowed to run.
+    th07_psp_boot_note(
+        "D1 SEED BS13 SOA14 STRIDE1040 BYTES58560");
+#endif
     th07_psp_boot_note(
         "ME17 SELFTEST PASS COMPACT C0/128/512/1024 MAINRAM");
     return 1;

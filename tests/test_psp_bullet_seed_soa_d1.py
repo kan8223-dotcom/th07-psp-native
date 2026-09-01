@@ -141,30 +141,84 @@ class PspBulletSeedSoaD1ProfileTests(unittest.TestCase):
         self.assertIn("TH07_PSP_ME_BULLET_SEED_SLIM", HEADER)
         self.assertIn("TH07_PSP_1000", HEADER)
 
-    def test_d1a_and_d1b_are_isolated_rid30_me_profiles(self) -> None:
+    def test_a6v4w_d1_stages_pin_the_full_comparison_contract(self) -> None:
         targets = {
-            "psp3000-rid30-ab-me-d1a-soa-build": "0",
-            "psp3000-rid30-ab-me-d1b-soa-build": "1",
+            "psp3000-a6v4w-me-d1s0-trusted-build": ("0", "1"),
+            "psp3000-a6v4w-me-d1a-soa-build": ("1", "0"),
+            "psp3000-a6v4w-me-d1b-soa-build": ("1", "1"),
         }
-        forced_off = (
-            "PSP_ME_RENDER_UV16",
-            "PSP_ME_RENDER_XYZ16",
-            "PSP_ME_RENDER_16BIT_GE_EXPERIMENT",
-            "PSP_ME_BULLET_OUTPUT_SLIM",
-            "PSP_ME_BULLET_SEED_SLIM",
-            "PSP_ME_ITEM_SEED_SLIM",
-            "PSP_ME_EFFECT_RENDER_STREAM",
-        )
-        for target, trusted in targets.items():
+        common_contract = {
+            "PSP_1000": "0",
+            "PSP_ME_BULLET_COMPACT_UPDATE": "1",
+            "PSP_ME_RENDER_UV16": "0",
+            "PSP_ME_RENDER_XYZ16": "0",
+            "PSP_ME_RENDER_16BIT_GE_EXPERIMENT": "0",
+            "PSP_ME_BULLET_OUTPUT_SLIM": "0",
+            "PSP_ME_BULLET_SEED_SLIM": "0",
+            "PSP_ME_ITEM_SEED_SLIM": "0",
+            "PSP_ME_EFFECT_RENDER_STREAM": "0",
+            "PSP_ME_RENDER_LEAN_CACHE_OWNERSHIP": "0",
+            "PSP_ME_EDRAM_SEED_BENCH": "0",
+            "PSP_RID30_AB_ME_UV16": "0",
+            "PSP_RID30_AB_ME_XYZ16": "0",
+            "PSP_RID30_AB_ME_C1_GE_EXPERIMENT": "0",
+            "PSP_RID30_AB_ME_TITLE_WORKSPACE": "1",
+            "PSP_RID30_AB_ME_TITLE_TRANSIENT": "0",
+            "PSP_RID30_AB_ME_TITLE_FONT_HOLE_SWAP": "1",
+            "PSP_RID30_AB_ME_LOCAL_FONT_SUBSET": "1",
+        }
+        base = recipe_body(MAKEFILE, "psp3000-rid30-ab-me-build")
+        for setting in (
+            "PSP_1000=0",
+            "PSP_ME_BULLET_COMPACT_UPDATE=1",
+            "PSP_ME_EFFECT_RENDER_STREAM=0",
+            "PSP_ME_BULLET_OUTPUT_SLIM=0",
+            "PSP_ME_BULLET_SEED_SLIM=0",
+            "PSP_ME_ITEM_SEED_SLIM=0",
+            "PSP_ME_EDRAM_SEED_BENCH=0",
+            "PSP_ME_RENDER_LEAN_CACHE_OWNERSHIP=0",
+            "PSP_ME_RENDER_UV16=$(PSP_RID30_AB_ME_UV16)",
+            "PSP_ME_RENDER_XYZ16=$(PSP_RID30_AB_ME_XYZ16)",
+            "PSP_ME_RENDER_16BIT_GE_EXPERIMENT=$(PSP_RID30_AB_ME_C1_GE_EXPERIMENT)",
+            "PSP_ME_BULLET_SEED_SOA=$(PSP_RID30_AB_ME_SEED_SOA)",
+        ):
+            self.assertIn(setting, base)
+        build_ids: set[str] = set()
+        for target, (soa, trusted) in targets.items():
             with self.subTest(target=target):
                 body = recipe_body(MAKEFILE, target)
-                self.assertIn(f"{FEATURE}=1", body)
-                self.assertIn("PSP_1000=0", body)
+                for feature, value in common_contract.items():
+                    self.assertIn(f"{feature}={value}", body)
+                self.assertIn(f"PSP_RID30_AB_ME_SEED_SOA={soa}", body)
                 self.assertIn(
-                    f"PSP_ME_BULLET_TRUSTED_SEED_AUTHORITY={trusted}", body
+                    f"PSP_RID30_AB_ME_TRUSTED_SEED_AUTHORITY={trusted}", body
                 )
-                for feature in forced_off:
-                    self.assertIn(f"{feature}=0", body)
+                match = re.search(r"PSP_RID30_AB_ME_BUILD_ID=(0x[0-9a-f]+u)", body)
+                self.assertIsNotNone(match)
+                build_ids.add(match.group(1))
+        self.assertEqual(len(build_ids), len(targets))
+
+    def test_a6v4w_reference_target_and_d1_targets_pin_identical_title_font_path(self) -> None:
+        reference = recipe_body(
+            MAKEFILE, "psp3000-rid30-a6v4-cp932-wave-dash-build"
+        )
+        expected = (
+            "PSP_RID30_AB_ME_TITLE_WORKSPACE=1",
+            "PSP_RID30_AB_ME_TITLE_TRANSIENT=0",
+            "PSP_RID30_AB_ME_TITLE_FONT_HOLE_SWAP=1",
+            "PSP_RID30_AB_ME_LOCAL_FONT_SUBSET=1",
+        )
+        for setting in expected:
+            self.assertIn(setting, reference)
+        for target in (
+            "psp3000-a6v4w-me-d1s0-trusted-build",
+            "psp3000-a6v4w-me-d1a-soa-build",
+            "psp3000-a6v4w-me-d1b-soa-build",
+        ):
+            body = recipe_body(MAKEFILE, target)
+            for setting in expected:
+                with self.subTest(target=target, setting=setting):
+                    self.assertIn(setting, body)
 
 
 @unittest.skipUnless(IMPLEMENTED, "D1 Bullet seed SoA implementation has not landed")
@@ -293,6 +347,12 @@ class PspBulletSeedSoaD1TransposeTests(unittest.TestCase):
         for field in FIELDS:
             with self.subTest(field=field):
                 self.assertIn(f"{FIELD_MACRO}(seed, slot, {field})", body)
+
+    def test_soa_selftest_emits_the_bs13_abi_boot_note(self) -> None:
+        body = function_body(WORKER, "static int selftest_bullet_compact_update(void)")
+        marker = "D1 SEED BS13 SOA14 STRIDE1040 BYTES58560"
+        self.assertIn("#if defined(TH07_PSP_ME_BULLET_SEED_SOA)", body)
+        self.assertIn(marker, body)
 
 
 if __name__ == "__main__":
