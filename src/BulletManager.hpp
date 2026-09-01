@@ -7,6 +7,15 @@
 
 extern u32 *g_BulletColor;
 
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+// D2A remains observational: these hooks only invalidate the SC-owned shadow.
+// They are declared before BulletManager because slot acquire/release lives in
+// small inline helpers below.
+void Th07PspBulletPositionSoaInvalidateSlot(u32 slot);
+void Th07PspBulletPositionSoaPauseBoundary();
+void Th07PspBulletPositionSoaDemoRestartBoundary();
+#endif
+
 typedef enum BulletState
 {
     BULLET_INACTIVE = 0,
@@ -260,10 +269,11 @@ struct Bullet
     u16 outOfBoundsTime;
     u8 spawned;
     u8 grazed;
-#if defined(TH07_PSP_BULLET_STATIC_PROXY)
-    // Reuse the original two-byte padding so the draw walk can address its
-    // compact stage record without dividing a 3+ KiB Bullet pointer stride.
-    u16 pspStaticProxySlot;
+#if defined(TH07_PSP)
+    // Stable logical identity for every PSP Bullet payload.  D2B and the
+    // static proxy share the original two-byte padding so linked-list readers
+    // never recover a slot with a 3,452-byte pointer division.
+    u16 pspSlotIndex;
 #else
     // pad 2
 #endif
@@ -345,6 +355,21 @@ struct BulletManager
         return &bullets[index];
 #endif
     }
+    const Bullet *BulletAt(i32 index) const
+    {
+#if defined(TH07_PSP_1000)
+        return bulletChunks[index / kBulletChunkCapacity] +
+               index % kBulletChunkCapacity;
+#else
+        return &bullets[index];
+#endif
+    }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    bool PspTryReadDeferredPosition(const Bullet *bullet, i32 slot,
+                                    ZunVec3 *out) const;
+    void PspReadPositionOrAoS(const Bullet *bullet, i32 slot,
+                              ZunVec3 *out) const;
+#endif
     Laser lasers[64];
     i32 bulletCount;
     i32 screenClearTime;
@@ -425,12 +450,16 @@ struct BulletManager
 
     void PspTrackBulletSlot(i32 index)
     {
+        BulletAt(index)->pspSlotIndex = static_cast<u16>(index);
         pspActiveBulletBits[index >> 5] |= 1u << (index & 31);
 #if defined(TH07_PSP_ME_RENDER_CORRECTNESS)
         if (++pspMeRenderSlotGenerations[index] == 0u)
         {
             ++pspMeRenderSlotGenerations[index];
         }
+#endif
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        Th07PspBulletPositionSoaInvalidateSlot(static_cast<u32>(index));
 #endif
 #if defined(TH07_PSP_ME_RENDER_PERFORMANCE)
         PspMarkMeRenderMutation();
@@ -440,7 +469,6 @@ struct BulletManager
 #endif
 #if defined(TH07_PSP_BULLET_STATIC_PROXY)
         Bullet *bullet = BulletAt(index);
-        bullet->pspStaticProxySlot = static_cast<u16>(index);
         PspInvalidateBulletStaticProxy(bullet);
 #endif
     }
@@ -454,6 +482,9 @@ struct BulletManager
             ++pspMeRenderSlotGenerations[index];
         }
 #endif
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        Th07PspBulletPositionSoaInvalidateSlot(static_cast<u32>(index));
+#endif
 #if defined(TH07_PSP_ME_RENDER_PERFORMANCE)
         PspMarkMeRenderMutation();
 #endif
@@ -463,11 +494,65 @@ struct BulletManager
 #if defined(TH07_PSP_BULLET_STATIC_PROXY)
         PspInvalidateBulletStaticProxy(BulletAt(index));
 #endif
+        BulletAt(index)->pspSlotIndex = 0xffffu;
     }
 #endif
 };
 
 extern BulletManager g_BulletManager;
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+// Per-window D2A coverage. AoS remains authoritative, so a mismatch never
+// changes gameplay; it only closes the gate for the later D2B/D2C cutover.
+struct Th07PspBulletPositionSoaWindow
+{
+    unsigned long long activeVisits;
+    unsigned long long matches;
+    unsigned long long notValid;
+    unsigned long long wouldDefer;
+    unsigned long long unsupportedMatches;
+    unsigned long long wouldMaterializeUnsupported;
+    unsigned long long publishes;
+    unsigned long long spawnPublishes;
+    unsigned long long invalidations;
+    unsigned long long mutationVisits;
+    unsigned long long mutationMatches;
+    unsigned long long mutationNotValid;
+    unsigned long long mutationDeferred;
+    unsigned long long mutationCanonical;
+    unsigned long long mutationBulkClearItem;
+    unsigned long long mutationDespawnTransition;
+    unsigned long long mutationBulkDespawn;
+    unsigned long long mutationRadiusQuery;
+    unsigned long long wouldMaterializePause;
+    unsigned long long wouldMaterializeDemoRestart;
+    unsigned int mutationFaults;
+    unsigned int managerMismatch;
+    unsigned int generationMismatch;
+    unsigned int calcMismatch;
+    unsigned int positionMismatch;
+    unsigned int invalidSlot;
+    unsigned int publishRejected;
+    unsigned int managerResets;
+    unsigned int calcPasses;
+    unsigned int pauseClears;
+    unsigned int demoRestartClears;
+    unsigned int validSlots;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    unsigned long long readAttempts;
+    unsigned long long readHits;
+    unsigned long long readFallbacks;
+    unsigned long long meSoaJobs;
+    unsigned long long meAosJobs;
+    unsigned int readFaults;
+    unsigned int readDisabled;
+    unsigned int readableCalcSerial;
+#endif
+};
+
+void Th07PspTakeBulletPositionSoaWindow(
+    Th07PspBulletPositionSoaWindow *window);
+#endif
 
 #if defined(TH07_PSP_PERF_M3)
 struct Th07PspM3PerfWindow

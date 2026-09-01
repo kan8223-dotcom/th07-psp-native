@@ -1,6 +1,9 @@
 #include "ReplayManager.hpp"
 
 #include "Chain.hpp"
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+#include "BulletManager.hpp"
+#endif
 #include "Controller.hpp"
 #include "EffectManager.hpp"
 #include "EnemyManager.hpp"
@@ -120,10 +123,16 @@ u32 ReplayManager::OnUpdateDemoLowPrio(ReplayManager *arg)
 
     if (g_Gui.HasCurrentMsgIdx() && g_Gui.IsDialogueSkippable() && arg->frameId % 3 != 2)
     {
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        Th07PspBulletPositionSoaDemoRestartBoundary();
+#endif
         return CHAIN_CALLBACK_RESULT_RESTART_FROM_FIRST_JOB;
     }
     if (g_GameManager.replayStage == 2 && !g_EnemyManager.HasActiveBoss() && arg->frameId % 5 != 4)
     {
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        Th07PspBulletPositionSoaDemoRestartBoundary();
+#endif
         return CHAIN_CALLBACK_RESULT_RESTART_FROM_FIRST_JOB;
     }
 

@@ -177,14 +177,37 @@ enum
     ME_RENDER_RAW_VM_ZWRITE_DISABLE = 1u << 12,
     ME_RENDER_RAW_VM_USE_COLOR2 = 1u << 16,
 #if defined(TH07_PSP_ME_RENDER_DIRECT_LIST)
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ME_RENDER_LIST_LAYOUT_SELFTEST_VERSION = 0x4c545332u, // "LTS2"
+#else
     ME_RENDER_LIST_LAYOUT_SELFTEST_VERSION = 0x4c545331u, // "LTS1"
+#endif
     ME_RENDER_LIST_ACTIVE_WORD_COUNT = 32,
     ME_RENDER_LIST_GENERATION_STRIDE = 4,
     ME_RENDER_LIST_BULLET_NEXT_OFFSET = 3076,
     ME_RENDER_LIST_BULLET_STATE_OFFSET = 3068,
     ME_RENDER_LIST_BULLET_COLLISION_TYPE_OFFSET = 2954,
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ME_RENDER_POSITION_SOA_SHADOW_VERSION = 0x42503231u, // "BP21"
+    ME_RENDER_POSITION_SOA_SHADOW_BYTES = 25152u,
+    ME_RENDER_POSITION_SOA_CAPACITY = 1024u,
+    ME_RENDER_POSITION_SOA_PLANE_STRIDE_WORDS = 1040u,
+    ME_RENDER_POSITION_SOA_HEADER_MANAGER_OFFSET = 16u,
+    ME_RENDER_POSITION_SOA_HEADER_CALC_OFFSET = 20u,
+    ME_RENDER_POSITION_SOA_VALID_OFFSET = 64u,
+    ME_RENDER_POSITION_SOA_GENERATION_OFFSET = 192u,
+    ME_RENDER_POSITION_SOA_PUBLISH_MANAGER_OFFSET = 4352u,
+    ME_RENDER_POSITION_SOA_PUBLISH_CALC_OFFSET = 8512u,
+    ME_RENDER_POSITION_SOA_POS_X_OFFSET = 12672u,
+    ME_RENDER_POSITION_SOA_POS_Y_OFFSET = 16832u,
+    ME_RENDER_POSITION_SOA_POS_Z_OFFSET = 20992u,
     ME_RENDER_LIST_BULLET_POS_X_OFFSET = 2956,
     ME_RENDER_LIST_BULLET_POS_Y_OFFSET = 2960,
+    ME_RENDER_LIST_BULLET_POS_Z_OFFSET = 2964,
+#else
+    ME_RENDER_LIST_BULLET_POS_X_OFFSET = 2956,
+    ME_RENDER_LIST_BULLET_POS_Y_OFFSET = 2960,
+#endif
     ME_RENDER_LIST_BULLET_RENDER_ANGLE_OFFSET = 3436,
     ME_RENDER_LIST_BULLET_SIN_OFFSET = 3440,
     ME_RENDER_LIST_BULLET_COS_OFFSET = 3444,
@@ -527,8 +550,15 @@ _Static_assert(sizeof(Th07PspMeRenderRawRecord) == 32u,
 _Static_assert(sizeof(Th07PspMeRenderRawLayout) == 116u,
                "I-ME4 runtime layout ABI changed");
 #if defined(TH07_PSP_ME_RENDER_DIRECT_LIST)
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+_Static_assert(sizeof(Th07PspMeRenderPositionSource) == 72u,
+               "D2B position-source ABI changed");
+_Static_assert(sizeof(Th07PspMeRenderListLayout) == 204u,
+               "D2B LL02 direct-list layout ABI changed");
+#else
 _Static_assert(sizeof(Th07PspMeRenderListLayout) == 128u,
-               "I-ME5 direct-list layout ABI changed");
+               "I-ME5 LL01 direct-list layout ABI changed");
+#endif
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
 _Static_assert(sizeof(Th07PspMeRenderItemLayout) == 128u,
                "I-ME7 Item direct-list layout ABI changed");
@@ -1127,6 +1157,14 @@ typedef struct MeRenderStreamSlotControl
     // rawLayout appends 116 bytes to the published job (52 modulo one cache
     // line); keep independent slot controls from sharing SC cache lines.
     unsigned char rawCacheLinePadding[12];
+#if defined(TH07_PSP_ME_RENDER_DIRECT_LIST)
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    // LL02 adds a 72-byte PS01 source plus the explicit Z offset (76 bytes
+    // total).  Pad the remaining 52 bytes so each slot control still grows by
+    // exactly two cache lines and never shares ownership with its neighbour.
+    unsigned char d2bPositionCacheLinePadding[52];
+#endif
+#endif
 #endif
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
     // The Item job/layout extension is 128 bytes and the segment-local
@@ -1204,6 +1242,21 @@ static uint32_t gMeRenderListSelftestGeneration[1]
     __attribute__((aligned(64)));
 static uint32_t gMeRenderListSelftestActiveBits[1]
     __attribute__((aligned(64)));
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+typedef struct __attribute__((aligned(64))) MeRenderPositionSelftestOwner
+{
+    uint32_t header[16];
+    uint32_t validBits[1];
+    uint32_t generation[1];
+    uint32_t publishManagerSerial[1];
+    uint32_t publishCalcSerial[1];
+    uint32_t posXBits[1];
+    uint32_t posYBits[1];
+    uint32_t posZBits[1];
+} MeRenderPositionSelftestOwner;
+static MeRenderPositionSelftestOwner gMeRenderPositionSelftestOwner
+    __attribute__((aligned(64)));
+#endif
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
 static unsigned char gMeRenderItemSelftestItem[ME_RENDER_ITEM_STRIDE * 2u]
     __attribute__((aligned(64)));
@@ -1935,6 +1988,218 @@ static int me_render_stream_list_bullet_physical(
     return 1;
 }
 
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+static int me_render_stream_position_subrange_valid(
+    uint32_t ownerBase, uint32_t ownerBytes,
+    uint32_t rangeBase, uint32_t rangeBytes)
+{
+    if (!ownerBase || !ownerBytes || !rangeBase || !rangeBytes ||
+        rangeBase < ownerBase)
+        return 0;
+    const uint32_t offset = rangeBase - ownerBase;
+    return offset <= ownerBytes && rangeBytes <= ownerBytes - offset;
+}
+
+static int me_render_stream_position_source_valid(
+    const Th07PspMeRenderPositionSource *source,
+    const Th07PspMeRenderListLayout *layout,
+    const Th07PspMeRenderRawLayout *rawLayout,
+    int selftestLayout)
+{
+    if (!source || !layout || !rawLayout ||
+        source->version != TH07_PSP_ME_RENDER_POSITION_SOURCE_VERSION ||
+        source->bytes != sizeof(*source) || source->flags != 0u ||
+        source->kind > TH07_PSP_ME_RENDER_POSITION_SOURCE_SOA ||
+        source->slotCount == 0u || source->slotStrideBytes == 0u ||
+        source->slotCount != layout->bulletCount ||
+        source->validWordCount != (source->slotCount + 31u) / 32u ||
+        source->slotCount - 1u >
+            (UINT32_MAX - sizeof(uint32_t)) /
+                source->slotStrideBytes)
+        return 0;
+
+    const uint32_t slotBytes =
+        (source->slotCount - 1u) * source->slotStrideBytes +
+        sizeof(uint32_t);
+    const uint32_t validBytes =
+        source->validWordCount * sizeof(uint32_t);
+    if (!me_render_stream_raw_pool_valid(
+            source->posXBasePhys, source->slotStrideBytes,
+            source->slotCount, sizeof(uint32_t), sizeof(uint32_t)) ||
+        !me_render_stream_raw_pool_valid(
+            source->posYBasePhys, source->slotStrideBytes,
+            source->slotCount, sizeof(uint32_t), sizeof(uint32_t)) ||
+        !me_render_stream_raw_pool_valid(
+            source->posZBasePhys, source->slotStrideBytes,
+            source->slotCount, sizeof(uint32_t), sizeof(uint32_t)) ||
+        !me_render_stream_raw_pool_valid(
+            source->validBitsPhys, sizeof(uint32_t),
+            source->validWordCount, sizeof(uint32_t), sizeof(uint32_t)))
+        return 0;
+
+    if (source->kind == TH07_PSP_ME_RENDER_POSITION_SOURCE_AOS)
+    {
+        const uint32_t bulletBytes =
+            layout->bulletCount * layout->bulletStride;
+        return me_render_stream_raw_pool_valid(
+                   source->fullGenerationBasePhys,
+                   layout->generationStride, source->slotCount,
+                   sizeof(uint32_t), sizeof(uint32_t)) &&
+               source->ownerBasePhys == layout->bulletBasePhys &&
+               source->ownerBytes == bulletBytes &&
+               source->slotStrideBytes == layout->bulletStride &&
+               source->posXBasePhys == layout->bulletBasePhys +
+                   layout->bulletPosXOffset &&
+               source->posYBasePhys == layout->bulletBasePhys +
+                   layout->bulletPosYOffset &&
+               source->posZBasePhys == layout->bulletBasePhys +
+                   layout->bulletPosZOffset &&
+               source->validBitsPhys == layout->activeBitsPhys &&
+               source->validWordCount == layout->activeBitsWordCount &&
+               source->fullGenerationBasePhys ==
+                   layout->generationBasePhys &&
+               source->publishManagerSerialBasePhys == 0u &&
+               source->publishCalcSerialBasePhys == 0u &&
+               source->expectedManagerSerial == 0u &&
+               source->expectedCalcSerial == 0u &&
+               me_render_main_ram_range_valid(
+                   source->ownerBasePhys, source->ownerBytes) &&
+               me_render_stream_position_subrange_valid(
+                   source->ownerBasePhys, source->ownerBytes,
+                   source->posXBasePhys, slotBytes) &&
+               me_render_stream_position_subrange_valid(
+                   source->ownerBasePhys, source->ownerBytes,
+                   source->posYBasePhys, slotBytes) &&
+               me_render_stream_position_subrange_valid(
+                   source->ownerBasePhys, source->ownerBytes,
+                   source->posZBasePhys, slotBytes);
+    }
+
+    const uint32_t expectedOwnerBytes = selftestLayout
+        ? sizeof(gMeRenderPositionSelftestOwner)
+        : ME_RENDER_POSITION_SOA_SHADOW_BYTES;
+    if ((source->ownerBasePhys & 63u) != 0u ||
+        source->ownerBytes != expectedOwnerBytes ||
+        source->slotStrideBytes != sizeof(uint32_t) ||
+        source->expectedManagerSerial == 0u ||
+        source->expectedCalcSerial == 0u ||
+        !me_render_main_ram_range_valid(
+            source->ownerBasePhys, source->ownerBytes) ||
+        !me_render_stream_raw_pool_valid(
+            source->publishManagerSerialBasePhys,
+            source->slotStrideBytes, source->slotCount,
+            sizeof(uint32_t), sizeof(uint32_t)) ||
+        !me_render_stream_raw_pool_valid(
+            source->publishCalcSerialBasePhys,
+            source->slotStrideBytes, source->slotCount,
+            sizeof(uint32_t), sizeof(uint32_t)))
+        return 0;
+    if (selftestLayout && source->ownerBasePhys !=
+            ((uint32_t)&gMeRenderPositionSelftestOwner & 0x1fffffffu))
+        return 0;
+
+    const uint32_t expectedValidBits = selftestLayout
+        ? ((uint32_t)&gMeRenderPositionSelftestOwner.validBits[0] &
+           0x1fffffffu)
+        : source->ownerBasePhys + ME_RENDER_POSITION_SOA_VALID_OFFSET;
+    const uint32_t expectedGeneration = selftestLayout
+        ? ((uint32_t)&gMeRenderPositionSelftestOwner.generation[0] &
+           0x1fffffffu)
+        : source->ownerBasePhys + ME_RENDER_POSITION_SOA_GENERATION_OFFSET;
+    const uint32_t expectedPublishManager = selftestLayout
+        ? ((uint32_t)&gMeRenderPositionSelftestOwner
+              .publishManagerSerial[0] & 0x1fffffffu)
+        : source->ownerBasePhys +
+              ME_RENDER_POSITION_SOA_PUBLISH_MANAGER_OFFSET;
+    const uint32_t expectedPublishCalc = selftestLayout
+        ? ((uint32_t)&gMeRenderPositionSelftestOwner
+              .publishCalcSerial[0] & 0x1fffffffu)
+        : source->ownerBasePhys +
+              ME_RENDER_POSITION_SOA_PUBLISH_CALC_OFFSET;
+    const uint32_t expectedPosX = selftestLayout
+        ? ((uint32_t)&gMeRenderPositionSelftestOwner.posXBits[0] &
+           0x1fffffffu)
+        : source->ownerBasePhys + ME_RENDER_POSITION_SOA_POS_X_OFFSET;
+    const uint32_t expectedPosY = selftestLayout
+        ? ((uint32_t)&gMeRenderPositionSelftestOwner.posYBits[0] &
+           0x1fffffffu)
+        : source->ownerBasePhys + ME_RENDER_POSITION_SOA_POS_Y_OFFSET;
+    const uint32_t expectedPosZ = selftestLayout
+        ? ((uint32_t)&gMeRenderPositionSelftestOwner.posZBits[0] &
+           0x1fffffffu)
+        : source->ownerBasePhys + ME_RENDER_POSITION_SOA_POS_Z_OFFSET;
+    if (source->validBitsPhys != expectedValidBits ||
+        source->fullGenerationBasePhys != expectedGeneration ||
+        source->publishManagerSerialBasePhys != expectedPublishManager ||
+        source->publishCalcSerialBasePhys != expectedPublishCalc ||
+        source->posXBasePhys != expectedPosX ||
+        source->posYBasePhys != expectedPosY ||
+        source->posZBasePhys != expectedPosZ ||
+        !me_render_stream_raw_pool_valid(
+            source->fullGenerationBasePhys, source->slotStrideBytes,
+            source->slotCount, sizeof(uint32_t), sizeof(uint32_t)))
+        return 0;
+
+    const uint32_t rangeBases[7] = {
+        source->validBitsPhys,
+        source->fullGenerationBasePhys,
+        source->publishManagerSerialBasePhys,
+        source->publishCalcSerialBasePhys,
+        source->posXBasePhys,
+        source->posYBasePhys,
+        source->posZBasePhys
+    };
+    const uint32_t rangeBytes[7] = {
+        validBytes, slotBytes, slotBytes, slotBytes,
+        slotBytes, slotBytes, slotBytes
+    };
+    for (uint32_t first = 0u; first < 7u; ++first)
+    {
+        if (!me_render_stream_position_subrange_valid(
+                source->ownerBasePhys, source->ownerBytes,
+                rangeBases[first], rangeBytes[first]))
+            return 0;
+        for (uint32_t second = first + 1u; second < 7u; ++second)
+        {
+            if (me_render_ranges_overlap(
+                    rangeBases[first], rangeBytes[first],
+                    rangeBases[second], rangeBytes[second]))
+                return 0;
+        }
+    }
+
+    const uint32_t bulletBytes =
+        layout->bulletCount * layout->bulletStride;
+    const uint32_t generationBytes =
+        layout->generationCount * layout->generationStride;
+    const uint32_t activeBytes =
+        layout->activeBitsWordCount * sizeof(uint32_t);
+    const uint32_t spriteBytes =
+        (rawLayout->spriteCount - 1u) * rawLayout->spriteStride +
+        rawLayout->spriteBytes;
+    const uint32_t representativeBytes =
+        (rawLayout->representativeCount - 1u) *
+            rawLayout->representativeStride + sizeof(uint16_t);
+    if (me_render_ranges_overlap(
+            source->ownerBasePhys, source->ownerBytes,
+            layout->bulletBasePhys, bulletBytes) ||
+        me_render_ranges_overlap(
+            source->ownerBasePhys, source->ownerBytes,
+            layout->generationBasePhys, generationBytes) ||
+        me_render_ranges_overlap(
+            source->ownerBasePhys, source->ownerBytes,
+            layout->activeBitsPhys, activeBytes) ||
+        me_render_ranges_overlap(
+            source->ownerBasePhys, source->ownerBytes,
+            rawLayout->spriteBasePhys, spriteBytes) ||
+        me_render_ranges_overlap(
+            source->ownerBasePhys, source->ownerBytes,
+            rawLayout->representativePhys, representativeBytes))
+        return 0;
+    return 1;
+}
+#endif
+
 static int me_render_stream_list_layout_valid(
     const Th07PspMeRenderListLayout *layout,
     const Th07PspMeRenderRawLayout *rawLayout)
@@ -1966,6 +2231,9 @@ static int me_render_stream_list_layout_valid(
             ME_RENDER_LIST_BULLET_COLLISION_TYPE_OFFSET ||
         layout->bulletPosXOffset != ME_RENDER_LIST_BULLET_POS_X_OFFSET ||
         layout->bulletPosYOffset != ME_RENDER_LIST_BULLET_POS_Y_OFFSET ||
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        layout->bulletPosZOffset != ME_RENDER_LIST_BULLET_POS_Z_OFFSET ||
+#endif
         layout->bulletRenderAngleOffset !=
             ME_RENDER_LIST_BULLET_RENDER_ANGLE_OFFSET ||
         layout->bulletSinOffset != ME_RENDER_LIST_BULLET_SIN_OFFSET ||
@@ -2001,6 +2269,11 @@ static int me_render_stream_list_layout_valid(
         !me_render_stream_raw_field_valid(
             layout->bulletStride, layout->bulletPosYOffset,
             sizeof(uint32_t)) ||
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        !me_render_stream_raw_field_valid(
+            layout->bulletStride, layout->bulletPosZOffset,
+            sizeof(uint32_t)) ||
+#endif
         !me_render_stream_raw_field_valid(
             layout->bulletStride, layout->bulletRenderAngleOffset,
             sizeof(uint32_t)) ||
@@ -2018,7 +2291,13 @@ static int me_render_stream_list_layout_valid(
             layout->generationCount, sizeof(uint32_t), sizeof(uint32_t)) ||
         !me_render_stream_raw_pool_valid(
             layout->activeBitsPhys, sizeof(uint32_t),
-            layout->activeBitsWordCount, sizeof(uint32_t), sizeof(uint32_t)))
+            layout->activeBitsWordCount, sizeof(uint32_t), sizeof(uint32_t))
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        ||
+        !me_render_stream_position_source_valid(
+            &layout->positionSource, layout, rawLayout, selftestLayout)
+#endif
+        )
         return 0;
 
     if (selftestLayout &&
@@ -2078,6 +2357,130 @@ static int me_render_stream_list_layout_valid(
     }
     return 1;
 }
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+static __attribute__((always_inline)) inline uint32_t
+me_render_stream_position_load(uint32_t basePhys, uint32_t slot,
+                               uint32_t strideBytes)
+{
+    const volatile uint32_t *source =
+        (const volatile uint32_t *)(0x80000000u |
+                                    (basePhys + slot * strideBytes));
+    return *source;
+}
+
+static __attribute__((always_inline)) inline uint32_t
+me_render_stream_position_header_load(
+    const Th07PspMeRenderPositionSource *source, uint32_t offset)
+{
+    const volatile uint32_t *word =
+        (const volatile uint32_t *)(0x80000000u |
+                                    (source->ownerBasePhys + offset));
+    return *word;
+}
+
+static __attribute__((always_inline)) inline int
+me_render_stream_position_header_matches(
+    const Th07PspMeRenderPositionSource *source)
+{
+    const uint32_t expectedPlaneStride =
+        source->ownerBytes == ME_RENDER_POSITION_SOA_SHADOW_BYTES
+            ? ME_RENDER_POSITION_SOA_PLANE_STRIDE_WORDS : 1u;
+    return me_render_stream_position_header_load(source, 0u) ==
+               ME_RENDER_POSITION_SOA_SHADOW_VERSION &&
+           me_render_stream_position_header_load(source, 4u) ==
+               source->ownerBytes &&
+           me_render_stream_position_header_load(source, 8u) ==
+               source->slotCount &&
+           me_render_stream_position_header_load(source, 12u) ==
+               expectedPlaneStride &&
+           me_render_stream_position_header_load(
+               source, ME_RENDER_POSITION_SOA_HEADER_MANAGER_OFFSET) ==
+               source->expectedManagerSerial &&
+           me_render_stream_position_header_load(
+               source, ME_RENDER_POSITION_SOA_HEADER_CALC_OFFSET) ==
+               source->expectedCalcSerial;
+}
+
+// Returns raw canonical XY bits.  D2B deliberately does not read Z here:
+// direct-list has always reconstructed Bullet geometry with posZ=0 and a
+// source switch must not change that observable rendering contract.
+static __attribute__((always_inline)) inline int
+me_render_stream_position_load_xy(
+    const Th07PspMeRenderPositionSource *source,
+    const unsigned char *bullet,
+    const Th07PspMeRenderListLayout *layout,
+    uint32_t slot, uint32_t canonicalGeneration,
+    uint32_t *xBits, uint32_t *yBits)
+{
+    if (!source || !bullet || !layout || !xBits || !yBits ||
+        slot >= source->slotCount)
+        return 0;
+
+    if (source->kind == TH07_PSP_ME_RENDER_POSITION_SOURCE_AOS)
+    {
+        *xBits = me_render_stream_position_load(
+            source->posXBasePhys, slot, source->slotStrideBytes);
+        *yBits = me_render_stream_position_load(
+            source->posYBasePhys, slot, source->slotStrideBytes);
+        return 1;
+    }
+
+    const uint32_t wordIndex = slot >> 5u;
+    const uint32_t slotBit = 1u << (slot & 31u);
+    const uint32_t validBefore = me_render_stream_position_load(
+        source->validBitsPhys, wordIndex, sizeof(uint32_t));
+    if ((validBefore & slotBit) == 0u)
+    {
+        // A cold slot is the sole legal mixed-source case.  Bracket the AoS
+        // read with the same bit so a concurrent 0->1 publication is rejected
+        // rather than silently changing source halfway through the record.
+        *xBits = me_render_stream_load_u32(
+            bullet, layout->bulletPosXOffset);
+        *yBits = me_render_stream_load_u32(
+            bullet, layout->bulletPosYOffset);
+        const uint32_t validAfter = me_render_stream_position_load(
+            source->validBitsPhys, wordIndex, sizeof(uint32_t));
+        return (validAfter & slotBit) == 0u;
+    }
+
+    if (!me_render_stream_position_header_matches(source))
+        return 0;
+    const uint32_t generationBefore = me_render_stream_position_load(
+        source->fullGenerationBasePhys, slot, source->slotStrideBytes);
+    const uint32_t managerBefore = me_render_stream_position_load(
+        source->publishManagerSerialBasePhys, slot,
+        source->slotStrideBytes);
+    const uint32_t calcBefore = me_render_stream_position_load(
+        source->publishCalcSerialBasePhys, slot,
+        source->slotStrideBytes);
+    if (generationBefore != canonicalGeneration ||
+        managerBefore != source->expectedManagerSerial ||
+        calcBefore != source->expectedCalcSerial)
+        return 0;
+
+    *xBits = me_render_stream_position_load(
+        source->posXBasePhys, slot, source->slotStrideBytes);
+    *yBits = me_render_stream_position_load(
+        source->posYBasePhys, slot, source->slotStrideBytes);
+    __asm__ volatile("sync" : : : "memory");
+
+    const uint32_t validAfter = me_render_stream_position_load(
+        source->validBitsPhys, wordIndex, sizeof(uint32_t));
+    const uint32_t generationAfter = me_render_stream_position_load(
+        source->fullGenerationBasePhys, slot, source->slotStrideBytes);
+    const uint32_t managerAfter = me_render_stream_position_load(
+        source->publishManagerSerialBasePhys, slot,
+        source->slotStrideBytes);
+    const uint32_t calcAfter = me_render_stream_position_load(
+        source->publishCalcSerialBasePhys, slot,
+        source->slotStrideBytes);
+    return (validAfter & slotBit) != 0u &&
+           generationAfter == generationBefore &&
+           managerAfter == managerBefore && calcAfter == calcBefore &&
+           me_render_stream_position_header_matches(source);
+}
+#endif
 
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
 static int me_render_stream_item_physical(
@@ -4804,6 +5207,25 @@ static int me_render_stream_bounds_valid(
         me_render_ranges_overlap(outputPhys, outputCapacity,
                                  runPhys, runCapacity))
         return 0;
+#if defined(TH07_PSP_ME_RENDER_DIRECT_LIST) && \
+    defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    if (directList &&
+        listLayout->positionSource.kind ==
+            TH07_PSP_ME_RENDER_POSITION_SOURCE_SOA &&
+        (me_render_ranges_overlap(
+             listLayout->positionSource.ownerBasePhys,
+             listLayout->positionSource.ownerBytes,
+             inputPhys, inputCapacity) ||
+         me_render_ranges_overlap(
+             listLayout->positionSource.ownerBasePhys,
+             listLayout->positionSource.ownerBytes,
+             outputPhys, outputCapacity) ||
+         me_render_ranges_overlap(
+             listLayout->positionSource.ownerBasePhys,
+             listLayout->positionSource.ownerBytes,
+             runPhys, runCapacity)))
+        return 0;
+#endif
     if (requiredInput)
         *requiredInput = inputNeeded;
     return 1;
@@ -5281,10 +5703,19 @@ me_render_stream_reconstruct_list_record(
     if (generation == 0u)
         return 0;
 
-    const uint32_t bulletPosXBits = me_render_stream_load_u32(
+    uint32_t bulletPosXBits = 0u;
+    uint32_t bulletPosYBits = 0u;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    if (!me_render_stream_position_load_xy(
+            &listLayout->positionSource, bullet, listLayout,
+            slot, generation, &bulletPosXBits, &bulletPosYBits))
+        return 0;
+#else
+    bulletPosXBits = me_render_stream_load_u32(
         bullet, listLayout->bulletPosXOffset);
-    const uint32_t bulletPosYBits = me_render_stream_load_u32(
+    bulletPosYBits = me_render_stream_load_u32(
         bullet, listLayout->bulletPosYOffset);
+#endif
     if (!me_render_stream_float_bits_finite(bulletPosXBits) ||
         !me_render_stream_float_bits_finite(bulletPosYBits))
         return 0;
@@ -14314,6 +14745,26 @@ static void me_render_list_selftest_layout(
         ME_RENDER_LIST_BULLET_COLLISION_TYPE_OFFSET;
     layout->bulletPosXOffset = ME_RENDER_LIST_BULLET_POS_X_OFFSET;
     layout->bulletPosYOffset = ME_RENDER_LIST_BULLET_POS_Y_OFFSET;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    layout->bulletPosZOffset = ME_RENDER_LIST_BULLET_POS_Z_OFFSET;
+    Th07PspMeRenderPositionSource *position = &layout->positionSource;
+    position->version = TH07_PSP_ME_RENDER_POSITION_SOURCE_VERSION;
+    position->bytes = sizeof(*position);
+    position->kind = TH07_PSP_ME_RENDER_POSITION_SOURCE_AOS;
+    position->ownerBasePhys = layout->bulletBasePhys;
+    position->ownerBytes = layout->bulletStride * layout->bulletCount;
+    position->slotCount = layout->bulletCount;
+    position->slotStrideBytes = layout->bulletStride;
+    position->posXBasePhys = layout->bulletBasePhys +
+        layout->bulletPosXOffset;
+    position->posYBasePhys = layout->bulletBasePhys +
+        layout->bulletPosYOffset;
+    position->posZBasePhys = layout->bulletBasePhys +
+        layout->bulletPosZOffset;
+    position->validBitsPhys = layout->activeBitsPhys;
+    position->validWordCount = layout->activeBitsWordCount;
+    position->fullGenerationBasePhys = layout->generationBasePhys;
+#endif
     layout->bulletRenderAngleOffset =
         ME_RENDER_LIST_BULLET_RENDER_ANGLE_OFFSET;
     layout->bulletSinOffset = ME_RENDER_LIST_BULLET_SIN_OFFSET;
@@ -14325,6 +14776,64 @@ static void me_render_list_selftest_layout(
     layout->arcadeLeftBits = float_bits(10.0f);
     layout->arcadeTopBits = float_bits(20.0f);
 }
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+static void me_render_position_selftest_use_soa(
+    Th07PspMeRenderListLayout *layout, uint32_t valid)
+{
+    memset(&gMeRenderPositionSelftestOwner, 0,
+           sizeof(gMeRenderPositionSelftestOwner));
+    const uint32_t managerSerial = 0x42500011u;
+    const uint32_t calcSerial = 0x42500022u;
+    gMeRenderPositionSelftestOwner.header[0] =
+        ME_RENDER_POSITION_SOA_SHADOW_VERSION;
+    gMeRenderPositionSelftestOwner.header[1] =
+        sizeof(gMeRenderPositionSelftestOwner);
+    gMeRenderPositionSelftestOwner.header[2] = 1u;
+    gMeRenderPositionSelftestOwner.header[3] = 1u;
+    gMeRenderPositionSelftestOwner.header[4] = managerSerial;
+    gMeRenderPositionSelftestOwner.header[5] = calcSerial;
+    gMeRenderPositionSelftestOwner.validBits[0] = valid ? 1u : 0u;
+    gMeRenderPositionSelftestOwner.generation[0] = 9u;
+    gMeRenderPositionSelftestOwner.publishManagerSerial[0] = managerSerial;
+    gMeRenderPositionSelftestOwner.publishCalcSerial[0] = calcSerial;
+    gMeRenderPositionSelftestOwner.posXBits[0] = float_bits(90.0f);
+    gMeRenderPositionSelftestOwner.posYBits[0] = float_bits(80.0f);
+    // Deliberately non-finite: direct-list has always supplied Z=0 and D2B
+    // must not turn an unused sidecar Z value into a new rejection condition.
+    gMeRenderPositionSelftestOwner.posZBits[0] = 0x7fc00001u;
+
+    Th07PspMeRenderPositionSource *position = &layout->positionSource;
+    memset(position, 0, sizeof(*position));
+    position->version = TH07_PSP_ME_RENDER_POSITION_SOURCE_VERSION;
+    position->bytes = sizeof(*position);
+    position->kind = TH07_PSP_ME_RENDER_POSITION_SOURCE_SOA;
+    position->ownerBasePhys =
+        (uint32_t)&gMeRenderPositionSelftestOwner & 0x1fffffffu;
+    position->ownerBytes = sizeof(gMeRenderPositionSelftestOwner);
+    position->slotCount = 1u;
+    position->slotStrideBytes = sizeof(uint32_t);
+    position->posXBasePhys =
+        (uint32_t)&gMeRenderPositionSelftestOwner.posXBits[0] & 0x1fffffffu;
+    position->posYBasePhys =
+        (uint32_t)&gMeRenderPositionSelftestOwner.posYBits[0] & 0x1fffffffu;
+    position->posZBasePhys =
+        (uint32_t)&gMeRenderPositionSelftestOwner.posZBits[0] & 0x1fffffffu;
+    position->validBitsPhys =
+        (uint32_t)&gMeRenderPositionSelftestOwner.validBits[0] & 0x1fffffffu;
+    position->validWordCount = 1u;
+    position->fullGenerationBasePhys =
+        (uint32_t)&gMeRenderPositionSelftestOwner.generation[0] & 0x1fffffffu;
+    position->publishManagerSerialBasePhys =
+        (uint32_t)&gMeRenderPositionSelftestOwner
+            .publishManagerSerial[0] & 0x1fffffffu;
+    position->publishCalcSerialBasePhys =
+        (uint32_t)&gMeRenderPositionSelftestOwner
+            .publishCalcSerial[0] & 0x1fffffffu;
+    position->expectedManagerSerial = managerSerial;
+    position->expectedCalcSerial = calcSerial;
+}
+#endif
 
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
 static void me_item_diag_begin(void)
@@ -14613,6 +15122,119 @@ static int selftest_render_stream_direct_list(void)
         return 0;
 #if defined(TH07_PSP_ME_STARTUP_BREADCRUMBS)
     th07_psp_boot_note("MERW STREAM DIRECT LIST PASS");
+#endif
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    // D2B valid SoA must reproduce the accepted AoS stream byte-for-byte.
+    Th07PspMeRenderStreamBuild soaBuild;
+    if (!th07_psp_me_render_stream_acquire(&soaBuild))
+        return 0;
+    Th07PspMeRenderStreamJob soaJob = directJob;
+    soaJob.token = soaBuild.token;
+    soaJob.frameSeq++;
+    soaJob.targetDrawSeq++;
+    me_render_position_selftest_use_soa(&soaJob.listLayout, 1u);
+    if (!th07_psp_me_render_stream_submit(&soaJob))
+    {
+        (void)th07_psp_me_render_stream_cancel_build(&soaBuild.token);
+        return 0;
+    }
+    Th07PspMeRenderStreamCompletion soaCompletion;
+    Th07PspMeRenderStreamReady soaReady;
+    if (!me_render_raw_selftest_wait(
+            &soaBuild.token, &soaCompletion, &soaReady) ||
+        soaCompletion.result != TH07_PSP_ME_RENDER_STREAM_RESULT_OK ||
+        soaCompletion.outputBytes != expectedVertexBytes ||
+        soaCompletion.runCount != 1u ||
+        soaReady.vertexBytes != expectedVertexBytes ||
+        soaReady.runCount != 1u ||
+        memcmp(soaReady.vertices, expectedVertices,
+               expectedVertexBytes) != 0 ||
+        memcmp(soaReady.runs, &expectedRun, sizeof(expectedRun)) != 0 ||
+        !th07_psp_me_render_stream_release_ready(&soaBuild.token))
+        return 0;
+
+    // A clear per-slot bit is the only mixed-mode fallback.  Poisoned SoA
+    // coordinates must be ignored and the canonical AoS result must survive.
+    Th07PspMeRenderStreamBuild coldBuild;
+    if (!th07_psp_me_render_stream_acquire(&coldBuild))
+        return 0;
+    Th07PspMeRenderStreamJob coldJob = directJob;
+    coldJob.token = coldBuild.token;
+    coldJob.frameSeq += 2u;
+    coldJob.targetDrawSeq += 2u;
+    me_render_position_selftest_use_soa(&coldJob.listLayout, 0u);
+    gMeRenderPositionSelftestOwner.posXBits[0] = float_bits(9000.0f);
+    gMeRenderPositionSelftestOwner.posYBits[0] = float_bits(8000.0f);
+    if (!th07_psp_me_render_stream_submit(&coldJob))
+    {
+        (void)th07_psp_me_render_stream_cancel_build(&coldBuild.token);
+        return 0;
+    }
+    Th07PspMeRenderStreamCompletion coldCompletion;
+    Th07PspMeRenderStreamReady coldReady;
+    if (!me_render_raw_selftest_wait(
+            &coldBuild.token, &coldCompletion, &coldReady) ||
+        coldCompletion.result != TH07_PSP_ME_RENDER_STREAM_RESULT_OK ||
+        coldCompletion.outputBytes != expectedVertexBytes ||
+        coldCompletion.runCount != 1u ||
+        coldReady.vertexBytes != expectedVertexBytes ||
+        coldReady.runCount != 1u ||
+        memcmp(coldReady.vertices, expectedVertices,
+               expectedVertexBytes) != 0 ||
+        memcmp(coldReady.runs, &expectedRun, sizeof(expectedRun)) != 0 ||
+        !th07_psp_me_render_stream_release_ready(&coldBuild.token))
+        return 0;
+
+    // A set bit is a promise, never permission to hide stale identity behind
+    // AoS fallback.  Generation mismatch must reject the whole job with no
+    // publishable prefix.
+    Th07PspMeRenderStreamBuild staleBuild;
+    if (!th07_psp_me_render_stream_acquire(&staleBuild))
+        return 0;
+    Th07PspMeRenderStreamJob staleJob = directJob;
+    staleJob.token = staleBuild.token;
+    staleJob.frameSeq += 3u;
+    staleJob.targetDrawSeq += 3u;
+    me_render_position_selftest_use_soa(&staleJob.listLayout, 1u);
+    gMeRenderPositionSelftestOwner.generation[0] = 10u;
+    if (!th07_psp_me_render_stream_submit(&staleJob))
+    {
+        (void)th07_psp_me_render_stream_cancel_build(&staleBuild.token);
+        return 0;
+    }
+    Th07PspMeRenderStreamCompletion staleCompletion;
+    Th07PspMeRenderStreamReady staleReady;
+    if (!me_render_raw_selftest_wait(
+            &staleBuild.token, &staleCompletion, &staleReady) ||
+        staleCompletion.result !=
+            TH07_PSP_ME_RENDER_STREAM_RESULT_RECORD ||
+        staleCompletion.firstBadRecord != 0u ||
+        staleCompletion.outputBytes != 0u ||
+        staleCompletion.vertexCount != 0u ||
+        staleCompletion.runCount != 0u || staleReady.vertices != 0 ||
+        staleReady.vertexBytes != 0u || staleReady.runs != 0 ||
+        staleReady.runCount != 0u ||
+        th07_psp_me_render_stream_mark_ge_in_flight(&staleBuild.token) ||
+        !th07_psp_me_render_stream_release_ready(&staleBuild.token))
+        return 0;
+
+    // Structural corruption is rejected before command publication and the
+    // build token remains cancellable.
+    Th07PspMeRenderStreamBuild badSourceBuild;
+    if (!th07_psp_me_render_stream_acquire(&badSourceBuild))
+        return 0;
+    Th07PspMeRenderStreamJob badSourceJob = directJob;
+    badSourceJob.token = badSourceBuild.token;
+    badSourceJob.frameSeq += 4u;
+    badSourceJob.targetDrawSeq += 4u;
+    badSourceJob.listLayout.positionSource.version ^= 1u;
+    if (th07_psp_me_render_stream_submit(&badSourceJob) ||
+        !th07_psp_me_render_stream_cancel_build(&badSourceBuild.token))
+        return 0;
+#if defined(TH07_PSP_ME_STARTUP_BREADCRUMBS)
+    th07_psp_boot_note("MERW STREAM DIRECT PS01 PASS");
+#endif
 #endif
 
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)

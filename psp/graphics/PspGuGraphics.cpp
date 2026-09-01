@@ -5209,6 +5209,10 @@ class PspGuGraphics final : public ZunGraphics
 #if defined(TH07_PSP_ME_RENDER_WORKER)
         Th07PspMeRenderShadowWindow abMerw{};
         Th07PspTakeMeRenderShadowWindow(&abMerw);
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        Th07PspBulletPositionSoaWindow abPositionSoa{};
+        Th07PspTakeBulletPositionSoaWindow(&abPositionSoa);
+#endif
         unsigned int abAudioJobs = 0u;
         unsigned int abAudioFallbacks = 0u;
         unsigned int abAudioTimeouts = 0u;
@@ -5229,6 +5233,52 @@ class PspGuGraphics final : public ZunGraphics
             abMerw.streamHashMismatch + abMerw.compactProtocolFault +
             abAudioTimeouts;
         acceptProfileValid = acceptProfileValid && abMeFaults == 0u;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        const unsigned long long abPositionSoaClassified =
+            abPositionSoa.matches + abPositionSoa.notValid +
+            abPositionSoa.managerMismatch +
+            abPositionSoa.generationMismatch +
+            abPositionSoa.calcMismatch +
+            abPositionSoa.positionMismatch + abPositionSoa.invalidSlot;
+        const bool abPositionSoaValid =
+            abPositionSoaClassified == abPositionSoa.activeVisits &&
+            abPositionSoa.wouldDefer +
+                    abPositionSoa.unsupportedMatches ==
+                abPositionSoa.matches &&
+            abPositionSoa.wouldMaterializeUnsupported <=
+                abPositionSoa.unsupportedMatches +
+                    abPositionSoa.wouldDefer &&
+            abPositionSoa.mutationMatches +
+                    abPositionSoa.mutationNotValid +
+                    abPositionSoa.mutationFaults ==
+                abPositionSoa.mutationVisits &&
+            abPositionSoa.mutationDeferred +
+                    abPositionSoa.mutationCanonical ==
+                abPositionSoa.mutationMatches &&
+            abPositionSoa.mutationBulkClearItem +
+                    abPositionSoa.mutationDespawnTransition +
+                    abPositionSoa.mutationBulkDespawn +
+                    abPositionSoa.mutationRadiusQuery ==
+                abPositionSoa.mutationDeferred &&
+            abPositionSoa.spawnPublishes <= abPositionSoa.publishes &&
+            abPositionSoa.validSlots <=
+                static_cast<unsigned int>(BulletManager::kBulletCapacity) &&
+            abPositionSoa.managerMismatch == 0u &&
+            abPositionSoa.generationMismatch == 0u &&
+            abPositionSoa.calcMismatch == 0u &&
+            abPositionSoa.positionMismatch == 0u &&
+            abPositionSoa.invalidSlot == 0u &&
+            abPositionSoa.publishRejected == 0u &&
+            abPositionSoa.mutationFaults == 0u
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            && abPositionSoa.readHits + abPositionSoa.readFallbacks ==
+                   abPositionSoa.readAttempts &&
+            abPositionSoa.readFaults == 0u &&
+            abPositionSoa.readDisabled == 0u
+#endif
+            ;
+        acceptProfileValid = acceptProfileValid && abPositionSoaValid;
+#endif
 #endif
 #else
 #if defined(TH07_PSP_ME_RENDER_WORKER)
@@ -6230,12 +6280,29 @@ class PspGuGraphics final : public ZunGraphics
             mMatrixSubmissions * 10u / mPerfFrames;
 #endif
 #if defined(TH07_PSP_PERF_AB_COMPARE)
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        char acceptMessage[768];
+#elif defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        char acceptMessage[512];
+#else
         char acceptMessage[320];
+#endif
         std::snprintf(
             acceptMessage, sizeof(acceptMessage),
             "PERF ACCEPT S%d ST%d N%u HWFPS%u.%u ELUS%llu "
             "AVG%u.%u MAX%u.%u P99%u.%u OVR%u MISS%u "
             "AVGUS%u MAXUS%u P99US%u MEAVGUS%u MEFAULT%u "
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+            "PSV%llu PSM%llu PSC%llu PSWD%llu PSWN%llu PSWU%llu "
+            "PSP%llu PSS%llu PSI%llu "
+            "PSMV%llu PSMM%llu PSMC%llu PSMD%llu PSMK%llu PSMF%u "
+            "PSMR%llu/%llu/%llu/%llu "
+            "PSX%u/%u/%u/%u/%u/%u "
+            "PSB%u/%u PSBM%llu/%llu PSR%u/%u PSVC%u PSG%u "
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            "PSRA%llu PSRH%llu PSRF%llu PSRX%u/%u/%u PSME%llu/%llu "
+#endif
+#endif
             "H%u/%u/%u/%u/%u/%u/%u/%u/%u/%u V%d",
             mPerfWindowState, mPerfWindowStage, mPerfFrames,
             fps10 / 10, fps10 % 10, elapsedUs,
@@ -6243,6 +6310,48 @@ class PspGuGraphics final : public ZunGraphics
             p9910 / 10, p9910 % 10, mPerfOverBudgetFrames, mPerfVsyncMisses,
             criticalAverageUs, static_cast<unsigned int>(mPerfMaxFrameUs),
             p99Us, abMeAverageUs, abMeFaults,
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+            abPositionSoa.activeVisits, abPositionSoa.matches,
+            abPositionSoa.notValid, abPositionSoa.wouldDefer,
+            abPositionSoa.unsupportedMatches,
+            abPositionSoa.wouldMaterializeUnsupported,
+            abPositionSoa.publishes, abPositionSoa.spawnPublishes,
+            abPositionSoa.invalidations,
+            abPositionSoa.mutationVisits,
+            abPositionSoa.mutationMatches,
+            abPositionSoa.mutationNotValid,
+            abPositionSoa.mutationDeferred,
+            abPositionSoa.mutationCanonical,
+            abPositionSoa.mutationFaults,
+            abPositionSoa.mutationBulkClearItem,
+            abPositionSoa.mutationDespawnTransition,
+            abPositionSoa.mutationBulkDespawn,
+            abPositionSoa.mutationRadiusQuery,
+            abPositionSoa.managerMismatch,
+            abPositionSoa.generationMismatch,
+            abPositionSoa.calcMismatch,
+            abPositionSoa.positionMismatch,
+            abPositionSoa.invalidSlot,
+            abPositionSoa.publishRejected,
+            abPositionSoa.pauseClears,
+            abPositionSoa.demoRestartClears,
+            abPositionSoa.wouldMaterializePause,
+            abPositionSoa.wouldMaterializeDemoRestart,
+            abPositionSoa.managerResets,
+            abPositionSoa.calcPasses,
+            abPositionSoa.validSlots,
+            abPositionSoaValid ? 1u : 0u,
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            abPositionSoa.readAttempts,
+            abPositionSoa.readHits,
+            abPositionSoa.readFallbacks,
+            abPositionSoa.readFaults,
+            abPositionSoa.readDisabled,
+            abPositionSoa.readableCalcSerial,
+            abPositionSoa.meSoaJobs,
+            abPositionSoa.meAosJobs,
+#endif
+#endif
             mPerfCriticalHistogram[0], mPerfCriticalHistogram[1],
             mPerfCriticalHistogram[2], mPerfCriticalHistogram[3],
             mPerfCriticalHistogram[4], mPerfCriticalHistogram[5],

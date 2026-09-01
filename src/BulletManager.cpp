@@ -15,6 +15,9 @@
 #include "ItemManager.hpp"
 #include "Player.hpp"
 #include "PspBulletCollisionBroadphase.hpp"
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+#include "PspBulletPositionSoa.hpp"
+#endif
 #include "ReplayManager.hpp"
 #include "PspBulletRender.hpp"
 #include "Rng.hpp"
@@ -122,6 +125,187 @@ constexpr unsigned int kPspM3BulletDrawSampleStride = 32u;
 #endif
 #if defined(TH07_PSP_PERF_DENSE_SLICE)
 Th07PspDenseSliceWindow gPspDenseSliceWindow{};
+#endif
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+struct PspBulletPositionSoaRuntime
+{
+    Th07PspBulletPositionSoaShadow shadow;
+    u32 deferredEligibleBits[TH07_PSP_BULLET_POSITION_SOA_VALID_WORDS];
+    u32 managerSerial;
+    u32 expectedPublishCalcSerial;
+    bool pauseBoundaryLatched;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    u32 readableCalcSerial;
+    bool traversalActive;
+    bool readEnabled;
+    bool readFaulted;
+#endif
+};
+
+PspBulletPositionSoaRuntime gPspBulletPositionSoa{};
+Th07PspBulletPositionSoaWindow gPspBulletPositionSoaWindow{};
+
+inline bool PspBulletPositionSoaWasDeferred(u32 slot)
+{
+    return slot < TH07_PSP_BULLET_POSITION_SOA_CAPACITY &&
+           (gPspBulletPositionSoa.deferredEligibleBits[slot >> 5u] &
+            (1u << (slot & 31u))) != 0u;
+}
+
+inline u32 PspBulletPositionSoaCountDeferred()
+{
+    u32 count = 0u;
+    for (u32 word = 0u;
+         word < TH07_PSP_BULLET_POSITION_SOA_VALID_WORDS; ++word)
+    {
+        u32 bits = gPspBulletPositionSoa.deferredEligibleBits[word];
+        while (bits != 0u)
+        {
+            bits &= bits - 1u;
+            ++count;
+        }
+    }
+    return count;
+}
+
+inline void PspBulletPositionSoaSetDeferred(u32 slot, bool deferred)
+{
+    if (slot >= TH07_PSP_BULLET_POSITION_SOA_CAPACITY)
+    {
+        return;
+    }
+    u32 &word = gPspBulletPositionSoa.deferredEligibleBits[slot >> 5u];
+    const u32 mask = 1u << (slot & 31u);
+    if (deferred)
+    {
+        word |= mask;
+    }
+    else
+    {
+        word &= ~mask;
+    }
+}
+
+inline void PspBulletPositionSoaInvalidateRuntimeSlot(u32 slot)
+{
+    gPspBulletPositionSoa.shadow.Invalidate(slot);
+    PspBulletPositionSoaSetDeferred(slot, false);
+}
+
+inline void PspBulletPositionSoaInvalidateRuntimeAll()
+{
+    gPspBulletPositionSoa.shadow.InvalidateAll();
+    memset(gPspBulletPositionSoa.deferredEligibleBits, 0,
+           sizeof(gPspBulletPositionSoa.deferredEligibleBits));
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    gPspBulletPositionSoa.readableCalcSerial = 0u;
+    gPspBulletPositionSoa.traversalActive = false;
+#endif
+}
+
+inline u32 PspBulletPositionSoaNextSerial(u32 serial)
+{
+    ++serial;
+    return serial != 0u ? serial : 1u;
+}
+
+void PspBulletPositionSoaResetManager()
+{
+    PspBulletPositionSoaRuntime &runtime = gPspBulletPositionSoa;
+    runtime.managerSerial =
+        PspBulletPositionSoaNextSerial(runtime.managerSerial);
+    runtime.expectedPublishCalcSerial = 0u;
+    runtime.pauseBoundaryLatched = false;
+    runtime.shadow.Reset(runtime.managerSerial, 1u);
+    memset(runtime.deferredEligibleBits, 0,
+           sizeof(runtime.deferredEligibleBits));
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    runtime.readableCalcSerial = 0u;
+    runtime.traversalActive = false;
+    runtime.readEnabled = !runtime.readFaulted;
+#endif
+    ++gPspBulletPositionSoaWindow.managerResets;
+}
+
+void PspBulletPositionSoaBeginCalc()
+{
+    PspBulletPositionSoaRuntime &runtime = gPspBulletPositionSoa;
+    if (!runtime.shadow.IsInitialized() || runtime.managerSerial == 0u)
+    {
+        PspBulletPositionSoaResetManager();
+    }
+    runtime.expectedPublishCalcSerial = runtime.shadow.activeCalcSerial;
+    const u32 nextCalc = PspBulletPositionSoaNextSerial(
+        runtime.shadow.activeCalcSerial);
+    runtime.shadow.BeginCalc(runtime.managerSerial, nextCalc);
+    runtime.pauseBoundaryLatched = false;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    // Never mix last pass and newly-published slots.  The entire Bullet walk
+    // is AoS-owned; the new serial becomes readable only after all 1,024
+    // logical slots have been visited and the six lists are complete.
+    runtime.readableCalcSerial = 0u;
+    runtime.traversalActive = true;
+#endif
+    ++gPspBulletPositionSoaWindow.calcPasses;
+}
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+void PspBulletPositionSoaEndCalc()
+{
+    PspBulletPositionSoaRuntime &runtime = gPspBulletPositionSoa;
+    runtime.traversalActive = false;
+    runtime.readableCalcSerial = runtime.readEnabled &&
+            runtime.shadow.IsInitialized()
+        ? runtime.shadow.activeCalcSerial
+        : 0u;
+}
+
+__attribute__((always_inline)) inline bool PspResolveBulletSlot(
+    const BulletManager *manager, const Bullet *bullet, u32 *slot)
+{
+    if (!manager || !bullet || !slot)
+    {
+        return false;
+    }
+    const u32 candidate = static_cast<u32>(bullet->pspSlotIndex);
+    if (candidate >= static_cast<u32>(BulletManager::kBulletCapacity) ||
+        manager->BulletAt(static_cast<i32>(candidate)) != bullet ||
+        !manager->PspIsBulletSlotTracked(static_cast<i32>(candidate)) ||
+        manager->pspMeRenderSlotGenerations[candidate] == 0u)
+    {
+        return false;
+    }
+    *slot = candidate;
+    return true;
+}
+#endif
+
+__attribute__((always_inline)) inline void PspReadBulletPosition(
+    BulletManager *manager, const Bullet *bullet, u32 slot, ZunVec3 *out)
+{
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    manager->PspReadPositionOrAoS(
+        bullet, static_cast<i32>(slot), out);
+#else
+    (void)manager;
+    (void)slot;
+    *out = bullet->pos;
+#endif
+}
+
+void PspBulletPositionSoaPauseBoundary()
+{
+    PspBulletPositionSoaRuntime &runtime = gPspBulletPositionSoa;
+    if (!runtime.pauseBoundaryLatched)
+    {
+        gPspBulletPositionSoaWindow.wouldMaterializePause +=
+            PspBulletPositionSoaCountDeferred();
+        PspBulletPositionSoaInvalidateRuntimeAll();
+        runtime.expectedPublishCalcSerial = 0u;
+        runtime.pauseBoundaryLatched = true;
+        ++gPspBulletPositionSoaWindow.pauseClears;
+    }
+}
 #endif
 #if defined(TH07_PSP_ME_RENDER_WORKER)
 // M-ME0B owns one process-lifetime Main-RAM shadow slot.  This is sufficient
@@ -464,12 +648,21 @@ static_assert(__builtin_offsetof(Th07PspMeRenderRawRecord, vmPhys) == 16u &&
                       Th07PspMeRenderRawRecord, generation) == 28u,
               "I-ME4 raw record field offsets changed");
 #if defined(TH07_PSP_ME_RENDER_DIRECT_LIST)
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+static_assert(sizeof(Th07PspMeRenderPositionSource) == 72u,
+              "D2B PS01 position-source ABI changed");
+static_assert(sizeof(Th07PspMeRenderListLayout) == 204u,
+              "D2B LL02 direct-list layout ABI changed");
+#else
 static_assert(sizeof(Th07PspMeRenderListLayout) == 128u,
               "I-ME5 direct-list layout ABI changed");
+#endif
 static_assert(__builtin_offsetof(Bullet, sprites.collisionType) == 2954u &&
                   __builtin_offsetof(Bullet, pos.x) == 2956u &&
                   __builtin_offsetof(Bullet, pos.y) == 2960u &&
+                  __builtin_offsetof(Bullet, pos.z) == 2964u &&
                   __builtin_offsetof(Bullet, state) == 3068u &&
+                  __builtin_offsetof(Bullet, pspSlotIndex) == 3074u &&
                   __builtin_offsetof(Bullet, next) == 3076u &&
                   __builtin_offsetof(Bullet, pspRenderAngle) == 3436u &&
                   __builtin_offsetof(Bullet, pspRenderSin) == 3440u &&
@@ -1017,6 +1210,191 @@ bool PspMeBulletFastIsEligible(const Bullet *bullet)
     const i32 commandIndex = bullet->curCmdIdx;
     return commandIndex >= 5 ||
            (commandIndex >= 0 && bullet->commands[commandIndex].type == 0u);
+}
+#endif
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+bool PspBulletPositionSoaObserveSlot(BulletManager *manager,
+                                     Bullet *bullet, u32 slot)
+{
+    PspBulletPositionSoaRuntime &runtime = gPspBulletPositionSoa;
+    Th07PspBulletPositionSoaWindow &window = gPspBulletPositionSoaWindow;
+    ++window.activeVisits;
+    const bool wasDeferred = PspBulletPositionSoaWasDeferred(slot);
+
+    const Th07PspBulletPositionSoaValidation result =
+        runtime.shadow.Validate(
+            slot, manager->pspMeRenderSlotGenerations[slot],
+            runtime.managerSerial, runtime.expectedPublishCalcSerial,
+            bullet->pos.x, bullet->pos.y, bullet->pos.z);
+    switch (result)
+    {
+    case TH07_PSP_BULLET_POSITION_SOA_MATCH:
+        ++window.matches;
+        if (PspMeBulletFastIsEligible(bullet))
+        {
+            ++window.wouldDefer;
+            return true;
+        }
+        ++window.unsupportedMatches;
+        if (wasDeferred)
+        {
+            ++window.wouldMaterializeUnsupported;
+        }
+        return false;
+    case TH07_PSP_BULLET_POSITION_SOA_NOT_VALID:
+    case TH07_PSP_BULLET_POSITION_SOA_NOT_INITIALIZED:
+        ++window.notValid;
+        return false;
+    case TH07_PSP_BULLET_POSITION_SOA_MANAGER_MISMATCH:
+        ++window.managerMismatch;
+        break;
+    case TH07_PSP_BULLET_POSITION_SOA_GENERATION_MISMATCH:
+        ++window.generationMismatch;
+        break;
+    case TH07_PSP_BULLET_POSITION_SOA_CALC_MISMATCH:
+        ++window.calcMismatch;
+        break;
+    case TH07_PSP_BULLET_POSITION_SOA_POSITION_MISMATCH:
+        ++window.positionMismatch;
+        break;
+    case TH07_PSP_BULLET_POSITION_SOA_INVALID_SLOT:
+    default:
+        ++window.invalidSlot;
+        break;
+    }
+
+    // D2A never consumes this state.  Still invalidate immediately so a
+    // single stale/corrupt record cannot be counted as a later match.
+    PspBulletPositionSoaInvalidateRuntimeSlot(slot);
+    ++window.invalidations;
+    return false;
+}
+
+void PspBulletPositionSoaPublishSlot(BulletManager *manager,
+                                     Bullet *bullet, u32 slot,
+                                     bool spawnPublish,
+                                     bool deferredEligible)
+{
+    PspBulletPositionSoaRuntime &runtime = gPspBulletPositionSoa;
+    Th07PspBulletPositionSoaWindow &window = gPspBulletPositionSoaWindow;
+    if (!manager || !bullet || slot >= BulletManager::kBulletCapacity ||
+        !manager->PspIsBulletSlotTracked(static_cast<i32>(slot)) ||
+        bullet->state == BULLET_INACTIVE ||
+        manager->pspMeRenderSlotGenerations[slot] == 0u ||
+        !runtime.shadow.Publish(
+            slot, manager->pspMeRenderSlotGenerations[slot],
+            runtime.managerSerial, runtime.shadow.activeCalcSerial,
+            bullet->pos.x, bullet->pos.y, bullet->pos.z))
+    {
+        PspBulletPositionSoaInvalidateRuntimeSlot(slot);
+        ++window.publishRejected;
+        return;
+    }
+    const bool finalDeferredEligible =
+        deferredEligible && PspMeBulletFastIsEligible(bullet);
+    if (deferredEligible && !finalDeferredEligible)
+    {
+        ++window.wouldMaterializeUnsupported;
+    }
+    PspBulletPositionSoaSetDeferred(slot, finalDeferredEligible);
+    ++window.publishes;
+    if (spawnPublish)
+    {
+        ++window.spawnPublishes;
+    }
+}
+
+enum PspBulletPositionSoaMutationReason
+{
+    PSP_BULLET_POSITION_SOA_MUTATION_BULK_CLEAR_ITEM = 0,
+    PSP_BULLET_POSITION_SOA_MUTATION_DESPAWN_TRANSITION = 1,
+    PSP_BULLET_POSITION_SOA_MUTATION_BULK_DESPAWN = 2,
+    PSP_BULLET_POSITION_SOA_MUTATION_RADIUS_QUERY = 3
+};
+
+void PspBulletPositionSoaObserveMutation(
+    BulletManager *manager, Bullet *bullet, u32 slot,
+    PspBulletPositionSoaMutationReason reason)
+{
+    PspBulletPositionSoaRuntime &runtime = gPspBulletPositionSoa;
+    Th07PspBulletPositionSoaWindow &window = gPspBulletPositionSoaWindow;
+    ++window.mutationVisits;
+
+    // Public mutation callbacks can run immediately before BulletManager's
+    // calc pass (the slot still names the preceding pass), or after the pass
+    // (the slot already names activeCalcSerial). Accept exactly those two
+    // serials; every other lifetime is a hard D2 correctness fault.
+    Th07PspBulletPositionSoaValidation result = runtime.shadow.Validate(
+        slot, manager->pspMeRenderSlotGenerations[slot],
+        runtime.managerSerial, runtime.shadow.activeCalcSerial,
+        bullet->pos.x, bullet->pos.y, bullet->pos.z);
+    if (result == TH07_PSP_BULLET_POSITION_SOA_CALC_MISMATCH &&
+        runtime.expectedPublishCalcSerial != 0u &&
+        runtime.expectedPublishCalcSerial != runtime.shadow.activeCalcSerial)
+    {
+        result = runtime.shadow.Validate(
+            slot, manager->pspMeRenderSlotGenerations[slot],
+            runtime.managerSerial, runtime.expectedPublishCalcSerial,
+            bullet->pos.x, bullet->pos.y, bullet->pos.z);
+    }
+
+    if (result == TH07_PSP_BULLET_POSITION_SOA_MATCH)
+    {
+        ++window.mutationMatches;
+        if (PspBulletPositionSoaWasDeferred(slot))
+        {
+            ++window.mutationDeferred;
+            switch (reason)
+            {
+            case PSP_BULLET_POSITION_SOA_MUTATION_BULK_CLEAR_ITEM:
+                ++window.mutationBulkClearItem;
+                break;
+            case PSP_BULLET_POSITION_SOA_MUTATION_DESPAWN_TRANSITION:
+                ++window.mutationDespawnTransition;
+                break;
+            case PSP_BULLET_POSITION_SOA_MUTATION_BULK_DESPAWN:
+                ++window.mutationBulkDespawn;
+                break;
+            case PSP_BULLET_POSITION_SOA_MUTATION_RADIUS_QUERY:
+                ++window.mutationRadiusQuery;
+                break;
+            }
+        }
+        else
+        {
+            ++window.mutationCanonical;
+        }
+    }
+    else if (result == TH07_PSP_BULLET_POSITION_SOA_NOT_VALID ||
+             result == TH07_PSP_BULLET_POSITION_SOA_NOT_INITIALIZED)
+    {
+        ++window.mutationNotValid;
+    }
+    else
+    {
+        ++window.mutationFaults;
+    }
+
+    if (result == TH07_PSP_BULLET_POSITION_SOA_MATCH)
+    {
+        // The external path has consumed the canonical AoS position, so a
+        // future D2C build would have to materialize this slot first.  Keep
+        // the matched XYZ mirror valid: read-only radius misses and state-only
+        // DESPAWN transitions do not change position, and retaining the mirror
+        // lets the next boundary verify that fact instead of reporting a
+        // synthetic cold slot.
+        PspBulletPositionSoaSetDeferred(slot, false);
+    }
+    else if (result != TH07_PSP_BULLET_POSITION_SOA_NOT_VALID &&
+             result != TH07_PSP_BULLET_POSITION_SOA_NOT_INITIALIZED)
+    {
+        // A stale generation/serial or different XYZ is a real correctness
+        // fault.  Drop both the mirror and its deferred-authority eligibility
+        // so it cannot be accepted by a later observation.
+        PspBulletPositionSoaInvalidateRuntimeSlot(slot);
+        ++window.invalidations;
+    }
 }
 #endif
 
@@ -2214,25 +2592,38 @@ bool PspMeRenderBuildShadowSnapshot(BulletManager *manager, u32 *recordCount,
     }
 
     u32 seen[(BulletManager::kBulletCapacity + 31u) / 32u] = {};
+#if !defined(TH07_PSP_BULLET_POSITION_SOA_READ)
     const uintptr_t bulletBase =
         reinterpret_cast<uintptr_t>(&manager->bullets[0]);
     const uintptr_t bulletEnd = reinterpret_cast<uintptr_t>(
         &manager->bullets[BulletManager::kBulletCapacity]);
+#endif
     u32 count = 0u;
     for (u32 bucket = 0u; bucket < 6u; ++bucket)
     {
         Bullet *bullet = manager->bulletsPtrs[bucket];
         while (bullet)
         {
+            if (count >= TH07_PSP_ME_RENDER_MAX_RECORDS)
+            {
+                return false;
+            }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            u32 slot = 0u;
+            if (!PspResolveBulletSlot(manager, bullet, &slot))
+            {
+                return false;
+            }
+#else
             const uintptr_t bulletAddress = reinterpret_cast<uintptr_t>(bullet);
-            if (count >= TH07_PSP_ME_RENDER_MAX_RECORDS ||
-                bulletAddress < bulletBase || bulletAddress >= bulletEnd ||
+            if (bulletAddress < bulletBase || bulletAddress >= bulletEnd ||
                 ((bulletAddress - bulletBase) % sizeof(Bullet)) != 0u)
             {
                 return false;
             }
             const u32 slot = static_cast<u32>(
                 (bulletAddress - bulletBase) / sizeof(Bullet));
+#endif
             const u32 bit = 1u << (slot & 31u);
             u32 &seenWord = seen[slot >> 5u];
             if ((seenWord & bit) != 0u)
@@ -2251,10 +2642,22 @@ bool PspMeRenderBuildShadowSnapshot(BulletManager *manager, u32 *recordCount,
             const float halfHeight = vm && vm->sprite
                                          ? vm->sprite->heightPx * vm->scale.y * 0.5f
                                          : 0.0f;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            ZunVec3 renderPosition;
+            PspReadBulletPosition(manager, bullet, slot, &renderPosition);
+#endif
             float centerX = g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                            renderPosition.x + g_AnmManager->offset.x;
+#else
                             bullet->pos.x + g_AnmManager->offset.x;
+#endif
             float centerY = g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                            renderPosition.y + g_AnmManager->offset.y;
+#else
                             bullet->pos.y + g_AnmManager->offset.y;
+#endif
             if (vm && (vm->anchor & 1u))
             {
                 centerX += halfWidth;
@@ -2520,14 +2923,28 @@ PspMeRenderCaptureFusedRecord(BulletManager *manager, Bullet *bullet,
         capture.complete = false;
         return false;
     }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 renderPosition;
+    PspReadBulletPosition(manager, bullet, slot, &renderPosition);
+#endif
 
     // Bullet::Draw's observable VM writes are idempotent.  The WARM_QUEUE
     // audit proved Enemy ECL (priority 10) is the last external bullet-VM
     // reader/writer; priorities 13..17 have no such observer.  The manager-wide
     // epoch below still cancels the publication if any later public mutation
     // clears, despawns, stops or reuses a bullet slot.
-    vm->pos.x = capture.arcadeLeft + bullet->pos.x;
-    vm->pos.y = capture.arcadeTop + bullet->pos.y;
+    vm->pos.x = capture.arcadeLeft +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                renderPosition.x;
+#else
+                bullet->pos.x;
+#endif
+    vm->pos.y = capture.arcadeTop +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                renderPosition.y;
+#else
+                bullet->pos.y;
+#endif
     vm->pos.z = 0.05f;
     vm->color.color = (vm->color.color & 0xff000000u) | 0x00ffffffu;
 
@@ -3010,6 +3427,77 @@ bool PspMeRenderBuildFusedSnapshot(
         __builtin_offsetof(Bullet, sprites.collisionType);
     job->listLayout.bulletPosXOffset = __builtin_offsetof(Bullet, pos.x);
     job->listLayout.bulletPosYOffset = __builtin_offsetof(Bullet, pos.y);
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    job->listLayout.bulletPosZOffset = __builtin_offsetof(Bullet, pos.z);
+    Th07PspMeRenderPositionSource &positionSource =
+        job->listLayout.positionSource;
+    positionSource = Th07PspMeRenderPositionSource{};
+    positionSource.version = TH07_PSP_ME_RENDER_POSITION_SOURCE_VERSION;
+    positionSource.bytes = sizeof(positionSource);
+    positionSource.slotCount = BulletManager::kBulletCapacity;
+    positionSource.validWordCount =
+        sizeof(manager->pspActiveBulletBits) /
+        sizeof(manager->pspActiveBulletBits[0]);
+
+    const PspBulletPositionSoaRuntime &positionRuntime =
+        gPspBulletPositionSoa;
+    const bool soaReadable = positionRuntime.readEnabled &&
+        !positionRuntime.readFaulted && !positionRuntime.traversalActive &&
+        positionRuntime.readableCalcSerial != 0u &&
+        positionRuntime.managerSerial != 0u &&
+        positionRuntime.shadow.IsInitialized() &&
+        positionRuntime.shadow.managerSerial ==
+            positionRuntime.managerSerial &&
+        positionRuntime.shadow.activeCalcSerial ==
+            positionRuntime.readableCalcSerial;
+    if (soaReadable)
+    {
+        const Th07PspBulletPositionSoaShadow &shadow =
+            positionRuntime.shadow;
+        positionSource.kind = TH07_PSP_ME_RENDER_POSITION_SOURCE_SOA;
+        positionSource.ownerBasePhys = physicalAddress(&shadow);
+        positionSource.ownerBytes = sizeof(shadow);
+        positionSource.slotStrideBytes = sizeof(shadow.posXBits[0]);
+        positionSource.posXBasePhys = physicalAddress(&shadow.posXBits[0]);
+        positionSource.posYBasePhys = physicalAddress(&shadow.posYBits[0]);
+        positionSource.posZBasePhys = physicalAddress(&shadow.posZBits[0]);
+        positionSource.validBitsPhys = physicalAddress(&shadow.validBits[0]);
+        positionSource.fullGenerationBasePhys =
+            physicalAddress(&shadow.generation[0]);
+        positionSource.publishManagerSerialBasePhys =
+            physicalAddress(&shadow.publishManagerSerial[0]);
+        positionSource.publishCalcSerialBasePhys =
+            physicalAddress(&shadow.publishCalcSerial[0]);
+        positionSource.expectedManagerSerial = positionRuntime.managerSerial;
+        positionSource.expectedCalcSerial =
+            positionRuntime.readableCalcSerial;
+        ++gPspBulletPositionSoaWindow.meSoaJobs;
+    }
+    else
+    {
+        // Pause/restart and a correctness fault do not cancel the render
+        // worker.  Only the position source downgrades to the frozen AoS
+        // owner; gameplay and the existing ME path continue unchanged.
+        positionSource.kind = TH07_PSP_ME_RENDER_POSITION_SOURCE_AOS;
+        positionSource.ownerBasePhys = job->listLayout.bulletBasePhys;
+        positionSource.ownerBytes =
+            BulletManager::kBulletCapacity * sizeof(Bullet);
+        positionSource.slotStrideBytes = sizeof(Bullet);
+        positionSource.posXBasePhys =
+            job->listLayout.bulletBasePhys +
+            job->listLayout.bulletPosXOffset;
+        positionSource.posYBasePhys =
+            job->listLayout.bulletBasePhys +
+            job->listLayout.bulletPosYOffset;
+        positionSource.posZBasePhys =
+            job->listLayout.bulletBasePhys +
+            job->listLayout.bulletPosZOffset;
+        positionSource.validBitsPhys = job->listLayout.activeBitsPhys;
+        positionSource.fullGenerationBasePhys =
+            job->listLayout.generationBasePhys;
+        ++gPspBulletPositionSoaWindow.meAosJobs;
+    }
+#endif
     job->listLayout.bulletRenderAngleOffset =
         __builtin_offsetof(Bullet, pspRenderAngle);
     job->listLayout.bulletSinOffset =
@@ -3130,10 +3618,12 @@ bool PspMeRenderBuildCorrectnessSnapshot(
     }
 
     u32 seen[(BulletManager::kBulletCapacity + 31u) / 32u] = {};
+#if !defined(TH07_PSP_BULLET_POSITION_SOA_READ)
     const uintptr_t bulletBase =
         reinterpret_cast<uintptr_t>(&manager->bullets[0]);
     const uintptr_t bulletEnd = reinterpret_cast<uintptr_t>(
         &manager->bullets[BulletManager::kBulletCapacity]);
+#endif
     u32 bucketEnds[6] = {};
     u32 count = 0u;
 
@@ -3142,15 +3632,26 @@ bool PspMeRenderBuildCorrectnessSnapshot(
         Bullet *bullet = manager->bulletsPtrs[bucket];
         while (bullet)
         {
+            if (count >= TH07_PSP_ME_RENDER_STREAM_MAX_RECORDS)
+            {
+                return false;
+            }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            u32 slot = 0u;
+            if (!PspResolveBulletSlot(manager, bullet, &slot))
+            {
+                return false;
+            }
+#else
             const uintptr_t address = reinterpret_cast<uintptr_t>(bullet);
-            if (count >= TH07_PSP_ME_RENDER_STREAM_MAX_RECORDS ||
-                address < bulletBase || address >= bulletEnd ||
+            if (address < bulletBase || address >= bulletEnd ||
                 ((address - bulletBase) % sizeof(Bullet)) != 0u)
             {
                 return false;
             }
             const u32 slot =
                 static_cast<u32>((address - bulletBase) / sizeof(Bullet));
+#endif
             const u32 bit = 1u << (slot & 31u);
             u32 &seenWord = seen[slot >> 5u];
             if ((seenWord & bit) != 0u ||
@@ -3168,10 +3669,24 @@ bool PspMeRenderBuildCorrectnessSnapshot(
             Th07PspMeRenderStreamRecord &record = build.records[count];
             std::memset(&record, 0, sizeof(record));
 
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            ZunVec3 renderPosition;
+            PspReadBulletPosition(manager, bullet, slot, &renderPosition);
+#endif
             const float posX =
-                g_GameManager.arcadeRegionTopLeftPos.x + bullet->pos.x;
+                g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                renderPosition.x;
+#else
+                bullet->pos.x;
+#endif
             const float posY =
-                g_GameManager.arcadeRegionTopLeftPos.y + bullet->pos.y;
+                g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                renderPosition.y;
+#else
+                bullet->pos.y;
+#endif
             record.posXBits = PspMeRenderFloatBits(posX);
             record.posYBits = PspMeRenderFloatBits(posY);
             record.posZBits = PspMeRenderFloatBits(0.05f);
@@ -4186,11 +4701,25 @@ bool PspMeRenderBuildLiveRecord(BulletManager *manager, Bullet *bullet,
     {
         return false;
     }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 renderPosition;
+    PspReadBulletPosition(manager, bullet, slot, &renderPosition);
+#endif
     *record = Th07PspMeRenderStreamRecord{};
     record->posXBits = PspMeRenderFloatBits(
-        g_GameManager.arcadeRegionTopLeftPos.x + bullet->pos.x);
+        g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        renderPosition.x);
+#else
+        bullet->pos.x);
+#endif
     record->posYBits = PspMeRenderFloatBits(
-        g_GameManager.arcadeRegionTopLeftPos.y + bullet->pos.y);
+        g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        renderPosition.y);
+#else
+        bullet->pos.y);
+#endif
     record->posZBits = PspMeRenderFloatBits(0.05f);
     record->slot = slot;
     record->slotGeneration = manager->pspMeRenderSlotGenerations[slot];
@@ -4373,25 +4902,38 @@ bool PspMeRenderValidateReadyStream(BulletManager *manager,
     // VM-derived input still equal the immutable snapshot. No observable VM
     // field is mutated until this and the run proof below both succeed.
     u32 seen[(BulletManager::kBulletCapacity + 31u) / 32u] = {};
+#if !defined(TH07_PSP_BULLET_POSITION_SOA_READ)
     const uintptr_t bulletBase =
         reinterpret_cast<uintptr_t>(&manager->bullets[0]);
     const uintptr_t bulletEnd = reinterpret_cast<uintptr_t>(
         &manager->bullets[BulletManager::kBulletCapacity]);
+#endif
     u32 recordIndex = 0u;
     for (u32 bucket = 0u; bucket < 6u; ++bucket)
     {
         Bullet *bullet = manager->bulletsPtrs[bucket];
         while (bullet)
         {
+            if (recordIndex >= state.recordCount)
+            {
+                return false;
+            }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            u32 slot = 0u;
+            if (!PspResolveBulletSlot(manager, bullet, &slot))
+            {
+                return false;
+            }
+#else
             const uintptr_t address = reinterpret_cast<uintptr_t>(bullet);
-            if (recordIndex >= state.recordCount || address < bulletBase ||
-                address >= bulletEnd ||
+            if (address < bulletBase || address >= bulletEnd ||
                 ((address - bulletBase) % sizeof(Bullet)) != 0u)
             {
                 return false;
             }
             const u32 slot = static_cast<u32>(
                 (address - bulletBase) / sizeof(Bullet));
+#endif
             const u32 bit = 1u << (slot & 31u);
             if ((seen[slot >> 5u] & bit) != 0u)
             {
@@ -4583,10 +5125,33 @@ void PspMeRenderCommitVmSideEffects(BulletManager *manager)
              bullet = bullet->next)
         {
             AnmVm *vm = PspMeRenderSelectVm(bullet);
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+            u32 slot = 0u;
+            ZunVec3 renderPosition;
+            if (!PspResolveBulletSlot(manager, bullet, &slot))
+            {
+                renderPosition = bullet->pos;
+            }
+            else
+            {
+                PspReadBulletPosition(
+                    manager, bullet, slot, &renderPosition);
+            }
+#endif
             vm->pos.x =
-                g_GameManager.arcadeRegionTopLeftPos.x + bullet->pos.x;
+                g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                renderPosition.x;
+#else
+                bullet->pos.x;
+#endif
             vm->pos.y =
-                g_GameManager.arcadeRegionTopLeftPos.y + bullet->pos.y;
+                g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                renderPosition.y;
+#else
+                bullet->pos.y;
+#endif
             vm->pos.z = 0.05f;
             vm->color.color =
                 (vm->color.color & 0xff000000u) | 0x00ffffffu;
@@ -5326,6 +5891,15 @@ void PspMeRenderCorrectnessNoteRecord(Bullet *bullet, u32 bucket,
         return;
     }
     const Th07PspMeRenderStreamRecord &record = state.records[recordIndex];
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    u32 slot = 0u;
+    if (!PspResolveBulletSlot(&g_BulletManager, bullet, &slot))
+    {
+        PspMeRenderCorrectnessIdentityFault(recordIndex, 5u, record.slot,
+                                            0xffffffffu);
+        return;
+    }
+#else
     const uintptr_t bulletBase =
         reinterpret_cast<uintptr_t>(&g_BulletManager.bullets[0]);
     const uintptr_t address = reinterpret_cast<uintptr_t>(bullet);
@@ -5339,6 +5913,7 @@ void PspMeRenderCorrectnessNoteRecord(Bullet *bullet, u32 bucket,
         return;
     }
     const u32 slot = static_cast<u32>((address - bulletBase) / sizeof(Bullet));
+#endif
     u32 expectedBucket = 0u;
     while (expectedBucket < 5u &&
            recordIndex >= state.job.bucketEnds[expectedBucket])
@@ -6020,9 +6595,23 @@ inline bool PspRebuildBulletStaticProxy(BulletManager *manager, Bullet *bullet,
     {
         return false;
     }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 renderPosition;
+    PspReadBulletPosition(manager, bullet, slot, &renderPosition);
+#endif
 
-    record.posX = g_GameManager.arcadeRegionTopLeftPos.x + bullet->pos.x;
-    record.posY = g_GameManager.arcadeRegionTopLeftPos.y + bullet->pos.y;
+    record.posX = g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                  renderPosition.x;
+#else
+                  bullet->pos.x;
+#endif
+    record.posY = g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                  renderPosition.y;
+#else
+                  bullet->pos.y;
+#endif
     record.sourceAngleBits = PspBulletStaticProxyFloatBits(bullet->angle);
     record.generation = pool->generations[slot];
     record.reserved = 0u;
@@ -6092,7 +6681,7 @@ PspSyncBulletStaticProxy(BulletManager *manager, Bullet *bullet, u32 slot)
     {
         return false;
     }
-    bullet->pspStaticProxySlot = static_cast<u16>(slot);
+    bullet->pspSlotIndex = static_cast<u16>(slot);
 
     AnmVm *vm = &bullet->sprites.spriteBullet;
     if (!vm->autoRotate)
@@ -6123,8 +6712,17 @@ PspSyncBulletStaticProxy(BulletManager *manager, Bullet *bullet, u32 slot)
         return PspRebuildBulletStaticProxy(manager, bullet, slot);
     }
 
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 renderPosition;
+    PspReadBulletPosition(manager, bullet, slot, &renderPosition);
+    record.posX =
+        g_GameManager.arcadeRegionTopLeftPos.x + renderPosition.x;
+    record.posY =
+        g_GameManager.arcadeRegionTopLeftPos.y + renderPosition.y;
+#else
     record.posX = g_GameManager.arcadeRegionTopLeftPos.x + bullet->pos.x;
     record.posY = g_GameManager.arcadeRegionTopLeftPos.y + bullet->pos.y;
+#endif
     return true;
 }
 
@@ -6156,10 +6754,24 @@ PspDrawBulletStaticProxy(BulletManager *owner, Bullet *bullet, u32 slot,
 
     AnmVm *vm = &bullet->sprites.spriteBullet;
     const u32 sourceAngleBits = PspBulletStaticProxyFloatBits(bullet->angle);
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 renderPosition;
+    PspReadBulletPosition(owner, bullet, slot, &renderPosition);
+#endif
     const float expectedPosX =
-        g_GameManager.arcadeRegionTopLeftPos.x + bullet->pos.x;
+        g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        renderPosition.x;
+#else
+        bullet->pos.x;
+#endif
     const float expectedPosY =
-        g_GameManager.arcadeRegionTopLeftPos.y + bullet->pos.y;
+        g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        renderPosition.y;
+#else
+        bullet->pos.y;
+#endif
     if (!bullet->pspRenderRotationValid ||
         bullet->pspRenderSourceAngle != bullet->angle ||
         bullet->pspRenderAngle == 0.0f ||
@@ -6291,7 +6903,7 @@ PspTryBulletStaticProxy(BulletManager *manager, Bullet *bullet,
         return false;
     }
     return PspDrawBulletStaticProxy(
-        manager, bullet, static_cast<u32>(bullet->pspStaticProxySlot),
+        manager, bullet, static_cast<u32>(bullet->pspSlotIndex),
         viewportLeft, viewportTop, viewportRight, viewportBottom);
 }
 #else
@@ -6321,6 +6933,12 @@ PspDrawNormalAutoRotatedOnePass(Bullet *bullet, float viewportLeft,
     {
         return false;
     }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 drawPosition;
+    PspReadBulletPosition(
+        &g_BulletManager, bullet, static_cast<u32>(bullet->pspSlotIndex),
+        &drawPosition);
+#endif
 
     AnmVm *vm = &bullet->sprites.spriteBullet;
     if (__builtin_expect(!vm->autoRotate || !bullet->pspRenderRotationValid ||
@@ -6333,8 +6951,18 @@ PspDrawNormalAutoRotatedOnePass(Bullet *bullet, float viewportLeft,
 
     // Preserve Bullet::Draw's observable VM mutations even when the sprite is
     // invisible or culled below.
-    vm->pos.x = g_GameManager.arcadeRegionTopLeftPos.x + bullet->pos.x;
-    vm->pos.y = g_GameManager.arcadeRegionTopLeftPos.y + bullet->pos.y;
+    vm->pos.x = g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                drawPosition.x;
+#else
+                bullet->pos.x;
+#endif
+    vm->pos.y = g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                drawPosition.y;
+#else
+                bullet->pos.y;
+#endif
     vm->pos.z = 0.05f;
     vm->color.color = (vm->color.color & 0xff000000u) | 0x00ffffffu;
     vm->SetRotationZ(bullet->pspRenderAngle);
@@ -6542,8 +7170,17 @@ PspCaptureBulletWarmRecord(BulletManager *manager, Bullet *bullet, u32 slotIndex
     // and is the only external reader/writer of spriteBullet fields; repository
     // audit found no such observer after this calc-12 callback.  The move is
     // additionally guarded by curFrame/fixed30/input and the mutation epoch.
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 renderPosition;
+    PspReadBulletPosition(manager, bullet, slotIndex, &renderPosition);
+    vm->pos.x =
+        g_GameManager.arcadeRegionTopLeftPos.x + renderPosition.x;
+    vm->pos.y =
+        g_GameManager.arcadeRegionTopLeftPos.y + renderPosition.y;
+#else
     vm->pos.x = g_GameManager.arcadeRegionTopLeftPos.x + bullet->pos.x;
     vm->pos.y = g_GameManager.arcadeRegionTopLeftPos.y + bullet->pos.y;
+#endif
     vm->pos.z = 0.05f;
     vm->color.color = (vm->color.color & 0xff000000u) | 0x00ffffffu;
     if (!bullet->pspRenderRotationValid ||
@@ -6761,6 +7398,153 @@ PspDrawBulletWarmRecord(const PspBulletWarmRecord &record, float viewportLeft,
 #endif
 #endif
 } // namespace
+#endif
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+void Th07PspBulletPositionSoaInvalidateSlot(u32 slot)
+{
+    PspBulletPositionSoaInvalidateRuntimeSlot(slot);
+    ++gPspBulletPositionSoaWindow.invalidations;
+}
+
+void Th07PspBulletPositionSoaPauseBoundary()
+{
+    PspBulletPositionSoaPauseBoundary();
+}
+
+void Th07PspBulletPositionSoaDemoRestartBoundary()
+{
+    gPspBulletPositionSoaWindow.wouldMaterializeDemoRestart +=
+        PspBulletPositionSoaCountDeferred();
+    PspBulletPositionSoaInvalidateRuntimeAll();
+    gPspBulletPositionSoa.expectedPublishCalcSerial = 0u;
+    ++gPspBulletPositionSoaWindow.demoRestartClears;
+}
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+bool BulletManager::PspTryReadDeferredPosition(
+    const Bullet *bullet, i32 slot, ZunVec3 *out) const
+{
+    PspBulletPositionSoaRuntime &runtime = gPspBulletPositionSoa;
+    Th07PspBulletPositionSoaWindow &window = gPspBulletPositionSoaWindow;
+    ++window.readAttempts;
+
+    if (!bullet || !out || slot < 0 || slot >= kBulletCapacity ||
+        !runtime.readEnabled || runtime.readFaulted ||
+        runtime.traversalActive || runtime.readableCalcSerial == 0u ||
+        bullet->pspSlotIndex != static_cast<u16>(slot) ||
+        BulletAt(slot) != bullet || !PspIsBulletSlotTracked(slot) ||
+        bullet->state == BULLET_INACTIVE ||
+        !PspBulletPositionSoaWasDeferred(static_cast<u32>(slot)) ||
+        pspMeRenderSlotGenerations[slot] == 0u)
+    {
+        ++window.readFallbacks;
+        return false;
+    }
+
+    u32 xBits = 0u;
+    u32 yBits = 0u;
+    u32 zBits = 0u;
+    const Th07PspBulletPositionSoaValidation result =
+        runtime.shadow.LoadRaw(
+            static_cast<u32>(slot), pspMeRenderSlotGenerations[slot],
+            runtime.managerSerial, runtime.readableCalcSerial,
+            &xBits, &yBits, &zBits);
+
+    // D2B still writes AoS on every path and is a correctness build.  Compare
+    // raw words (including signed zero) before allowing any reader to observe
+    // the sidecar.  A single divergence disables SoA reads process-wide while
+    // the canonical AoS game continues.
+    if (result != TH07_PSP_BULLET_POSITION_SOA_MATCH ||
+        xBits != Th07PspBulletPositionSoaShadow::FloatBits(bullet->pos.x) ||
+        yBits != Th07PspBulletPositionSoaShadow::FloatBits(bullet->pos.y) ||
+        zBits != Th07PspBulletPositionSoaShadow::FloatBits(bullet->pos.z))
+    {
+        ++window.readFaults;
+        runtime.readFaulted = true;
+        runtime.readEnabled = false;
+        PspBulletPositionSoaInvalidateRuntimeAll();
+        ++window.readFallbacks;
+        return false;
+    }
+
+    out->x = Th07PspBulletPositionSoaShadow::BitsFloat(xBits);
+    out->y = Th07PspBulletPositionSoaShadow::BitsFloat(yBits);
+    out->z = Th07PspBulletPositionSoaShadow::BitsFloat(zBits);
+    ++window.readHits;
+    return true;
+}
+
+void BulletManager::PspReadPositionOrAoS(
+    const Bullet *bullet, i32 slot, ZunVec3 *out) const
+{
+    if (!out)
+    {
+        return;
+    }
+    if (!PspTryReadDeferredPosition(bullet, slot, out))
+    {
+        if (bullet)
+        {
+            *out = bullet->pos;
+        }
+        else
+        {
+            *out = ZunVec3{};
+        }
+    }
+}
+#endif
+
+void Th07PspTakeBulletPositionSoaWindow(
+    Th07PspBulletPositionSoaWindow *window)
+{
+    if (!window)
+    {
+        return;
+    }
+
+    *window = gPspBulletPositionSoaWindow;
+    window->validSlots = gPspBulletPositionSoa.shadow.CountValid();
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    window->readDisabled = gPspBulletPositionSoa.readEnabled ? 0u : 1u;
+    window->readableCalcSerial =
+        gPspBulletPositionSoa.readableCalcSerial;
+#endif
+
+    // A correctness mismatch is a process-run verdict. Preserve it across
+    // ordinary 120-frame window resets so a transition/restart fault cannot
+    // disappear before the final log is inspected.
+    const unsigned int managerMismatch =
+        gPspBulletPositionSoaWindow.managerMismatch;
+    const unsigned int generationMismatch =
+        gPspBulletPositionSoaWindow.generationMismatch;
+    const unsigned int calcMismatch =
+        gPspBulletPositionSoaWindow.calcMismatch;
+    const unsigned int positionMismatch =
+        gPspBulletPositionSoaWindow.positionMismatch;
+    const unsigned int invalidSlot =
+        gPspBulletPositionSoaWindow.invalidSlot;
+    const unsigned int publishRejected =
+        gPspBulletPositionSoaWindow.publishRejected;
+    const unsigned int mutationFaults =
+        gPspBulletPositionSoaWindow.mutationFaults;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    const unsigned int readFaults =
+        gPspBulletPositionSoaWindow.readFaults;
+#endif
+    gPspBulletPositionSoaWindow = Th07PspBulletPositionSoaWindow{};
+    gPspBulletPositionSoaWindow.managerMismatch = managerMismatch;
+    gPspBulletPositionSoaWindow.generationMismatch = generationMismatch;
+    gPspBulletPositionSoaWindow.calcMismatch = calcMismatch;
+    gPspBulletPositionSoaWindow.positionMismatch = positionMismatch;
+    gPspBulletPositionSoaWindow.invalidSlot = invalidSlot;
+    gPspBulletPositionSoaWindow.publishRejected = publishRejected;
+    gPspBulletPositionSoaWindow.mutationFaults = mutationFaults;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    gPspBulletPositionSoaWindow.readFaults = readFaults;
+#endif
+}
 #endif
 
 #if defined(TH07_PSP_ME_EFFECT_RENDER_STREAM)
@@ -7201,6 +7985,9 @@ void BulletManager::Initialize()
     {
         memset(staticProxyPool, 0, sizeof(PspBulletStaticProxyPool));
     }
+#endif
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+    PspBulletPositionSoaResetManager();
 #endif
     this->itemType = ITEM_POINT_BULLET;
 }
@@ -7686,6 +8473,12 @@ i32 BulletManager::SpawnSingleBullet(EnemyBulletShooter *bulletProps, i32 x, i32
     {
         bullet->state = BULLET_DESPAWN;
     }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+    // Track happened before type setup and spawn backshift. Publish only after
+    // commands and the screen-clear state transition finalized observable XYZ.
+    PspBulletPositionSoaPublishSlot(
+        this, bullet, static_cast<u32>(bulletIndex), true, false);
+#endif
     bulletIndex++;
     if (bulletIndex >= kBulletCapacity)
         bulletIndex = 0;
@@ -7826,15 +8619,32 @@ void BulletManager::RemoveAllBullets(i32 param_1)
         {
             continue;
         }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        ZunVec3 observedPosition;
+        PspReadBulletPosition(
+            this, bullet, static_cast<u32>(i), &observedPosition);
+        ZunVec3 *bulletPosition = &observedPosition;
+#else
+        ZunVec3 *bulletPosition = &bullet->pos;
+#endif
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        PspBulletPositionSoaObserveMutation(
+            this, bullet, static_cast<u32>(i),
+            (param_1 != 0 && param_1 < 9)
+                ? PSP_BULLET_POSITION_SOA_MUTATION_BULK_CLEAR_ITEM
+                : PSP_BULLET_POSITION_SOA_MUTATION_DESPAWN_TRANSITION);
+#endif
         if (param_1 != 0 && param_1 < 9)
         {
             if (param_1 < 3)
             {
-                g_ItemManager.SpawnItem(&bullet->pos, this->itemType, param_1);
+                g_ItemManager.SpawnItem(
+                    bulletPosition, this->itemType, param_1);
             }
             else
             {
-                g_ItemManager.SpawnItem(&bullet->pos, ITEM_CHERRY_SMALL, 1);
+                g_ItemManager.SpawnItem(
+                    bulletPosition, ITEM_CHERRY_SMALL, 1);
             }
             memset(bullet, 0, sizeof(Bullet));
 #if defined(TH07_PSP)
@@ -7947,12 +8757,26 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
             continue;
         }
 
-        g_ItemManager.SpawnItem(&bullet->pos, this->itemType, 1);
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        ZunVec3 observedPosition;
+        PspReadBulletPosition(
+            this, bullet, static_cast<u32>(i), &observedPosition);
+        ZunVec3 *bulletPosition = &observedPosition;
+#else
+        ZunVec3 *bulletPosition = &bullet->pos;
+#endif
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        PspBulletPositionSoaObserveMutation(
+            this, bullet, static_cast<u32>(i),
+            PSP_BULLET_POSITION_SOA_MUTATION_BULK_DESPAWN);
+#endif
+        g_ItemManager.SpawnItem(bulletPosition, this->itemType, 1);
 #if defined(TH07_PSP)
         if ((popupIndex++ % popupStride) == 0u)
 #endif
         {
-            g_AsciiManager.CreatePopup1(&bullet->pos, local_8,
+            g_AsciiManager.CreatePopup1(bulletPosition, local_8,
                                         local_8 >= param_1 ? 0xFFFFFF00 : 0xFFFFFFFF);
         }
         local_c += local_8;
@@ -8027,14 +8851,28 @@ void BulletManager::RemoveBulletsInRadius(ZunVec3 *centerPos, f32 radius)
             continue;
         }
 
-        diff = bullet->pos - *centerPos;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+        ZunVec3 observedPosition;
+        PspReadBulletPosition(
+            this, bullet, static_cast<u32>(i), &observedPosition);
+        ZunVec3 *bulletPosition = &observedPosition;
+#else
+        ZunVec3 *bulletPosition = &bullet->pos;
+#endif
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        PspBulletPositionSoaObserveMutation(
+            this, bullet, static_cast<u32>(i),
+            PSP_BULLET_POSITION_SOA_MUTATION_RADIUS_QUERY);
+#endif
+        diff = *bulletPosition - *centerPos;
 
         if (diff.LengthSq() > radius)
         {
             continue;
         }
 
-        g_ItemManager.SpawnItem(&bullet->pos, ITEM_POINT_BULLET, 1);
+        g_ItemManager.SpawnItem(bulletPosition, ITEM_POINT_BULLET, 1);
         memset(bullet, 0, sizeof(Bullet));
 #if defined(TH07_PSP)
         this->PspForgetBulletSlot(i);
@@ -8314,6 +9152,9 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
     i32 i;
     i32 collisionRes;
     bool bombCollisionChecked;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+    bool pspBulletPositionSoaWouldDefer = false;
+#endif
 #if defined(TH07_PSP_ME_BULLET_FAST_UPDATE)
     const Th07PspMeBulletFastOutput *pspMeBulletFastOutput = nullptr;
     u16 pspMeBulletFastFlags = 0u;
@@ -8358,6 +9199,11 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
     blockIdx = 0;
     if (g_GameManager.isTimeStopped)
     {
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        // AoS is already materialized in D2A. Clear the future authority view
+        // once per pause interval so resume can never inherit a stale pass.
+        PspBulletPositionSoaPauseBoundary();
+#endif
 #if defined(TH07_PSP_ME_BULLET_COMPACT_UPDATE)
         // A SELECT pause still advances the calc chain. Observe/release the
         // asynchronous owner before returning, but never wait in gameplay.
@@ -8374,6 +9220,10 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
 #endif
         return CHAIN_CALLBACK_RESULT_CONTINUE;
     }
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+    PspBulletPositionSoaBeginCalc();
+#endif
 
 #if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
     // A1 is opportunistic and never waits.  If command 12 has not completed
@@ -8494,6 +9344,9 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
 
     for (i = 0; i < kBulletCapacity; i++)
     {
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        pspBulletPositionSoaWouldDefer = false;
+#endif
         bullet = arg->BulletAt(blockIdx);
 #if defined(TH07_PSP)
         // GCC otherwise keeps re-deriving this large-stride array address
@@ -8513,6 +9366,10 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
 #endif
             goto bullet_loop_continue;
         }
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        pspBulletPositionSoaWouldDefer = PspBulletPositionSoaObserveSlot(
+            arg, bullet, static_cast<u32>(blockIdx));
+#endif
         arg->bulletCount++;
         bombCollisionChecked = false;
 #if defined(TH07_PSP_ME_BULLET_FAST_UPDATE)
@@ -8919,6 +9776,11 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
     update_timers:
         bullet->timer1++;
         bullet->timer2++;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        PspBulletPositionSoaPublishSlot(
+            arg, bullet, static_cast<u32>(blockIdx), false,
+            pspBulletPositionSoaWouldDefer);
+#endif
 #if defined(TH07_PSP_BULLET_STATIC_PROXY)
         PspSyncBulletStaticProxy(arg, bullet, static_cast<u32>(blockIdx));
 #endif
@@ -8956,6 +9818,10 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
             blockIdx = kBulletCapacity - 1;
         }
     }
+
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    PspBulletPositionSoaEndCalc();
+#endif
 
 #if defined(TH07_PSP_ME_BULLET_COMPACT_UPDATE)
     // One tail probe only; a still-running command is left owned until p18 or
@@ -9158,6 +10024,12 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
 void Bullet::Draw()
 {
     AnmVm *vm;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 drawPosition;
+    PspReadBulletPosition(&g_BulletManager, this,
+                          static_cast<u32>(this->pspSlotIndex),
+                          &drawPosition);
+#endif
 
     switch (this->state)
     {
@@ -9177,8 +10049,18 @@ void Bullet::Draw()
         vm = &this->sprites.spriteBullet;
         break;
     }
-    vm->pos.x = g_GameManager.arcadeRegionTopLeftPos.x + this->pos.x;
-    vm->pos.y = g_GameManager.arcadeRegionTopLeftPos.y + this->pos.y;
+    vm->pos.x = g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                drawPosition.x;
+#else
+                this->pos.x;
+#endif
+    vm->pos.y = g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                drawPosition.y;
+#else
+                this->pos.y;
+#endif
     vm->pos.z = 0.05f;
     vm->color.color = (vm->color.color & 0xff000000) | 0xffffff;
 #if defined(TH07_PSP)
@@ -9232,6 +10114,12 @@ Bullet::PreparePspBulletRenderRecord(PspBulletRenderRecord *record)
     // These are observable render-side effects and must not be deferred with
     // the compact record itself.
     AnmVm *vm;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    ZunVec3 drawPosition;
+    PspReadBulletPosition(&g_BulletManager, this,
+                          static_cast<u32>(this->pspSlotIndex),
+                          &drawPosition);
+#endif
     switch (this->state)
     {
     case BULLET_SPAWNING_FAST:
@@ -9251,8 +10139,18 @@ Bullet::PreparePspBulletRenderRecord(PspBulletRenderRecord *record)
         break;
     }
 
-    vm->pos.x = g_GameManager.arcadeRegionTopLeftPos.x + this->pos.x;
-    vm->pos.y = g_GameManager.arcadeRegionTopLeftPos.y + this->pos.y;
+    vm->pos.x = g_GameManager.arcadeRegionTopLeftPos.x +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                drawPosition.x;
+#else
+                this->pos.x;
+#endif
+    vm->pos.y = g_GameManager.arcadeRegionTopLeftPos.y +
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+                drawPosition.y;
+#else
+                this->pos.y;
+#endif
     vm->pos.z = 0.05f;
     vm->color.color = (vm->color.color & 0xff000000) | 0xffffff;
 

@@ -31,6 +31,18 @@
 #define PSP_ECL_MARK_BULLET_MUTATION()
 #endif
 
+static inline ZunVec3 PspEclReadBulletPosition(Bullet *bullet, i32 slot)
+{
+    ZunVec3 position;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    g_BulletManager.PspReadPositionOrAoS(bullet, slot, &position);
+#else
+    (void)slot;
+    position = bullet->pos;
+#endif
+    return position;
+}
+
 EclExInstr g_EclExInstr[24] = {
     EnemyEclInstr::ExInsSetPosToBoss,
     EnemyEclInstr::ExInsAliceCurveBullets,
@@ -173,12 +185,16 @@ void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy, EclRawInstr *
 
         if (bullet->sprites.spriteBullet.sprite && bullet->spriteOffset == 2)
         {
+            const ZunVec3 bulletPosition =
+                PspEclReadBulletPosition(bullet, i);
             distance =
-                sqrtf((enemy->position.x - bullet->pos.x) * (enemy->position.x - bullet->pos.x) +
-                      (enemy->position.y - bullet->pos.y) * (enemy->position.y - bullet->pos.y));
+                sqrtf((enemy->position.x - bulletPosition.x) *
+                          (enemy->position.x - bulletPosition.x) +
+                      (enemy->position.y - bulletPosition.y) *
+                          (enemy->position.y - bulletPosition.y));
             if (distance < local_e4)
             {
-                bulletProps.position = bullet->pos;
+                bulletProps.position = bulletPosition;
                 bulletProps.sprite = 0;
                 bulletProps.spriteOffset = 6;
                 bulletProps.angle1 = 0.0f;
@@ -225,9 +241,13 @@ void EnemyEclInstr::ExInsDespawnLargeBulletAndSavePos(Enemy *enemy, EclRawInstr 
 
         if (bullet->sprites.spriteBullet.sprite->heightPx >= 60.0f)
         {
-            enemy->currentContext.eclContextArgs.floatVars1[0] = bullet->pos.x;
-            enemy->currentContext.eclContextArgs.floatVars1[1] = bullet->pos.y;
-            g_EffectManager.SpawnParticles(2, &bullet->pos, 1, 0xffffffff);
+            ZunVec3 bulletPosition = PspEclReadBulletPosition(bullet, i);
+            enemy->currentContext.eclContextArgs.floatVars1[0] =
+                bulletPosition.x;
+            enemy->currentContext.eclContextArgs.floatVars1[1] =
+                bulletPosition.y;
+            g_EffectManager.SpawnParticles(
+                2, &bulletPosition, 1, 0xffffffff);
             bullet->Initialize();
             break;
         }
@@ -268,7 +288,7 @@ void EnemyEclInstr::ExInsSplitBulletsOrShootBackwards(Enemy *enemy, EclRawInstr 
              (instr->args[1].i == 1 && bullet->spriteOffset == 15) ||
              (instr->args[1].i == 2 && bullet->spriteOffset == 2)))
         {
-            bulletProps.position = bullet->pos;
+            bulletProps.position = PspEclReadBulletPosition(bullet, i);
             bulletProps.sprite = 6;
             bulletProps.spriteOffset = 15;
             bulletProps.angle1 = utils::AddNormalizeAngle(bullet->angle, ZUN_PI);
@@ -412,8 +432,12 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy, EclRawInstr *ins
                     continue;
                 }
 
+                ZunVec3 bulletPosition =
+                    PspEclReadBulletPosition(bullet, j);
                 if (bullet->sprites.spriteBullet.sprite &&
-                    IsPointInRotatedRect(&bullet->pos, &center, &size, &laser->pos, sine, cosine))
+                    IsPointInRotatedRect(
+                        &bulletPosition, &center, &size, &laser->pos, sine,
+                        cosine))
                 {
                     if (bullet->state2 > 0)
                     {
@@ -500,9 +524,12 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy, EclRawInstr *instr
                     continue;
                 }
 
+                ZunVec3 bulletPosition =
+                    PspEclReadBulletPosition(bullet, j);
                 if (bullet->sprites.spriteBullet.sprite && bullet->state2 != i + 1 &&
                     bullet->state2 >= 0 &&
-                    IsPointInRotatedRect(&bullet->pos, &center, &size, &laser->pos, sine, cosine))
+                    IsPointInRotatedRect(&bulletPosition, &center, &size,
+                                         &laser->pos, sine, cosine))
                 {
                     if (g_GameManager.difficulty < 2)
                     {
@@ -646,18 +673,21 @@ void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
             continue;
         }
 
+        const ZunVec3 bulletPosition =
+            PspEclReadBulletPosition(bullet, i);
+
         if ((g_GameManager.difficulty < DIFF_HARD &&
              bullet->sprites.spriteBullet.sprite->heightPx > 48.0f &&
-             bullet->pos.y > enemy->position.y - 64.0f &&
-             bullet->pos.y < enemy->position.y + 64.0f) ||
+             bulletPosition.y > enemy->position.y - 64.0f &&
+             bulletPosition.y < enemy->position.y + 64.0f) ||
             (g_GameManager.difficulty >= DIFF_HARD &&
              bullet->sprites.spriteBullet.sprite->heightPx > 48.0f &&
-             bullet->pos.y > enemy->position.y - 48.0f &&
-             bullet->pos.y < enemy->position.y + 48.0f))
+             bulletPosition.y > enemy->position.y - 48.0f &&
+             bulletPosition.y < enemy->position.y + 48.0f))
         {
             for (j = 0; j < numBullets; j++)
             {
-                bulletProps.position = bullet->pos;
+                bulletProps.position = bulletPosition;
                 bulletProps.position.x += g_Rng.GetRandomFloatInRange(32.0f) - 16.0f;
                 bulletProps.position.y += g_Rng.GetRandomFloatInRange(32.0f) - 16.0f;
 
@@ -717,8 +747,12 @@ void EnemyEclInstr::ExInsYoumuCurveBulletsBelow(Enemy *enemy, EclRawInstr *instr
             continue;
         }
 
-        if (bullet->state2 == 0 && bullet->pos.y > enemy->position.y && bullet->pos.y < 352.0f &&
-            bullet->pos.x > enemy->position.x - 16.0f && bullet->pos.x < enemy->position.x + 16.0f)
+        const ZunVec3 bulletPosition =
+            PspEclReadBulletPosition(bullet, i);
+        if (bullet->state2 == 0 && bulletPosition.y > enemy->position.y &&
+            bulletPosition.y < 352.0f &&
+            bulletPosition.x > enemy->position.x - 16.0f &&
+            bulletPosition.x < enemy->position.x + 16.0f)
         {
             bullet->AddAngleAccelCommand(0, 0, 160, i & 1 ? 0.05235988f : -0.05235988f,
                                          -bullet->speed / 180.0f);
@@ -749,8 +783,10 @@ void EnemyEclInstr::ExInsYoumuRedirectBulletsToPlayer(Enemy *enemy, EclRawInstr 
 
         if (bullet->state2 == 1)
         {
+            ZunVec3 bulletPosition = PspEclReadBulletPosition(bullet, i);
             bullet->AddTargetVelocityCommand(0, 0, 90, 0.026666667f,
-                                             g_Player.AngleToPlayer(&bullet->pos));
+                                             g_Player.AngleToPlayer(
+                                                 &bulletPosition));
             bullet->ClearCommand(1);
             bullet->state2 = 2;
         }
@@ -783,7 +819,7 @@ void EnemyEclInstr::ExInsYuyukoTransformButterflyBullets(Enemy *enemy, EclRawIns
         if (bullet->state2 == 0 && bullet->sprites.spriteBullet.activeSpriteIdx >= 632 &&
             bullet->sprites.spriteBullet.activeSpriteIdx <= 639)
         {
-            bulletProps.position = bullet->pos;
+            bulletProps.position = PspEclReadBulletPosition(bullet, i);
             bulletProps.sprite = 0;
             bulletProps.spriteOffset = 6;
             bulletProps.angle1 = utils::AddNormalizeAngle(bullet->angle, ZUN_PI);
@@ -823,10 +859,12 @@ void EnemyEclInstr::ExInsYuyukoButterflySpawnEnemy(Enemy *enemy, EclRawInstr *in
 
         if (bullet->state2 == 0 && bullet->sprites.spriteBullet.activeSpriteIdx == 636)
         {
+            ZunVec3 bulletPosition = PspEclReadBulletPosition(bullet, i);
             args.floatVars1[0] = bullet->angle;
             args.floatVars1[7] = angleOffset;
             angleOffset = angleOffset + 0.7853982f;
-            g_EnemyManager.SpawnEnemyEx(enemy->currentContext.subId + 1, &bullet->pos, 1, -2, 10,
+            g_EnemyManager.SpawnEnemyEx(enemy->currentContext.subId + 1,
+                                        &bulletPosition, 1, -2, 10,
                                         &args);
             bullet->Initialize();
         }
@@ -882,13 +920,16 @@ void EnemyEclInstr::ExInsBurstLargeBullets2(Enemy *enemy, EclRawInstr *instr)
             continue;
         }
 
+        const ZunVec3 bulletPosition =
+            PspEclReadBulletPosition(bullet, i);
+
         if (bullet->sprites.spriteBullet.sprite->heightPx > 48.0f &&
-            enemy->position.y - triggerHeight < bullet->pos.y &&
-            bullet->pos.y < triggerHeight + enemy->position.y)
+            enemy->position.y - triggerHeight < bulletPosition.y &&
+            bulletPosition.y < triggerHeight + enemy->position.y)
         {
             for (j = 0; j < 15; j++)
             {
-                bulletProps.position = bullet->pos;
+                bulletProps.position = bulletPosition;
                 bulletProps.position.x += g_Rng.GetRandomFloatInRange(32.0f) - 16.0f;
                 bulletProps.position.y += g_Rng.GetRandomFloatInRange(32.0f) - 16.0f;
 
@@ -972,10 +1013,12 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange(Enemy *enemy, EclRawInstr *in
         {
             continue;
         }
-        if ((bullet->exFlags & 0x40U) == 0 && bullet->pos.y < 320.0f &&
+        const ZunVec3 bulletPosition =
+            PspEclReadBulletPosition(bullet, i);
+        if ((bullet->exFlags & 0x40U) == 0 && bulletPosition.y < 320.0f &&
             bullet->sprites.spriteBullet.sprite->heightPx > 60.0f)
         {
-            bulletProps.position = bullet->pos;
+            bulletProps.position = bulletPosition;
             if (timerMod2 != 0)
             {
                 bulletProps.sprite = 1;
@@ -1041,10 +1084,12 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange2(Enemy *enemy, EclRawInstr *i
         {
             continue;
         }
-        if ((bullet->exFlags & 0x40U) == 0 && bullet->pos.y < 320.0f &&
+        const ZunVec3 bulletPosition =
+            PspEclReadBulletPosition(bullet, i);
+        if ((bullet->exFlags & 0x40U) == 0 && bulletPosition.y < 320.0f &&
             bullet->sprites.spriteBullet.sprite->heightPx > 60.0f)
         {
-            bulletProps.position = bullet->pos;
+            bulletProps.position = bulletPosition;
             if (timerMod3 != 0)
             {
                 bulletProps.sprite = 1;

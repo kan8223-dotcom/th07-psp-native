@@ -90,7 +90,11 @@ class PspBulletOnePassRotatedSourceTests(unittest.TestCase):
 
     def test_implementation_is_compile_time_guarded(self) -> None:
         start = self.bullets.index("PspDrawNormalAutoRotatedOnePass(")
-        guard = self.bullets.rfind("#if", 0, start)
+        # D2B adds nested position-source guards to the preceding static-proxy
+        # function.  Find this feature's owning guard, not merely the nearest
+        # (possibly nested) preprocessor directive.
+        guard = self.bullets.rfind(f"#if defined({MACRO})", 0, start)
+        self.assertNotEqual(guard, -1)
         self.assertIn(MACRO, self.bullets[guard:start])
         end = self.bullets.index("#endif", start)
         self.assertLess(start, end)

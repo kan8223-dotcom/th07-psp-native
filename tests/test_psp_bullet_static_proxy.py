@@ -95,9 +95,14 @@ class PspBulletStaticProxySourceTests(unittest.TestCase):
         ):
             with self.subTest(target=target):
                 self.assertIn(f"{FEATURE}=0", recipe_body(self.makefile, target))
-        slot = self.header.index("u16 pspStaticProxySlot;")
+        # D2B promoted the old proxy-only tail slot into one PSP-wide stable
+        # slot identity shared by the static proxy and SoA readers.  It still
+        # occupies the same original two-byte padding and stays out of PC
+        # builds; the proxy no longer owns a feature-local field.
+        slot = self.header.index("u16 pspSlotIndex;")
         guard = self.header.rfind("#if", 0, slot)
-        self.assertIn(MACRO, self.header[guard:slot])
+        self.assertIn("TH07_PSP", self.header[guard:slot])
+        self.assertIn("static proxy share", self.header[guard:slot])
 
     def test_pool_is_single_aligned_stage_allocation_and_fail_closed(self) -> None:
         self.assertIn("struct alignas(64) PspBulletStaticProxyPool", self.source)

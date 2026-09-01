@@ -66,11 +66,54 @@ struct ProcessOptionalRamState
     ArchiveWorkspaceLease archiveWorkspaceLease;
 #if defined(TH07_PSP_TITLE_FONT_HOLE_SWAP)
     bool fontBufferBorrowsTitleWorkspace;
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+    // A6v4 keeps the subset font at the arena head.  During serial face ANM
+    // loading the disjoint tail can act as synchronous decode scratch.
+    bool fontTailArchiveBorrowed;
+    void *fontTailArchiveBuffer;
+    std::size_t fontTailArchiveBytes;
+#endif
 #endif
 #endif
 };
 
 ProcessOptionalRamState g_ProcessOptionalRam = {};
+
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE) && \
+    defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+bool GetFontTailRegion(unsigned char **tailOut, std::size_t *bytesOut)
+{
+    if (!tailOut || !bytesOut || !g_ProcessOptionalRam.titleWorkspace ||
+        !g_ProcessOptionalRam.fontBufferBorrowsTitleWorkspace ||
+        g_ProcessOptionalRam.fontBuffer != g_ProcessOptionalRam.titleWorkspace ||
+        g_ProcessOptionalRam.archiveWorkspaceLease !=
+            ProcessOptionalRamState::ARCHIVE_WORKSPACE_FONT ||
+        g_ProcessOptionalRam.fontBytes >
+            g_ProcessOptionalRam.titleWorkspaceBytes)
+    {
+        return false;
+    }
+
+    unsigned char *workspace =
+        static_cast<unsigned char *>(g_ProcessOptionalRam.titleWorkspace);
+    unsigned char *unalignedTail = workspace + g_ProcessOptionalRam.fontBytes;
+    const std::size_t misalignment =
+        reinterpret_cast<std::uintptr_t>(unalignedTail) % kFontTailAlignment;
+    const std::size_t padding =
+        misalignment ? kFontTailAlignment - misalignment : 0u;
+    const std::size_t remaining =
+        g_ProcessOptionalRam.titleWorkspaceBytes -
+        g_ProcessOptionalRam.fontBytes;
+    if (padding > remaining)
+    {
+        return false;
+    }
+
+    *tailOut = unalignedTail + padding;
+    *bytesOut = remaining - padding;
+    return true;
+}
+#endif
 
 #if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE)
 bool EnsureTitleArchiveWorkspace(std::size_t bytes)
@@ -198,6 +241,9 @@ StageAllocationResult TryPrepareStageAllocations()
             g_ProcessOptionalRam.fontBuffer == g_ProcessOptionalRam.titleWorkspace &&
             g_ProcessOptionalRam.archiveWorkspaceLease ==
                 ProcessOptionalRamState::ARCHIVE_WORKSPACE_FONT &&
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+            !g_ProcessOptionalRam.fontTailArchiveBorrowed &&
+#endif
             g_ProcessOptionalRam.fontBytes <=
                 g_ProcessOptionalRam.titleWorkspaceBytes)
         {
@@ -351,6 +397,14 @@ void ReleaseFontBufferOwned(const void *borrowedBuffer, bool preserveTitleWorksp
             return;
         }
 #endif
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+        if (g_ProcessOptionalRam.fontTailArchiveBorrowed)
+        {
+            th07_psp_boot_note(
+                "A6V4 ARENA transition=FONT->IDLE refused reason=archive-tail-attached");
+            return;
+        }
+#endif
         if (g_ProcessOptionalRam.archiveWorkspaceLease ==
             ProcessOptionalRamState::ARCHIVE_WORKSPACE_FONT)
         {
@@ -366,6 +420,11 @@ void ReleaseFontBufferOwned(const void *borrowedBuffer, bool preserveTitleWorksp
         g_ProcessOptionalRam.fontBuffer = nullptr;
         g_ProcessOptionalRam.fontBytes = 0;
         g_ProcessOptionalRam.fontBufferBorrowsTitleWorkspace = false;
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+        g_ProcessOptionalRam.fontTailArchiveBorrowed = false;
+        g_ProcessOptionalRam.fontTailArchiveBuffer = nullptr;
+        g_ProcessOptionalRam.fontTailArchiveBytes = 0;
+#endif
         if (!preserveTitleWorkspace &&
             g_ProcessOptionalRam.archiveWorkspaceLease ==
                 ProcessOptionalRamState::ARCHIVE_WORKSPACE_IDLE)
@@ -437,9 +496,36 @@ void *Th07PspOptionalRamAcquireTitleArchive(std::size_t bytes)
     return g_ProcessOptionalRam.titleWorkspace;
 }
 
-#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT)
 void *Th07PspOptionalRamAcquireTransientArchive(std::size_t bytes)
 {
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+    // A6v4: the subset font occupies only the arena prefix.  Gui registers
+    // face archives before stage text admission, so the aligned remainder is
+    // available as one serial synchronous-decode loan.  This removes the
+    // multi-MiB contiguous heap allocation that failed at the stage 5->6
+    // boundary while preserving every byte of the resident font.
+    unsigned char *fontTail = nullptr;
+    std::size_t fontTailBytes = 0;
+    if (bytes && !g_ProcessOptionalRam.fontTailArchiveBorrowed &&
+        !g_OptionalRamBudget.textPoolBorrowsTitleWorkspace &&
+        GetFontTailRegion(&fontTail, &fontTailBytes) &&
+        bytes <= fontTailBytes)
+    {
+        g_ProcessOptionalRam.fontTailArchiveBorrowed = true;
+        g_ProcessOptionalRam.fontTailArchiveBuffer = fontTail;
+        g_ProcessOptionalRam.fontTailArchiveBytes = bytes;
+        th07_psp_boot_notef(
+            "A6V4 ARENA lease=ARCHIVE-TAIL offset=%uK bytes=%uK cap=%uK",
+            static_cast<unsigned int>(
+                (fontTail - static_cast<unsigned char *>(
+                    g_ProcessOptionalRam.titleWorkspace)) / 1024u),
+            static_cast<unsigned int>(bytes / 1024u),
+            static_cast<unsigned int>(fontTailBytes / 1024u));
+        return fontTail;
+    }
+#endif
+
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT)
     if (!bytes || !g_ProcessOptionalRam.titleWorkspace ||
         g_ProcessOptionalRam.archiveWorkspaceLease !=
             ProcessOptionalRamState::ARCHIVE_WORKSPACE_IDLE ||
@@ -458,30 +544,42 @@ void *Th07PspOptionalRamAcquireTransientArchive(std::size_t bytes)
     th07_psp_boot_notef("archive workspace transient acquire %uK cap%uK",
                         static_cast<unsigned int>(bytes / 1024u),
                         static_cast<unsigned int>(
-                            g_ProcessOptionalRam.titleWorkspaceBytes / 1024u));
+                        g_ProcessOptionalRam.titleWorkspaceBytes / 1024u));
     return g_ProcessOptionalRam.titleWorkspace;
+#else
+    (void)bytes;
+#endif
+    return nullptr;
 }
 
 bool Th07PspOptionalRamIsTransientArchive(const void *borrowedBuffer)
 {
-    return borrowedBuffer && borrowedBuffer == g_ProcessOptionalRam.titleWorkspace &&
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+    if (borrowedBuffer && g_ProcessOptionalRam.fontTailArchiveBorrowed &&
+        borrowedBuffer == g_ProcessOptionalRam.fontTailArchiveBuffer)
+    {
+        return true;
+    }
+#endif
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT)
+    return borrowedBuffer &&
+           borrowedBuffer == g_ProcessOptionalRam.titleWorkspace &&
            g_ProcessOptionalRam.archiveWorkspaceLease ==
                ProcessOptionalRamState::ARCHIVE_WORKSPACE_TRANSIENT;
-}
 #else
-void *Th07PspOptionalRamAcquireTransientArchive(std::size_t)
-{
-    return nullptr;
-}
-
-bool Th07PspOptionalRamIsTransientArchive(const void *)
-{
     return false;
-}
 #endif
+}
 
 bool Th07PspOptionalRamIsArchiveWorkspace(const void *borrowedBuffer)
 {
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+    if (borrowedBuffer && g_ProcessOptionalRam.fontTailArchiveBorrowed &&
+        borrowedBuffer == g_ProcessOptionalRam.fontTailArchiveBuffer)
+    {
+        return true;
+    }
+#endif
     return borrowedBuffer && borrowedBuffer == g_ProcessOptionalRam.titleWorkspace &&
            (g_ProcessOptionalRam.archiveWorkspaceLease ==
                 ProcessOptionalRamState::ARCHIVE_WORKSPACE_TITLE ||
@@ -491,7 +589,48 @@ bool Th07PspOptionalRamIsArchiveWorkspace(const void *borrowedBuffer)
 
 bool Th07PspOptionalRamReleaseArchiveWorkspace(const void *borrowedBuffer)
 {
-    if (!borrowedBuffer || borrowedBuffer != g_ProcessOptionalRam.titleWorkspace)
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+    if (borrowedBuffer &&
+        borrowedBuffer == g_ProcessOptionalRam.fontTailArchiveBuffer)
+    {
+        if (g_ProcessOptionalRam.fontTailArchiveBorrowed)
+        {
+            g_ProcessOptionalRam.fontTailArchiveBorrowed = false;
+            g_ProcessOptionalRam.fontTailArchiveBytes = 0;
+            th07_psp_boot_note("A6V4 ARENA release=ARCHIVE-TAIL");
+        }
+        // Keep the last exact tail pointer registered until the FONT lease is
+        // released.  A duplicate FileSystem release must never reach free().
+        return true;
+    }
+#endif
+    if (!borrowedBuffer)
+    {
+        return false;
+    }
+
+#if defined(TH07_PSP_FONT_TAIL_ARCHIVE)
+    // Any strict interior address belongs to this permanent arena even after
+    // its short-lived sublease record has been cleared.  Consume stale or
+    // duplicate releases here so FileSystem can never pass an arena interior
+    // pointer to libc free().  A separate malloc cannot reside inside the
+    // still-live titleWorkspace allocation.
+    if (g_ProcessOptionalRam.titleWorkspace &&
+        borrowedBuffer != g_ProcessOptionalRam.titleWorkspace)
+    {
+        const std::uintptr_t address =
+            reinterpret_cast<std::uintptr_t>(borrowedBuffer);
+        const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(
+            g_ProcessOptionalRam.titleWorkspace);
+        if (address > base &&
+            address - base < g_ProcessOptionalRam.titleWorkspaceBytes)
+        {
+            return true;
+        }
+    }
+#endif
+
+    if (borrowedBuffer != g_ProcessOptionalRam.titleWorkspace)
     {
         return false;
     }

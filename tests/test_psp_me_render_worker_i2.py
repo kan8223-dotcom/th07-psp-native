@@ -389,14 +389,24 @@ class PspMeRenderWorkerI2Contracts(unittest.TestCase):
             self.bullets, "PspMeRenderCaptureFusedRecord("
         )
         for effect in (
-            "vm->pos.x = capture.arcadeLeft + bullet->pos.x",
-            "vm->pos.y = capture.arcadeTop + bullet->pos.y",
+            "vm->pos.x = capture.arcadeLeft +",
+            "vm->pos.y = capture.arcadeTop +",
             "vm->pos.z = 0.05f",
             "vm->color.color",
             "vm->SetRotationZ(bullet->pspRenderAngle)",
             "vm->updateRotation = 1",
         ):
             self.assertIn(effect, capture)
+        # D2B may source the exact same position bits from validated SoA, but
+        # the feature-off branch must retain the canonical AoS expressions.
+        self.assertIn("PspReadBulletPosition(manager, bullet, slot", capture)
+        for source in (
+            "renderPosition.x",
+            "renderPosition.y",
+            "bullet->pos.x",
+            "bullet->pos.y",
+        ):
+            self.assertIn(source, capture)
 
         consume = function_body(self.bullets, "PspMeRenderTryGeConsume(")
         self.assertEqual(consume.count("PspMeRenderCommitVmSideEffects(manager)"), 2)

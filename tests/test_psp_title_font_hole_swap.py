@@ -70,6 +70,42 @@ class PspTitleFontHoleSwapTest(unittest.TestCase):
         ):
             self.assertIn(token, target)
 
+    def test_stage6_font_tail_fix_keeps_the_accepted_runtime_profile(self) -> None:
+        target = MAKEFILE[
+            MAKEFILE.index("psp3000-a6v4w-stage6-font-tail-fix-build:") :
+            MAKEFILE.index("# D2A starts the meaningful Bullet SoA cutover")
+        ]
+        for token in (
+            "PSP_1000=0",
+            "PSP_RID30_AB_ME_UV16=0",
+            "PSP_RID30_AB_ME_XYZ16=0",
+            "PSP_RID30_AB_ME_C1_GE_EXPERIMENT=0",
+            "PSP_RID30_AB_ME_TRUSTED_SEED_AUTHORITY=0",
+            "PSP_RID30_AB_ME_SEED_SOA=0",
+            "PSP_RID30_AB_ME_POSITION_SOA_SHADOW=0",
+            "PSP_RID30_AB_ME_TITLE_WORKSPACE=1",
+            "PSP_RID30_AB_ME_TITLE_TRANSIENT=0",
+            "PSP_RID30_AB_ME_TITLE_FONT_HOLE_SWAP=1",
+            "PSP_RID30_AB_ME_LOCAL_FONT_SUBSET=1",
+            "PSP_RID30_AB_ME_FONT_TAIL_ARCHIVE=1",
+            "PSP_RID30_AB_ME_BUILD_ID=0x260901adu",
+            "TH07 A6V4W ST6 TAIL FIX",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, target)
+
+        accepted = MAKEFILE[
+            MAKEFILE.index("psp3000-a6v4w-music-room-fontfix-build:") :
+            MAKEFILE.index("# Hardware log MUSICFONT-ST5-XMB")
+        ]
+        self.assertNotIn("PSP_RID30_AB_ME_FONT_TAIL_ARCHIVE=1", accepted)
+
+        d2a = MAKEFILE[
+            MAKEFILE.index("psp3000-a6v4w-d2a-position-soa-shadow-build:") :
+            MAKEFILE.index("# SC member of the pair")
+        ]
+        self.assertIn("PSP_RID30_AB_ME_FONT_TAIL_ARCHIVE=1", d2a)
+
     def test_swap_wraps_exact_title_load_and_restores_before_return(self) -> None:
         menu = MAIN_MENU[MAIN_MENU.index("ZunResult MainMenu::ActualAddedCallback()") :
                          MAIN_MENU.index("ZunResult MainMenu::AddedCallback(")]

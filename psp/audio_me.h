@@ -936,7 +936,16 @@ enum
 #else
     TH07_PSP_ME_RENDER_STREAM_LIST_VERSION = 0x4d453135u,
 #endif
+// D2B extends only its opt-in correctness profile.  Every established
+// direct-list profile keeps the frozen LL01/128-byte wire contract.
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    TH07_PSP_ME_RENDER_LIST_LAYOUT_VERSION = 0x4c4c3032u, // "LL02"
+    TH07_PSP_ME_RENDER_POSITION_SOURCE_VERSION = 0x50533031u, // "PS01"
+    TH07_PSP_ME_RENDER_POSITION_SOURCE_AOS = 0u,
+    TH07_PSP_ME_RENDER_POSITION_SOURCE_SOA = 1u,
+#else
     TH07_PSP_ME_RENDER_LIST_LAYOUT_VERSION = 0x4c4c3031u, // "LL01"
+#endif
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)
     // I-ME7: an independently fail-closed Item list is expanded before the
     // existing Bullet stream. Item failure publishes an empty prefix and can
@@ -1149,6 +1158,35 @@ typedef struct Th07PspMeRenderRawLayout
 } Th07PspMeRenderRawLayout;
 
 #if defined(TH07_PSP_ME_RENDER_DIRECT_LIST)
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+// D2B position-source ABI.  The Bullet list remains authoritative for slot
+// identity, state, VM selection and canonical generation.  This descriptor
+// changes only where the post-calc XYZ bits are read.  In SOA mode a clear
+// valid bit means "use canonical AoS for this slot"; a set bit is a promise
+// whose full generation and manager/calc serials must bracket the read.
+typedef struct Th07PspMeRenderPositionSource
+{
+    unsigned int version;
+    unsigned int bytes;
+    unsigned int kind;
+    unsigned int flags;
+    unsigned int ownerBasePhys;
+    unsigned int ownerBytes;
+    unsigned int slotCount;
+    unsigned int slotStrideBytes;
+    unsigned int posXBasePhys;
+    unsigned int posYBasePhys;
+    unsigned int posZBasePhys;
+    unsigned int validBitsPhys;
+    unsigned int validWordCount;
+    unsigned int fullGenerationBasePhys;
+    unsigned int publishManagerSerialBasePhys;
+    unsigned int publishCalcSerialBasePhys;
+    unsigned int expectedManagerSerial;
+    unsigned int expectedCalcSerial;
+} Th07PspMeRenderPositionSource;
+#endif
+
 // I-ME5 direct-list authority.  Every offset is frozen to the accepted PSP
 // object ABI by both the SC producer and ME validator.  Per-frame arcade bits
 // live here so position reconstruction needs no SC record and ME never writes
@@ -1171,6 +1209,10 @@ typedef struct Th07PspMeRenderListLayout
     unsigned int bulletCollisionTypeOffset;
     unsigned int bulletPosXOffset;
     unsigned int bulletPosYOffset;
+#if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
+    unsigned int bulletPosZOffset;
+    Th07PspMeRenderPositionSource positionSource;
+#endif
     unsigned int bulletRenderAngleOffset;
     unsigned int bulletSinOffset;
     unsigned int bulletCosOffset;

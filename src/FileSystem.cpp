@@ -14,8 +14,10 @@
 #include "../psp/psp1000_arena.hpp"
 #endif
 
-#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT) && \
-    !defined(TH07_PSP_1000)
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE) && \
+    !defined(TH07_PSP_1000) && \
+    (defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT) || \
+     defined(TH07_PSP_FONT_TAIL_ARCHIVE))
 namespace
 {
 bool IsTitleWorkspaceTransientAnm(const char *filename)
@@ -81,7 +83,8 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
             {
                 buf = static_cast<u8 *>(Th07PspOptionalRamAcquireTitleArchive(fsize));
             }
-#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT)
+#if defined(TH07_PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT) || \
+    defined(TH07_PSP_FONT_TAIL_ARCHIVE)
             else if (IsTitleWorkspaceTransientAnm(filename))
             {
                 // Every face_*.anm call site enters through LoadAnms.  A6v2's

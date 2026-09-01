@@ -24,18 +24,19 @@ bool Th07PspOptionalRamReserveTitleFontWorkspace(std::size_t titleBytes);
 // 5.4 MiB block.  Release returns the workspace to this owner, not to libc.
 void *Th07PspOptionalRamAcquireTitleArchive(std::size_t bytes);
 
-// A6v2: stage GUI registration happens before the text-cache admission point,
-// so one immediate-release face_*.anm source may borrow the whole idle title
-// workspace.  This is a serial lease: nested checkouts and checkouts while the
-// text cache owns the prefix fail closed.
+// A6v2 lends the whole idle workspace. With FONT_TAIL_ARCHIVE enabled, A6v4
+// keeps the subset font in the prefix and lends only the aligned, disjoint
+// tail. Stage GUI registration happens before text-cache admission, and every
+// accepted face_*.anm source is compacted and released synchronously. Nested
+// checkouts and checkouts while the text cache owns arena bytes fail closed.
 void *Th07PspOptionalRamAcquireTransientArchive(std::size_t bytes);
 bool Th07PspOptionalRamIsTransientArchive(const void *borrowedBuffer);
 bool Th07PspOptionalRamIsArchiveWorkspace(const void *borrowedBuffer);
 
 // Unified release is required because title and transient loans intentionally
 // use the same address.  It consumes whichever lease is active and also
-// recognizes an inactive/stale workspace pointer so libc never frees the
-// process-lifetime allocation.
+// recognizes inactive/stale base and interior workspace pointers so libc
+// never frees any address owned by the process-lifetime allocation.
 bool Th07PspOptionalRamReleaseArchiveWorkspace(const void *borrowedBuffer);
 
 // Stage-scoped optional Main RAM owner for the PSP-2000+ profile.  Consumers

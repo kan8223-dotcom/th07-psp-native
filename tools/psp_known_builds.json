@@ -83,6 +83,16 @@
   "A6V4W-MUSIC-FONTFIX": {
     "sha256": "B5BB8A199063DA414AB6286A38B0BE32E00C4648044E2EEBB26394E8E8380A1E",
     "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6v4w_music_room_fontfix_pc_20260901/EBOOT.PBP",
-    "note": "PC合格・D未投入・実機未確認。A6V4W一差分: font close/reopen時のSDL_ttf size-owner失効修正。761 tests、PSP-3000 build、MECC監査合格。build ID 0x260901ab。"
+    "note": "D投入readback一致。Music Room文字サイズと通常プレイは実機合格。ただし5面ボス撃破後の6面face_06_00.anm 3072KiBが断片化ヒープ(TOP10KiB)で確保不能となりタイトル/XMBへ退場。ログSHA 745EC82A...E4DF4。A7比較元として保持し、stage 5->6継続用途には使わない。"
+  },
+  "A6V4W-STAGE6-FONT-TAIL-FIX": {
+    "sha256": "9B58C04F5BECF1BA2438D7C74E65BD4B0B1D1AA7206308702F785D99741D83C5",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/a6v4w_stage6_font_tail_fix_pc_20260901/EBOOT.PBP",
+    "note": "PC合格・D投入readback一致・実機未確認。A6V4W Music Room版の一差分: resident 293KiB font後方のarena tailをserial face_*.anm decodeへ貸出。focused 75 + full 779 tests、ASan、PSP-3000 build、MECC監査合格。build ID 0x260901ad。旧B5BB8A19はPRE-20260901-224043へ退避。"
+  },
+  "A6V4W-D2A-POSITION-SOA-SHADOW": {
+    "sha256": "444455FE57F606E9D7F4B65CDC76F7E1CE110168F9AC9690C8FA54DDE75C53D6",
+    "pc_path": "/mnt/c/Users/kan82/TH07_MECC_AUDIO_4M_INTEGRATION_20260827/build/final60/rid30_a6v4w_d2a_position_soa_shadow_pc_20260901/EBOOT.PBP",
+    "note": "PC-only観測版・D未投入・実機未確認。AoS正本維持のpersistent position SoA shadow、A7 FONT_TAIL_ARCHIVE継承。D2A 16 + full 779 tests、PSP-3000 build、MECC監査、PSG closure修正後archive checksum合格。build ID 0x260901ac。FPS改善主張禁止。"
   }
 }

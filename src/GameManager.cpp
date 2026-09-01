@@ -4,6 +4,9 @@
 
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+#include "BulletManager.hpp"
+#endif
 #include "Chain.hpp"
 #include "Controller.hpp"
 #include "EclManager.hpp"
@@ -289,6 +292,12 @@ u32 GameManager::OnUpdate(GameManager *arg)
     g_Supervisor.gfxDevice->Clear(CLEAR_DEPTH_BUFFER);
     if (arg->isInPauseMenu == 1 || arg->isInPauseMenu == 2 || arg->isInRetryMenu)
     {
+#if defined(TH07_PSP_BULLET_POSITION_SOA_SHADOW)
+        // Normal pause/retry breaks the calc chain before BulletManager runs.
+        // Clear the observational authority view here so resume starts cold
+        // instead of comparing against the last pre-pause calc generation.
+        Th07PspBulletPositionSoaPauseBoundary();
+#endif
         return CHAIN_CALLBACK_RESULT_BREAK;
     }
 
