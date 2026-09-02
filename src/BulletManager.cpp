@@ -29,7 +29,7 @@
 #if defined(TH07_PSP)
 #include <pspmath.h>
 #if defined(TH07_PSP_PERF_M3) || defined(TH07_PSP_PERF_DENSE_SLICE) || \
-    defined(TH07_PSP_ME_RENDER_WORKER)
+    defined(TH07_PSP_ME_RENDER_WORKER) || defined(TH07_PSP_PERF_A1_SAME)
 #include <pspkernel.h>
 #include "../psp/usage_meter.h" /* [FABLE] ME実測cycle供給（未定義時は空マクロ） */
 #include "../psp/graphics/PspGuGraphics.hpp"
@@ -449,6 +449,32 @@ constexpr u32 kPspMeAdaptiveBulletTicks = 2400u;
 constexpr u32 kPspMeAdaptiveItemTicks = 2800u;
 constexpr u32 kPspMeAdaptiveEffectTicks = 3000u;
 
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+static_assert(kPspMeAdaptiveBudgetTicks ==
+                  TH07_PSP_ME_CLOCK_LEGACY_BUDGET_TICKS,
+              "GO-ME2 unity budget must equal the legacy decision boundary");
+
+inline u32 PspMeAdaptiveBudgetTicksForRuntime()
+{
+    return th07_psp_me_clock_admission_budget_ticks();
+}
+
+inline u32 PspMeAdaptiveVetoPercentForRuntime()
+{
+    return th07_psp_me_clock_veto_percent();
+}
+#else
+inline u32 PspMeAdaptiveBudgetTicksForRuntime()
+{
+    return kPspMeAdaptiveBudgetTicks;
+}
+
+inline u32 PspMeAdaptiveVetoPercentForRuntime()
+{
+    return 85u;
+}
+#endif
+
 enum PspMeAdaptiveAuxAdmission
 {
     PSP_ME_ADAPTIVE_AUX_ADMIT = 0,
@@ -460,6 +486,8 @@ PspMeAdaptiveAuxAdmission PspMeAdaptiveAuxAdmissionFor(
     u32 bulletRecords, u32 itemRecords, u32 effectRecords,
     unsigned long long *outPredictedTicks)
 {
+    const u32 budgetTicks = PspMeAdaptiveBudgetTicksForRuntime();
+    const u32 vetoPercent = PspMeAdaptiveVetoPercentForRuntime();
     const unsigned long long predicted =
         static_cast<unsigned long long>(kPspMeAdaptiveFixedTicks) +
         static_cast<unsigned long long>(bulletRecords) *
@@ -472,14 +500,14 @@ PspMeAdaptiveAuxAdmission PspMeAdaptiveAuxAdmissionFor(
     {
         *outPredictedTicks = predicted;
     }
-    if (predicted > kPspMeAdaptiveBudgetTicks)
+    if (predicted > budgetTicks)
     {
         return PSP_ME_ADAPTIVE_AUX_REJECT_BUDGET;
     }
     // One-frame delayed hardware measurement: veto only.  A stale low value
     // cannot admit work because the deterministic current-frame model above
     // has already had to pass.
-    return th07_usage_meter_last_me_percent() < 85u
+    return th07_usage_meter_last_me_percent() < vetoPercent
         ? PSP_ME_ADAPTIVE_AUX_ADMIT
         : PSP_ME_ADAPTIVE_AUX_REJECT_BUSY;
 }
@@ -512,6 +540,8 @@ u32 PspMeAdaptiveItemPrefixCount(
     }
     return fullAdmission == PSP_ME_ADAPTIVE_AUX_ADMIT ? itemRecords : 0u;
 #else
+    const u32 budgetTicks = PspMeAdaptiveBudgetTicksForRuntime();
+    const u32 vetoPercent = PspMeAdaptiveVetoPercentForRuntime();
     fullPredicted =
         static_cast<unsigned long long>(kPspMeAdaptiveFixedTicks) +
         static_cast<unsigned long long>(bulletRecords) *
@@ -526,8 +556,8 @@ u32 PspMeAdaptiveItemPrefixCount(
         static_cast<unsigned long long>(kPspMeAdaptiveFixedTicks) +
         static_cast<unsigned long long>(bulletRecords) *
             kPspMeAdaptiveBulletTicks;
-    const u32 affordable = base < kPspMeAdaptiveBudgetTicks
-        ? static_cast<u32>((kPspMeAdaptiveBudgetTicks - base) /
+    const u32 affordable = base < budgetTicks
+        ? static_cast<u32>((budgetTicks - base) /
                            kPspMeAdaptiveItemTicks)
         : 0u;
     const u32 prefix = affordable < itemRecords ? affordable : itemRecords;
@@ -542,7 +572,7 @@ u32 PspMeAdaptiveItemPrefixCount(
     // Busy is an OFF-only veto even when the full list was over budget.  It
     // must guard the affordable prefix too; otherwise a 100%-busy prior frame
     // could still admit partial Item work.
-    if (th07_usage_meter_last_me_percent() >= 85u)
+    if (th07_usage_meter_last_me_percent() >= vetoPercent)
     {
         if (outAdmission)
         {
@@ -2233,8 +2263,11 @@ u32 PspMeItemMotionCandidateLimitFor(
         ? static_cast<i32>(g_GameManager.globals->currentPower) : -1;
     if (!bulletSeed || !itemSeed || !g_Player.shooterData ||
         currentPowerClass < 0 || currentPowerClass > 128 ||
-        g_GameManager.difficulty < 0 || g_GameManager.difficulty > 5 ||
-        th07_usage_meter_last_me_percent() >= 85u)
+        g_GameManager.difficulty < 0 || g_GameManager.difficulty > 5)
+        return 0u;
+    const u32 budgetTicks = PspMeAdaptiveBudgetTicksForRuntime();
+    const u32 vetoPercent = PspMeAdaptiveVetoPercentForRuntime();
+    if (th07_usage_meter_last_me_percent() >= vetoPercent)
         return 0u;
 
     // Deterministic admission.  Scalar atan2+cos+sin is deliberately charged
@@ -2244,7 +2277,7 @@ u32 PspMeItemMotionCandidateLimitFor(
         static_cast<unsigned long long>(kPspMeAdaptiveFixedTicks) +
         static_cast<unsigned long long>(bulletSeed->header.candidateCount) *
             kPspMeAdaptiveBulletTicks;
-    if (base >= kPspMeAdaptiveBudgetTicks)
+    if (base >= budgetTicks)
         return 0u;
 
     // Do not inspect the full seed payload here: command 10 produced it on
@@ -2252,7 +2285,7 @@ u32 PspMeItemMotionCandidateLimitFor(
     // the worst-case trig charge for every header-authenticated candidate;
     // DONE poll performs the one required full invalidation before JIT use.
     const u32 affordable = static_cast<u32>(
-        (kPspMeAdaptiveBudgetTicks - base) / kItemTrigTicks);
+        (budgetTicks - base) / kItemTrigTicks);
     return affordable < itemSeed->header.candidateCount
         ? affordable : itemSeed->header.candidateCount;
 }
@@ -8592,6 +8625,16 @@ void BulletManager::RemoveAllBullets(i32 param_1)
     f32 local_18;
     i32 i;
     ZunVec3 local_10;
+#if defined(TH07_PSP_PERF_A1_SAME)
+    Th07PspPerfA1SameSample perfA1Sample{};
+    perfA1Sample.reason = Th07PspPerfTakeA1SameReason();
+    perfA1Sample.mode = param_1 == 0             ? 1u << 0
+                        : param_1 >= 1 && param_1 <= 2 ? 1u << 1
+                        : param_1 >= 3 && param_1 <= 8 ? 1u << 2
+                        : param_1 == 10                ? 1u << 3
+                                                       : 1u << 4;
+    const unsigned long long perfA1StartUs = sceKernelGetSystemTimeWide();
+#endif
 
 #if defined(TH07_PSP_ME_RENDER_PERFORMANCE)
     this->PspMarkMeRenderMutation();
@@ -8619,6 +8662,10 @@ void BulletManager::RemoveAllBullets(i32 param_1)
         {
             continue;
         }
+#if defined(TH07_PSP_PERF_A1_SAME)
+        ++perfA1Sample.eligible;
+        ++perfA1Sample.affected;
+#endif
 #if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
         ZunVec3 observedPosition;
         PspReadBulletPosition(
@@ -8638,11 +8685,17 @@ void BulletManager::RemoveAllBullets(i32 param_1)
         {
             if (param_1 < 3)
             {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                ++perfA1Sample.itemAttempts;
+#endif
                 g_ItemManager.SpawnItem(
                     bulletPosition, this->itemType, param_1);
             }
             else
             {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                ++perfA1Sample.itemAttempts;
+#endif
                 g_ItemManager.SpawnItem(
                     bulletPosition, ITEM_CHERRY_SMALL, 1);
             }
@@ -8670,6 +8723,9 @@ void BulletManager::RemoveAllBullets(i32 param_1)
 
         if (laser->state < LASER_DESPAWNING)
         {
+#if defined(TH07_PSP_PERF_A1_SAME)
+            ++perfA1Sample.auxiliary;
+#endif
             laser->state = LASER_DESPAWNING;
             laser->timer = 0;
             laser->width = laser->targetWidth;
@@ -8684,10 +8740,16 @@ void BulletManager::RemoveAllBullets(i32 param_1)
                     local_10.z = 0.0f;
                     if (param_1 < 3)
                     {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                        ++perfA1Sample.itemAttempts;
+#endif
                         g_ItemManager.SpawnItem(&local_10, this->itemType, param_1);
                     }
                     else
                     {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                        ++perfA1Sample.itemAttempts;
+#endif
                         g_ItemManager.SpawnItem(&local_10, ITEM_CHERRY_SMALL, 1);
                     }
                     local_28 += 32.0f;
@@ -8697,6 +8759,12 @@ void BulletManager::RemoveAllBullets(i32 param_1)
         laser->hitboxEndTime = 0;
     }
     this->screenClearTime = 10;
+#if defined(TH07_PSP_PERF_A1_SAME)
+    const unsigned long long perfA1EndUs = sceKernelGetSystemTimeWide();
+    Th07PspPerfAddA1SameSample(
+        TH07_PSP_PERF_A1_REMOVE_ALL_BULLETS,
+        perfA1EndUs - perfA1StartUs, perfA1Sample);
+#endif
 }
 
 i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
@@ -8710,6 +8778,12 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
     i32 i;
     i32 local_c;
     i32 local_8;
+#if defined(TH07_PSP_PERF_A1_SAME)
+    Th07PspPerfA1SameSample perfA1Sample{};
+    perfA1Sample.reason = Th07PspPerfTakeA1SameReason();
+    perfA1Sample.mode = turnIntoItem != 0 ? 1u << 0 : 1u << 1;
+    const unsigned long long perfA1StartUs = sceKernelGetSystemTimeWide();
+#endif
 
     local_c = 0;
     local_8 = 2000;
@@ -8756,6 +8830,10 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
         {
             continue;
         }
+#if defined(TH07_PSP_PERF_A1_SAME)
+        ++perfA1Sample.eligible;
+        ++perfA1Sample.affected;
+#endif
 
 #if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
         ZunVec3 observedPosition;
@@ -8771,11 +8849,17 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
             this, bullet, static_cast<u32>(i),
             PSP_BULLET_POSITION_SOA_MUTATION_BULK_DESPAWN);
 #endif
+#if defined(TH07_PSP_PERF_A1_SAME)
+        ++perfA1Sample.itemAttempts;
+#endif
         g_ItemManager.SpawnItem(bulletPosition, this->itemType, 1);
 #if defined(TH07_PSP)
         if ((popupIndex++ % popupStride) == 0u)
 #endif
         {
+#if defined(TH07_PSP_PERF_A1_SAME)
+            ++perfA1Sample.popups;
+#endif
             g_AsciiManager.CreatePopup1(bulletPosition, local_8,
                                         local_8 >= param_1 ? 0xFFFFFF00 : 0xFFFFFFFF);
         }
@@ -8796,11 +8880,17 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
         }
         if (laser->state < LASER_DESPAWNING)
         {
+#if defined(TH07_PSP_PERF_A1_SAME)
+            ++perfA1Sample.auxiliary;
+#endif
             laser->state = LASER_DESPAWNING;
             laser->timer = 0;
             laser->width = laser->targetWidth;
             if (turnIntoItem)
             {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                ++perfA1Sample.itemAttempts;
+#endif
                 g_ItemManager.SpawnItem(&laser->pos, this->itemType, 1);
                 local_34 = laser->startOffset;
                 sincosf(&local_18, &local_30, laser->angle);
@@ -8809,6 +8899,9 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
                     local_28.x = local_30 * local_34 + laser->pos.x;
                     local_28.y = local_18 * local_34 + laser->pos.y;
                     local_28.z = 0.0f;
+#if defined(TH07_PSP_PERF_A1_SAME)
+                    ++perfA1Sample.itemAttempts;
+#endif
                     g_ItemManager.SpawnItem(&local_28, this->itemType, 1);
                     local_34 += 32.0f;
                 }
@@ -8817,6 +8910,12 @@ i32 BulletManager::DespawnBullets(i32 param_1, i32 turnIntoItem)
         laser->hitboxEndTime = 0;
     }
     this->screenClearTime = 10;
+#if defined(TH07_PSP_PERF_A1_SAME)
+    const unsigned long long perfA1EndUs = sceKernelGetSystemTimeWide();
+    Th07PspPerfAddA1SameSample(
+        TH07_PSP_PERF_A1_DESPAWN_BULLETS,
+        perfA1EndUs - perfA1StartUs, perfA1Sample);
+#endif
     return local_c;
 }
 
@@ -8825,6 +8924,12 @@ void BulletManager::RemoveBulletsInRadius(ZunVec3 *centerPos, f32 radius)
     ZunVec3 diff;
     Bullet *bullet;
     i32 i;
+#if defined(TH07_PSP_PERF_A1_SAME)
+    Th07PspPerfA1SameSample perfA1Sample{};
+    perfA1Sample.reason = Th07PspPerfTakeA1SameReason();
+    perfA1Sample.mode = 1u;
+    const unsigned long long perfA1StartUs = sceKernelGetSystemTimeWide();
+#endif
 
 #if defined(TH07_PSP_ME_RENDER_PERFORMANCE)
     this->PspMarkMeRenderMutation();
@@ -8850,6 +8955,9 @@ void BulletManager::RemoveBulletsInRadius(ZunVec3 *centerPos, f32 radius)
         {
             continue;
         }
+#if defined(TH07_PSP_PERF_A1_SAME)
+        ++perfA1Sample.eligible;
+#endif
 
 #if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
         ZunVec3 observedPosition;
@@ -8872,12 +8980,22 @@ void BulletManager::RemoveBulletsInRadius(ZunVec3 *centerPos, f32 radius)
             continue;
         }
 
+#if defined(TH07_PSP_PERF_A1_SAME)
+        ++perfA1Sample.affected;
+        ++perfA1Sample.itemAttempts;
+#endif
         g_ItemManager.SpawnItem(bulletPosition, ITEM_POINT_BULLET, 1);
         memset(bullet, 0, sizeof(Bullet));
 #if defined(TH07_PSP)
         this->PspForgetBulletSlot(i);
 #endif
     }
+#if defined(TH07_PSP_PERF_A1_SAME)
+    const unsigned long long perfA1EndUs = sceKernelGetSystemTimeWide();
+    Th07PspPerfAddA1SameSample(
+        TH07_PSP_PERF_A1_REMOVE_RADIUS,
+        perfA1EndUs - perfA1StartUs, perfA1Sample);
+#endif
 }
 
 i32 BulletManager::SpawnBulletPattern(EnemyBulletShooter *bulletProps)
@@ -9341,6 +9459,19 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
     arg->bulletsPtrs[2] = NULL;
     arg->bulletsPtrs[1] = NULL;
     arg->bulletsPtrs[0] = NULL;
+#if defined(TH07_PSP_PERF_A1_SAME)
+    const bool perfA1BombActive = g_Player.pspBombClearHighWater > 0;
+    Th07PspPerfA1SameSample perfA1BombSample{};
+    if (perfA1BombActive)
+    {
+        perfA1BombSample.reason = TH07_PSP_PERF_A1_REASON_BOMB;
+        perfA1BombSample.mode = 1u; // Inclusive Bullet-traversal upper bound.
+        perfA1BombSample.auxiliary =
+            static_cast<unsigned int>(g_Player.pspBombClearHighWater);
+    }
+    const unsigned long long perfA1BombStartUs =
+        perfA1BombActive ? sceKernelGetSystemTimeWide() : 0ull;
+#endif
 
     for (i = 0; i < kBulletCapacity; i++)
     {
@@ -9663,6 +9794,13 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
                 {
                     if ((bullet->moreFlags & 0x1000) == 0)
                     {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                        if (perfA1BombActive)
+                        {
+                            ++perfA1BombSample.affected;
+                            ++perfA1BombSample.itemAttempts;
+                        }
+#endif
                         bullet->state = BULLET_DESPAWN;
                         g_ItemManager.SpawnItem(&bullet->pos, g_Player.itemType, 1);
                     }
@@ -9694,6 +9832,13 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
                     bullet->state = BULLET_DESPAWN;
                     if (collisionRes == 2)
                     {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                        if (perfA1BombActive)
+                        {
+                            ++perfA1BombSample.affected;
+                            ++perfA1BombSample.itemAttempts;
+                        }
+#endif
                         g_ItemManager.SpawnItem(&bullet->pos, g_Player.itemType, 1);
                     }
                 }
@@ -9818,6 +9963,19 @@ u32 BulletManager::OnUpdate(BulletManager *arg)
             blockIdx = kBulletCapacity - 1;
         }
     }
+
+#if defined(TH07_PSP_PERF_A1_SAME)
+    if (perfA1BombActive)
+    {
+        const unsigned long long perfA1BombEndUs =
+            sceKernelGetSystemTimeWide();
+        perfA1BombSample.eligible =
+            static_cast<unsigned int>(arg->bulletCount);
+        Th07PspPerfAddA1SameSample(
+            TH07_PSP_PERF_A1_BOMB_BULLET_UPDATE,
+            perfA1BombEndUs - perfA1BombStartUs, perfA1BombSample);
+    }
+#endif
 
 #if defined(TH07_PSP_BULLET_POSITION_SOA_READ)
     PspBulletPositionSoaEndCalc();

@@ -12,6 +12,10 @@
 #include "SoundPlayer.hpp"
 #include "ZunMath.hpp"
 
+#if defined(TH07_PSP_PERF_A1_SAME)
+#include "../psp/graphics/PspGuGraphics.hpp"
+#endif
+
 #if defined(TH07_PSP_ME_ITEM_MOTION_UPDATE)
 #include "../psp/audio_me.h"
 #include "Supervisor.hpp"
@@ -697,6 +701,10 @@ void ItemManager::OnUpdate()
                         g_GameManager.RegenerateGameIntegrityCsum();
                         if (!g_EnemyManager.spellcardInfo.isActive)
                         {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                            Th07PspPerfSetA1SameReason(
+                                TH07_PSP_PERF_A1_REASON_FULL_POWER);
+#endif
                             g_BulletManager.RemoveAllBullets(1);
                         }
                         g_Gui.ShowFullPowerMode(0, 1);
@@ -824,6 +832,10 @@ void ItemManager::OnUpdate()
                         g_GameManager.RegenerateGameIntegrityCsum();
                         if (!g_EnemyManager.spellcardInfo.isActive)
                         {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                            Th07PspPerfSetA1SameReason(
+                                TH07_PSP_PERF_A1_REASON_FULL_POWER);
+#endif
                             g_BulletManager.RemoveAllBullets(1);
                         }
                         g_Gui.ShowFullPowerMode(0, 1);
@@ -860,6 +872,10 @@ void ItemManager::OnUpdate()
             case ITEM_FULL_POWER:
                 if ((i32)g_GameManager.globals->currentPower < 128)
                 {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                    Th07PspPerfSetA1SameReason(
+                        TH07_PSP_PERF_A1_REASON_FULL_POWER);
+#endif
                     g_BulletManager.RemoveAllBullets(1);
                     g_Gui.ShowFullPowerMode(0, 1);
                     g_SoundPlayer.PlaySoundByIdx(SOUND_POWERUP, 0);

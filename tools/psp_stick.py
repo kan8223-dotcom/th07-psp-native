@@ -16,6 +16,8 @@
   python3 tools/psp_stick.py replay-status        # 両appのリプレイ名・SHA一覧（読取のみ）
   python3 tools/psp_stick.py pull-log [--tag TAG] # 現行ログをartifactsへ読取専用回収
   python3 tools/psp_stick.py deploy FILE --expect SHA8 [--app TH07SHIKI_NOME] [--note TEXT]
+  python3 tools/psp_stick.py deploy-ge4-pair EBOOT WRAPPER --expect-eboot SHA256 --expect-wrapper SHA256
+  python3 tools/psp_stick.py install-alt-app EBOOT WRAPPER --expect-main-eboot SHA256 --expect-main-wrapper SHA256 --expect-new-eboot SHA256 --expect-new-wrapper SHA256 --expect-replay SHA256
   python3 tools/psp_stick.py install-replay FILE --expect SHA256 --app TH07SHIKI [--app TH07SHIKI_NOME]
   python3 tools/psp_stick.py install-font /mnt/c/.../msgothic-subset.ttf
   python3 tools/psp_stick.py restore NAME         # 台帳(known_builds.json)から復旧
@@ -39,6 +41,11 @@ APP_ALLOWLIST = ("TH07SHIKI", "TH07SHIKI_NOME")
 REPLAY_APP_ALLOWLIST = APP_ALLOWLIST
 FONT_APP_ALLOWLIST = ("TH07SHIKI",)
 FONT_BASENAME = "msgothic-subset.ttf"
+GE4_WRAPPER_BASENAME = "ge4wrap_texv1.prx"
+GE4_WRAPPER_BYTES = 2150
+ALT_APP_SOURCE = "TH07SHIKI"
+ALT_APP_TARGET = "TH07SHIKI_NOME"
+ALT_APP_REPLAY_BASENAME = "th7_udLUNA.rpy"
 
 
 class FontInstallError(RuntimeError):
@@ -55,7 +62,8 @@ def ps(cmd):
     wrapped = "$ErrorActionPreference='Stop'; " + cmd
     r = subprocess.run(
         ["powershell.exe", "-NoProfile", "-Command", wrapped],
-        capture_output=True, text=True, timeout=300)
+        capture_output=True, text=True, timeout=300,
+        encoding="utf-8", errors="replace")
     if r.returncode != 0:
         detail = (r.stderr or r.stdout).replace("\r", "").strip()
         raise RuntimeError(f"PowerShell失敗: {detail}")
@@ -98,6 +106,63 @@ def find_psp(quiet=False):
     d = hits[0]["drive"]
     print(f"RESULT: PSP={d}: (free {hits[0]['freeGB']}GB)")
     return d
+
+
+def find_psp_by_eboot(expected_sha):
+    """Select exactly one attached TH07 device by its complete EBOOT hash."""
+    expected = expected_sha.upper()
+    if not re.fullmatch(r"[0-9A-F]{64}", expected):
+        print("ERROR: --expect-ebootにはSHA-256全64桁が必要")
+        sys.exit(2)
+    rows = scan()
+    print_scan(rows)
+    matches = []
+    for row in rows:
+        if not row["psp"]:
+            continue
+        drive = row["drive"]
+        digest = sha256_win(f"{drive}:\\{EBOOT}")
+        print(f"EBOOT {drive}: {digest}")
+        if digest == expected:
+            matches.append(drive)
+    if len(matches) != 1:
+        print(f"ABORT: EBOOT完全SHA一致が一意でない: {matches}")
+        sys.exit(5)
+    print(f"RESULT: EBOOT SHAで対象={matches[0]}:")
+    return matches[0]
+
+
+def find_psp_by_pair(expected_eboot_sha, expected_wrapper_sha):
+    """Select one TH07 device by its complete main EBOOT/wrapper pair."""
+    expected_eboot = expected_eboot_sha.upper()
+    expected_wrapper = expected_wrapper_sha.upper()
+    if (not re.fullmatch(r"[0-9A-F]{64}", expected_eboot) or
+            not re.fullmatch(r"[0-9A-F]{64}", expected_wrapper)):
+        print("ERROR: pair選択にはSHA-256全64桁が必要")
+        sys.exit(2)
+    rows = scan()
+    print_scan(rows)
+    matches = []
+    for row in rows:
+        if not row["psp"]:
+            continue
+        drive = row["drive"]
+        app_dir = f"{drive}:\\PSP\\GAME\\{ALT_APP_SOURCE}"
+        eboot = f"{app_dir}\\EBOOT.PBP"
+        wrapper = f"{app_dir}\\{GE4_WRAPPER_BASENAME}"
+        wrapper_exists = ps(
+            "Test-Path -LiteralPath " + _ps_literal(wrapper) +
+            " -PathType Leaf").strip() == "True"
+        eboot_sha = sha256_win(eboot)
+        wrapper_sha = sha256_win(wrapper) if wrapper_exists else "MISSING"
+        print(f"PAIR {drive}: EBOOT={eboot_sha} WRAPPER={wrapper_sha}")
+        if eboot_sha == expected_eboot and wrapper_sha == expected_wrapper:
+            matches.append(drive)
+    if len(matches) != 1:
+        print(f"ABORT: main pair完全SHA一致が一意でない: {matches}（未変更）")
+        sys.exit(5)
+    print(f"RESULT: main pairで対象={matches[0]}:")
+    return matches[0]
 
 
 def sha256_win(path_win):
@@ -328,7 +393,9 @@ def cmd_replay_status(_args):
 
 
 def cmd_pull_log(args):
-    d = find_psp()
+    expected_eboot = getattr(args, "expect_eboot", None)
+    d = (find_psp_by_eboot(expected_eboot) if expected_eboot
+         else find_psp())
     logs = list_logs(d)
     if not logs:
         print("RESULT: ルートに.LOGなし")
@@ -353,6 +420,216 @@ def cmd_pull_log(args):
     print("（読み取りのみ。スティック側は無変更）")
 
 
+def directory_manifest_win(path_win):
+    """Return a complete relative-path/size/SHA manifest for a directory."""
+    out = ps(
+        "$root=(Get-Item -LiteralPath " + _ps_literal(path_win) +
+        ").FullName.TrimEnd('\\');"
+        " $items=@(Get-ChildItem -LiteralPath " + _ps_literal(path_win) +
+        " -File -Recurse | Sort-Object FullName | ForEach-Object {"
+        "  $rel=$_.FullName.Substring($root.Length).TrimStart('\\').Replace('\\','/');"
+        "  [PSCustomObject]@{path=$rel;bytes=[int64]$_.Length;"
+        "   sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash}"
+        " });"
+        " [PSCustomObject]@{items=@($items)} | ConvertTo-Json -Depth 4 -Compress")
+    try:
+        payload = json.loads(out)
+        items = payload.get("items", [])
+        if isinstance(items, dict):
+            items = [items]
+        manifest = {}
+        for item in items:
+            rel = str(item["path"]).replace("\\", "/").lstrip("/")
+            key = rel.casefold()
+            if not rel or key in manifest:
+                raise ValueError("empty or duplicate relative path")
+            digest = str(item["sha256"]).upper()
+            if not re.fullmatch(r"[0-9A-F]{64}", digest):
+                raise ValueError("bad digest")
+            manifest[key] = {
+                "path": rel, "bytes": int(item["bytes"]), "sha256": digest}
+        return manifest
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"directory manifest parse failure: {exc}") from exc
+
+
+def alternate_resource_manifest(manifest):
+    """Exclude the two intentionally replaced root pair files."""
+    excluded = {"eboot.pbp", GE4_WRAPPER_BASENAME.casefold()}
+    return {key: value for key, value in manifest.items()
+            if key not in excluded}
+
+
+def cmd_install_alt_app(args):
+    """Clone the proven main app and atomically install an alternate pair.
+
+    The target is fixed to TH07SHIKI_NOME.  It must not already exist, so this
+    command can never overwrite a user's alternate app.  The live main app is
+    read-only throughout; all mutation happens under a unique temporary
+    sibling which is committed only after EBOOT, wrapper, replay and directory
+    inventory checks pass.
+    """
+    eboot_source = os.path.realpath(os.path.abspath(args.eboot))
+    wrapper_source = os.path.realpath(os.path.abspath(args.wrapper))
+    for label, source in (("EBOOT", eboot_source),
+                          ("GE4 wrapper", wrapper_source)):
+        if not os.path.isfile(source):
+            print(f"ERROR: {label}投入元が存在しない: {source}")
+            sys.exit(2)
+        if not source.startswith("/mnt/c/"):
+            print(f"ERROR: {label}投入元は/mnt/c配下に固定: {source}")
+            sys.exit(2)
+    if os.path.basename(wrapper_source) != GE4_WRAPPER_BASENAME:
+        print(f"ERROR: wrapper名は{GE4_WRAPPER_BASENAME}に固定")
+        sys.exit(2)
+    if os.path.getsize(wrapper_source) != GE4_WRAPPER_BYTES:
+        print(f"ERROR: wrapper sizeは{GE4_WRAPPER_BYTES} bytesに固定")
+        sys.exit(2)
+
+    expected = {
+        "main EBOOT": args.expect_main_eboot.upper(),
+        "main wrapper": args.expect_main_wrapper.upper(),
+        "new EBOOT": args.expect_new_eboot.upper(),
+        "new wrapper": args.expect_new_wrapper.upper(),
+        "replay": args.expect_replay.upper(),
+    }
+    if any(not re.fullmatch(r"[0-9A-F]{64}", digest)
+           for digest in expected.values()):
+        print("ERROR: install-alt-appの全SHA guardは64桁必須")
+        sys.exit(2)
+    new_eboot_sha = sha256_local(eboot_source).upper()
+    new_wrapper_sha = sha256_local(wrapper_source).upper()
+    if (new_eboot_sha != expected["new EBOOT"] or
+            new_wrapper_sha != expected["new wrapper"]):
+        print("ABORT: ローカル投入pairが--expect-new-*と不一致（未変更）")
+        sys.exit(5)
+
+    drive = find_psp_by_pair(expected["main EBOOT"],
+                             expected["main wrapper"])
+    source_dir = f"{drive}:\\PSP\\GAME\\{ALT_APP_SOURCE}"
+    target_dir = f"{drive}:\\PSP\\GAME\\{ALT_APP_TARGET}"
+    source_eboot = f"{source_dir}\\EBOOT.PBP"
+    source_wrapper = f"{source_dir}\\{GE4_WRAPPER_BASENAME}"
+    source_replay = f"{source_dir}\\replay\\{ALT_APP_REPLAY_BASENAME}"
+    if ps("Test-Path -LiteralPath " + _ps_literal(target_dir)).strip() == "True":
+        print(f"ABORT: {ALT_APP_TARGET}は既に存在する（未変更）")
+        sys.exit(5)
+    if ps("Test-Path -LiteralPath " + _ps_literal(source_wrapper) +
+          " -PathType Leaf").strip() != "True":
+        print("ABORT: main wrapperが存在しない（未変更）")
+        sys.exit(5)
+    if ps("Test-Path -LiteralPath " + _ps_literal(source_replay) +
+          " -PathType Leaf").strip() != "True":
+        print(f"ABORT: main replay {ALT_APP_REPLAY_BASENAME} が存在しない（未変更）")
+        sys.exit(5)
+    if (sha256_win(source_eboot) != expected["main EBOOT"] or
+            sha256_win(source_wrapper) != expected["main wrapper"] or
+            sha256_win(source_replay) != expected["replay"]):
+        print("ABORT: main EBOOT/wrapper/replay SHA guard不一致（未変更）")
+        sys.exit(5)
+
+    source_manifest = directory_manifest_win(source_dir)
+    source_inventory = {
+        "files": len(source_manifest),
+        "bytes": sum(item["bytes"] for item in source_manifest.values()),
+    }
+    free_bytes = int(ps(f"[int64](Get-PSDrive -Name '{drive}').Free").strip())
+    if source_inventory["files"] < 3:
+        print("ABORT: main app inventoryが小さすぎる（未変更）")
+        sys.exit(5)
+    if free_bytes < source_inventory["bytes"] + 16 * 1024 * 1024:
+        print("ABORT: alternate app複製用の空き容量不足（未変更）")
+        sys.exit(5)
+
+    token = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    temp_dir = f"{target_dir}.NEW-{token}"
+    temp_eboot = f"{temp_dir}\\EBOOT.PBP"
+    temp_wrapper = f"{temp_dir}\\{GE4_WRAPPER_BASENAME}"
+    temp_replay = f"{temp_dir}\\replay\\{ALT_APP_REPLAY_BASENAME}"
+    target_eboot = f"{target_dir}\\EBOOT.PBP"
+    target_wrapper = f"{target_dir}\\{GE4_WRAPPER_BASENAME}"
+    target_replay = f"{target_dir}\\replay\\{ALT_APP_REPLAY_BASENAME}"
+    if ps("Test-Path -LiteralPath " + _ps_literal(temp_dir)).strip() == "True":
+        print("ABORT: unique temp pathが既に存在する（未変更）")
+        sys.exit(5)
+
+    eboot_source_win = "C:" + eboot_source.replace(
+        "/mnt/c", "", 1).replace("/", "\\")
+    wrapper_source_win = "C:" + wrapper_source.replace(
+        "/mnt/c", "", 1).replace("/", "\\")
+    committed = False
+    try:
+        ps("Copy-Item -LiteralPath " + _ps_literal(source_dir) +
+           " -Destination " + _ps_literal(temp_dir) + " -Recurse")
+        if (ps("Test-Path -LiteralPath " + _ps_literal(temp_eboot) +
+               " -PathType Leaf").strip() != "True" or
+                sha256_win(temp_eboot) != expected["main EBOOT"] or
+                sha256_win(temp_wrapper) != expected["main wrapper"] or
+                sha256_win(temp_replay) != expected["replay"] or
+                directory_manifest_win(temp_dir) != source_manifest):
+            raise RuntimeError("main app temp clone verification failed")
+
+        # The alternate wrapper is committed to the private temp directory
+        # first.  The live GO-ME1 directory remains untouched.
+        ps("Copy-Item -LiteralPath " + _ps_literal(wrapper_source_win) +
+           " -Destination " + _ps_literal(temp_wrapper) + " -Force")
+        ps("Copy-Item -LiteralPath " + _ps_literal(eboot_source_win) +
+           " -Destination " + _ps_literal(temp_eboot) + " -Force")
+        temp_manifest = directory_manifest_win(temp_dir)
+        if (sha256_win(temp_eboot) != new_eboot_sha or
+                sha256_win(temp_wrapper) != new_wrapper_sha or
+                sha256_win(temp_replay) != expected["replay"] or
+                alternate_resource_manifest(temp_manifest) !=
+                alternate_resource_manifest(source_manifest)):
+            raise RuntimeError("alternate temp pair/replay verification failed")
+        if ps("Test-Path -LiteralPath " + _ps_literal(target_dir)).strip() == "True":
+            raise RuntimeError("alternate target appeared during staging")
+        if (sha256_win(source_eboot) != expected["main EBOOT"] or
+                sha256_win(source_wrapper) != expected["main wrapper"]):
+            raise RuntimeError("main pair changed during alternate staging")
+
+        ps("Move-Item -LiteralPath " + _ps_literal(temp_dir) +
+           " -Destination " + _ps_literal(target_dir))
+        committed = True
+        target_manifest = directory_manifest_win(target_dir)
+        if (sha256_win(target_eboot) != new_eboot_sha or
+                sha256_win(target_wrapper) != new_wrapper_sha or
+                sha256_win(target_replay) != expected["replay"] or
+                alternate_resource_manifest(target_manifest) !=
+                alternate_resource_manifest(source_manifest)):
+            raise RuntimeError("alternate app final readback verification failed")
+        # Re-read the main pair after commit: coexistence must not mutate it.
+        if (sha256_win(source_eboot) != expected["main EBOOT"] or
+                sha256_win(source_wrapper) != expected["main wrapper"] or
+                directory_manifest_win(source_dir) != source_manifest):
+            raise RuntimeError("main app changed during alternate install")
+    except RuntimeError as exc:
+        cleanup = target_dir if committed else temp_dir
+        try:
+            ps("if (Test-Path -LiteralPath " + _ps_literal(cleanup) +
+               ") { Remove-Item -LiteralPath " + _ps_literal(cleanup) +
+               " -Recurse -Force }")
+        except RuntimeError as cleanup_exc:
+            print(f"CLEANUP ERROR: {cleanup_exc}")
+        print(f"ABORT: {exc}")
+        sys.exit(6)
+
+    print(f"併設: {ALT_APP_TARGET} <- {os.path.basename(eboot_source)}")
+    print(f"EBOOT readback = {new_eboot_sha} 一致 OK")
+    print(f"wrapper readback = {new_wrapper_sha} 一致 OK")
+    print(f"replay readback = {expected['replay']} 一致 OK")
+    print(f"main {ALT_APP_SOURCE} pair = 不変 OK")
+    if args.note:
+        print(f"内容: {args.note}")
+    print("報告書式: PC検証=済 / H:別アプリ併設済(readback一致) / 実機=未確認")
+def select_psp_for_deploy(app, expected_sha):
+    """Use a full main-EBOOT guard to disambiguate multiple attached PSPs."""
+    if (app == "TH07SHIKI" and
+            re.fullmatch(r"[0-9A-F]{64}", expected_sha)):
+        return find_psp_by_eboot(expected_sha)
+    return find_psp()
+
+
 def cmd_deploy(args, src=None, note=None):
     src = src or args.file
     if not os.path.exists(src):
@@ -360,12 +637,12 @@ def cmd_deploy(args, src=None, note=None):
         sys.exit(2)
     src_sha = subprocess.run(["sha256sum", src], capture_output=True,
                              text=True).stdout.split()[0].upper()
-    d = find_psp()
     app = getattr(args, "app", None) or "TH07SHIKI"
+    expect = (getattr(args, "expect", None) or "").upper()
+    d = select_psp_for_deploy(app, expect)
     target = f"{d}:\\{app_eboot(app)}"
     cur = sha256_win(target)
     print(f"現行EBOOT ({app}) = {cur[:16]}… ({ledger_name(cur)})")
-    expect = (getattr(args, "expect", None) or "").upper()
     if expect and not cur.startswith(expect):
         print(f"ABORT: 現行SHAが--expect({expect})と不一致。並行デプロイの疑い。")
         sys.exit(5)
@@ -405,6 +682,155 @@ def cmd_restore(args):
         app = "TH07SHIKI"
     print(f"台帳復旧: {args.name} <- {e['pc_path']}")
     cmd_deploy(A(), src=e["pc_path"], note=e.get("note", ""))
+
+
+def cmd_deploy_ge4_pair(args):
+    """Guard, back up, stage and replace a TH07 EBOOT/GE4 wrapper pair."""
+    eboot_source = os.path.realpath(os.path.abspath(args.eboot))
+    wrapper_source = os.path.realpath(os.path.abspath(args.wrapper))
+    for label, source in (("EBOOT", eboot_source),
+                          ("GE4 wrapper", wrapper_source)):
+        if not os.path.isfile(source):
+            print(f"ERROR: {label}投入元が存在しない: {source}")
+            sys.exit(2)
+        if not source.startswith("/mnt/c/"):
+            print(f"ERROR: {label}投入元は/mnt/c配下に固定: {source}")
+            sys.exit(2)
+    if os.path.basename(wrapper_source) != GE4_WRAPPER_BASENAME:
+        print(f"ERROR: wrapper名は{GE4_WRAPPER_BASENAME}に固定")
+        sys.exit(2)
+    if os.path.getsize(wrapper_source) != GE4_WRAPPER_BYTES:
+        print(f"ERROR: wrapper sizeは{GE4_WRAPPER_BYTES} bytesに固定")
+        sys.exit(2)
+
+    expected_eboot = args.expect_eboot.upper()
+    expected_wrapper = args.expect_wrapper.upper()
+    if (not re.fullmatch(r"[0-9A-F]{64}", expected_eboot) or
+            not re.fullmatch(r"[0-9A-F]{64}", expected_wrapper)):
+        print("ERROR: pair guardにはSHA-256全64桁が必要")
+        sys.exit(2)
+
+    new_eboot_sha = sha256_local(eboot_source).upper()
+    new_wrapper_sha = sha256_local(wrapper_source).upper()
+
+    # More than one TH07 stick may be attached.  Select by the complete frozen
+    # old pair, never by a user-supplied or assumed drive letter.
+    rows = scan()
+    print_scan(rows)
+    candidates = []
+    for row in rows:
+        if not row["psp"]:
+            continue
+        candidate_drive = row["drive"]
+        candidate_dir = f"{candidate_drive}:\\PSP\\GAME\\TH07SHIKI"
+        candidate_eboot = f"{candidate_dir}\\EBOOT.PBP"
+        candidate_wrapper = f"{candidate_dir}\\{GE4_WRAPPER_BASENAME}"
+        wrapper_exists = ps(
+            f"Test-Path -LiteralPath {_ps_literal(candidate_wrapper)} -PathType Leaf"
+        ).strip() == "True"
+        candidate_eboot_sha = sha256_win(candidate_eboot)
+        candidate_wrapper_sha = (sha256_win(candidate_wrapper)
+                                 if wrapper_exists else "MISSING")
+        print(f"PAIR {candidate_drive}: EBOOT={candidate_eboot_sha} "
+              f"WRAPPER={candidate_wrapper_sha}")
+        if (candidate_eboot_sha == expected_eboot and
+                candidate_wrapper_sha == expected_wrapper):
+            candidates.append(candidate_drive)
+    if len(candidates) != 1:
+        print(f"ABORT: frozen pair一致が一意でない: {candidates}（未変更）")
+        sys.exit(5)
+    drive = candidates[0]
+    print(f"RESULT: frozen pairで対象={drive}:")
+    app_dir = f"{drive}:\\PSP\\GAME\\TH07SHIKI"
+    target_eboot = f"{app_dir}\\EBOOT.PBP"
+    target_wrapper = f"{app_dir}\\{GE4_WRAPPER_BASENAME}"
+    if ps(f"Test-Path -LiteralPath {_ps_literal(target_wrapper)} -PathType Leaf").strip() != "True":
+        print("ABORT: 現行GE4 wrapperが存在しない（未変更）")
+        sys.exit(5)
+    current_eboot = sha256_win(target_eboot)
+    current_wrapper = sha256_win(target_wrapper)
+    print(f"現行EBOOT = {current_eboot}")
+    print(f"現行GE4 wrapper = {current_wrapper}")
+    if current_eboot != expected_eboot or current_wrapper != expected_wrapper:
+        print("ABORT: 現行pair SHAがguardと不一致（未変更）")
+        sys.exit(5)
+
+    token = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup_dir = os.path.join(REPO, "artifacts", "stick_backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    eboot_backup = os.path.join(
+        backup_dir,
+        f"EBOOT.TH07SHIKI.PRE-GOME1-{token}.{current_eboot[:8]}.PBP")
+    wrapper_backup = os.path.join(
+        backup_dir,
+        f"{GE4_WRAPPER_BASENAME}.PRE-GOME1-{token}.{current_wrapper[:8]}.prx")
+
+    def win_path(local_path):
+        return "C:" + local_path.replace("/mnt/c", "", 1).replace("/", "\\")
+
+    eboot_source_win = win_path(eboot_source)
+    wrapper_source_win = win_path(wrapper_source)
+    eboot_backup_win = win_path(eboot_backup)
+    wrapper_backup_win = win_path(wrapper_backup)
+    temp_eboot = f"{target_eboot}.NEW-{token}"
+    temp_wrapper = f"{target_wrapper}.NEW-{token}"
+
+    # Both old files reach verified PC backups before either live file changes.
+    ps("Copy-Item -LiteralPath " + _ps_literal(target_eboot) +
+       " -Destination " + _ps_literal(eboot_backup_win))
+    ps("Copy-Item -LiteralPath " + _ps_literal(target_wrapper) +
+       " -Destination " + _ps_literal(wrapper_backup_win))
+    if (sha256_win(eboot_backup_win) != current_eboot or
+            sha256_win(wrapper_backup_win) != current_wrapper):
+        print("ABORT: pairのPC退避SHA不一致（live pairは未変更）")
+        sys.exit(8)
+
+    # Both new files reach verified same-device temporaries before commit.
+    ps("Copy-Item -LiteralPath " + _ps_literal(wrapper_source_win) +
+       " -Destination " + _ps_literal(temp_wrapper))
+    ps("Copy-Item -LiteralPath " + _ps_literal(eboot_source_win) +
+       " -Destination " + _ps_literal(temp_eboot))
+    if (sha256_win(temp_wrapper) != new_wrapper_sha or
+            sha256_win(temp_eboot) != new_eboot_sha):
+        ps("Remove-Item -LiteralPath " + _ps_literal(temp_wrapper) + "," +
+           _ps_literal(temp_eboot) + " -Force -ErrorAction SilentlyContinue")
+        print("ABORT: pair一時copy SHA不一致（live pairは未変更）")
+        sys.exit(6)
+
+    try:
+        # Wrapper-first remains fail-closed with the old model-3-only EBOOT.
+        ps("Move-Item -LiteralPath " + _ps_literal(temp_wrapper) +
+           " -Destination " + _ps_literal(target_wrapper) + " -Force")
+        if sha256_win(target_wrapper) != new_wrapper_sha:
+            raise RuntimeError("wrapper commit readback SHA不一致")
+        ps("Move-Item -LiteralPath " + _ps_literal(temp_eboot) +
+           " -Destination " + _ps_literal(target_eboot) + " -Force")
+        if sha256_win(target_eboot) != new_eboot_sha:
+            raise RuntimeError("EBOOT commit readback SHA不一致")
+    except RuntimeError as exc:
+        print(f"COMMIT ERROR: {exc}; old pairの自動復旧を試行")
+        try:
+            ps("Copy-Item -LiteralPath " + _ps_literal(wrapper_backup_win) +
+               " -Destination " + _ps_literal(target_wrapper) + " -Force")
+            ps("Copy-Item -LiteralPath " + _ps_literal(eboot_backup_win) +
+               " -Destination " + _ps_literal(target_eboot) + " -Force")
+            restored = (sha256_win(target_wrapper) == current_wrapper and
+                        sha256_win(target_eboot) == current_eboot)
+            print("旧pair復旧: " + ("SHA一致 OK" if restored else "***FAIL***"))
+        except RuntimeError as restore_exc:
+            print(f"旧pair復旧不能: {restore_exc}")
+        sys.exit(6)
+
+    final_eboot = sha256_win(target_eboot)
+    final_wrapper = sha256_win(target_wrapper)
+    print("PC退避:")
+    print(f"  {os.path.relpath(eboot_backup, REPO)} ({current_eboot})")
+    print(f"  {os.path.relpath(wrapper_backup, REPO)} ({current_wrapper})")
+    print(f"投入EBOOT readback = {final_eboot} 一致 OK")
+    print(f"投入wrapper readback = {final_wrapper} 一致 OK")
+    if args.note:
+        print(f"内容: {args.note}")
+    print("報告書式: PC検証=済 / H:pair投入済(readback一致) / 実機=未確認")
 
 
 def cmd_install_replay(args):
@@ -590,10 +1016,26 @@ def main():
     sub.add_parser("replay-status")
     p = sub.add_parser("pull-log")
     p.add_argument("--tag")
+    p.add_argument("--expect-eboot")
     p = sub.add_parser("deploy")
     p.add_argument("file")
     p.add_argument("--expect")
     p.add_argument("--app", choices=APP_ALLOWLIST, default="TH07SHIKI")
+    p.add_argument("--note")
+    p = sub.add_parser("deploy-ge4-pair")
+    p.add_argument("eboot")
+    p.add_argument("wrapper")
+    p.add_argument("--expect-eboot", required=True)
+    p.add_argument("--expect-wrapper", required=True)
+    p.add_argument("--note")
+    p = sub.add_parser("install-alt-app")
+    p.add_argument("eboot")
+    p.add_argument("wrapper")
+    p.add_argument("--expect-main-eboot", required=True)
+    p.add_argument("--expect-main-wrapper", required=True)
+    p.add_argument("--expect-new-eboot", required=True)
+    p.add_argument("--expect-new-wrapper", required=True)
+    p.add_argument("--expect-replay", required=True)
     p.add_argument("--note")
     p = sub.add_parser("restore")
     p.add_argument("name")
@@ -616,6 +1058,10 @@ def main():
         cmd_pull_log(args)
     elif args.cmd == "deploy":
         cmd_deploy(args)
+    elif args.cmd == "deploy-ge4-pair":
+        cmd_deploy_ge4_pair(args)
+    elif args.cmd == "install-alt-app":
+        cmd_install_alt_app(args)
     elif args.cmd == "restore":
         cmd_restore(args)
     elif args.cmd == "install-replay":

@@ -73,10 +73,12 @@ class AdaptiveItemMeTests(unittest.TestCase):
         )
         self.assertIn("bulletRecords", gate)
         self.assertIn("itemRecords", gate)
-        self.assertIn("predicted > kPspMeAdaptiveBudgetTicks", gate)
-        self.assertIn("th07_usage_meter_last_me_percent() < 85u", gate)
+        self.assertIn("predicted > budgetTicks", gate)
+        self.assertIn("PspMeAdaptiveBudgetTicksForRuntime()", gate)
+        self.assertIn("PspMeAdaptiveVetoPercentForRuntime()", gate)
+        self.assertIn("th07_usage_meter_last_me_percent() < vetoPercent", gate)
         self.assertLess(
-            gate.index("predicted > kPspMeAdaptiveBudgetTicks"),
+            gate.index("predicted > budgetTicks"),
             gate.index("th07_usage_meter_last_me_percent()"),
         )
         self.assertIn("kPspMeAdaptiveBudgetTicks", self.bullets)
@@ -465,11 +467,13 @@ class AdaptiveItemMeTests(unittest.TestCase):
             self.bullets, "u32 PspMeAdaptiveItemPrefixCount("
         )
         self.assertIn("const u32 prefix =", prefix)
-        self.assertIn("th07_usage_meter_last_me_percent() >= 85u", prefix)
+        self.assertIn(
+            "th07_usage_meter_last_me_percent() >= vetoPercent", prefix
+        )
         self.assertIn("PSP_ME_ADAPTIVE_AUX_REJECT_BUSY", prefix)
         self.assertLess(
             prefix.index("const u32 prefix ="),
-            prefix.index("th07_usage_meter_last_me_percent() >= 85u"),
+            prefix.index("th07_usage_meter_last_me_percent() >= vetoPercent"),
         )
 
 

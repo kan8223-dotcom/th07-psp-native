@@ -87,6 +87,64 @@ class PspStickToolTests(unittest.TestCase):
             self.source,
         )
 
+    def test_deploy_full_main_hash_disambiguates_multiple_devices(self):
+        complete = "A" * 64
+        with mock.patch.object(
+                self.tool, "find_psp_by_eboot", return_value="D") as by_hash, \
+                mock.patch.object(self.tool, "find_psp") as unqualified:
+            self.assertEqual(
+                self.tool.select_psp_for_deploy("TH07SHIKI", complete), "D"
+            )
+        by_hash.assert_called_once_with(complete)
+        unqualified.assert_not_called()
+
+        with mock.patch.object(self.tool, "find_psp", return_value="H") as scan, \
+                mock.patch.object(self.tool, "find_psp_by_eboot") as by_hash:
+            self.assertEqual(
+                self.tool.select_psp_for_deploy("TH07SHIKI", "A5C0"), "H"
+            )
+            self.assertEqual(
+                self.tool.select_psp_for_deploy("TH07SHIKI_NOME", complete),
+                "H",
+            )
+        self.assertEqual(scan.call_count, 2)
+        by_hash.assert_not_called()
+
+    def test_alt_app_install_is_fixed_guarded_and_staged(self):
+        body_start = self.source.index("def cmd_install_alt_app(")
+        body_end = self.source.index("\ndef cmd_deploy(", body_start)
+        body = self.source[body_start:body_end]
+        self.assertEqual(self.tool.ALT_APP_SOURCE, "TH07SHIKI")
+        self.assertEqual(self.tool.ALT_APP_TARGET, "TH07SHIKI_NOME")
+        self.assertEqual(self.tool.ALT_APP_REPLAY_BASENAME,
+                         "th7_udLUNA.rpy")
+        self.assertIn("find_psp_by_pair(expected[\"main EBOOT\"]", body)
+        self.assertIn("全SHA guardは64桁必須", body)
+        self.assertIn("Test-Path -LiteralPath", body)
+        self.assertIn("main EBOOT/wrapper/replay SHA guard不一致", body)
+        self.assertIn("source_manifest", body)
+        self.assertIn("alternate_resource_manifest", body)
+        self.assertIn("free_bytes", body)
+        clone = '"Copy-Item -LiteralPath " + _ps_literal(source_dir)'
+        replace = '"Copy-Item -LiteralPath " + _ps_literal(wrapper_source_win)'
+        commit = '"Move-Item -LiteralPath " + _ps_literal(temp_dir)'
+        self.assertLess(body.index(clone), body.index(replace))
+        self.assertLess(body.index(replace), body.index(commit))
+        self.assertIn("sha256_win(temp_replay)", body)
+        self.assertIn("sha256_win(target_replay)", body)
+        self.assertIn("main app changed during alternate install", body)
+        self.assertIn("Remove-Item -LiteralPath", body)
+        self.assertNotIn("-Destination " + '" + _ps_literal(source_dir)', body)
+
+    def test_alt_app_cli_requires_all_complete_hash_guards(self):
+        self.assertIn('sub.add_parser("install-alt-app")', self.source)
+        for option in (
+                "--expect-main-eboot", "--expect-main-wrapper",
+                "--expect-new-eboot", "--expect-new-wrapper",
+                "--expect-replay"):
+            self.assertIn(f'p.add_argument("{option}", required=True)',
+                          self.source)
+
     def test_status_reads_selected_allowlisted_app(self):
         args = mock.Mock(app="TH07SHIKI_NOME")
         output = io.StringIO()

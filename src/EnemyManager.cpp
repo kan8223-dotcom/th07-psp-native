@@ -15,11 +15,19 @@
 #if defined(TH07_PSP)
 #include <cmath>
 #include <pspmath.h>
+#if defined(TH07_PSP_PERF_A1_SAME)
+#include <pspkernel.h>
+#endif
 
 #if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
 #include "../psp/fileio.hpp"
+#endif
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE) || \
+    defined(TH07_PSP_PERF_A1_SAME)
 #include "../psp/graphics/PspGuGraphics.hpp"
+#endif
 
+#if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
 #include <cstdlib>
 #include <malloc.h>
 #endif
@@ -894,6 +902,10 @@ i32 Enemy::HandleTimerCallback()
             {
                 g_EnemyManager.spellcardInfo.isActive++;
             }
+#if defined(TH07_PSP_PERF_A1_SAME)
+            Th07PspPerfSetA1SameReason(
+                TH07_PSP_PERF_A1_REASON_SPELL_TIMEOUT);
+#endif
             g_BulletManager.RemoveAllBullets(10);
             cherryPenalty =
                 (f32)(g_GameManager.cherry - g_GameManager.globals->cherryStart) * 0.25f;
@@ -1412,7 +1424,15 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
                 }
                 if (enemy->isBoss && !g_EnemyManager.spellcardInfo.isActive)
                 {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                    Th07PspPerfSetA1SameReason(
+                        TH07_PSP_PERF_A1_REASON_BOSS_DEFEAT);
+#endif
                     removedScore = g_BulletManager.DespawnBullets(8000, 1);
+#if defined(TH07_PSP_PERF_A1_SAME)
+                    Th07PspPerfSetA1SameReason(
+                        TH07_PSP_PERF_A1_REASON_BOSS_DEFEAT);
+#endif
                     removedScore = g_EnemyManager.RemoveAllEnemies(8000, removedScore);
                     if (removedScore != 0)
                     {
@@ -2077,6 +2097,18 @@ i32 EnemyManager::RemoveAllEnemies(i32 scoreMax, i32 scoreMin)
     Enemy *enemy;
     i32 totalScore;
     i32 popupScore;
+#if defined(TH07_PSP_PERF_A1_SAME)
+    Th07PspPerfA1SameSample perfA1Sample{};
+    perfA1Sample.reason = Th07PspPerfTakeA1SameReason();
+    perfA1Sample.mode = scoreMax == 8000 ? 1u << 0
+                        : scoreMax == 0  ? 1u << 1
+                                         : 1u << 2;
+    if (scoreMin != 0)
+    {
+        perfA1Sample.mode |= 1u << 3;
+    }
+    const unsigned long long perfA1StartUs = sceKernelGetSystemTimeWide();
+#endif
 
 #if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
     // Gui runs at calc 13, after this queue's calc-10 capture.  Even though
@@ -2100,15 +2132,26 @@ i32 EnemyManager::RemoveAllEnemies(i32 scoreMax, i32 scoreMin)
         {
             continue;
         }
+#if defined(TH07_PSP_PERF_A1_SAME)
+        ++perfA1Sample.eligible;
+#endif
 
         if (enemy->isBoss)
         {
             continue;
         }
 
+#if defined(TH07_PSP_PERF_A1_SAME)
+        ++perfA1Sample.affected;
+#endif
         enemy->life = 0;
         if (enemy->isProjectile)
         {
+#if defined(TH07_PSP_PERF_A1_SAME)
+            ++perfA1Sample.auxiliary;
+            ++perfA1Sample.itemAttempts;
+            ++perfA1Sample.popups;
+#endif
             g_ItemManager.SpawnItem(&enemy->position, ITEM_POINT_BULLET, 1);
             g_AsciiManager.CreatePopup1(&enemy->position, popupScore,
                                         popupScore >= scoreMax ? 0xffffff00 : 0xffffffff);
@@ -2122,6 +2165,10 @@ i32 EnemyManager::RemoveAllEnemies(i32 scoreMax, i32 scoreMin)
             {
                 for (j = 0; j < enemy->trailCount; j += 6)
                 {
+#if defined(TH07_PSP_PERF_A1_SAME)
+                    ++perfA1Sample.itemAttempts;
+                    ++perfA1Sample.popups;
+#endif
                     g_ItemManager.SpawnItem(&enemy->enemyHistory[j].position, ITEM_POINT_BULLET, 1);
                     g_AsciiManager.CreatePopup1(&enemy->enemyHistory[j].position, popupScore,
                                                 popupScore >= scoreMax ? 0xffffff00 : 0xffffffff);
@@ -2140,6 +2187,12 @@ i32 EnemyManager::RemoveAllEnemies(i32 scoreMax, i32 scoreMin)
             enemy->deathCallbackSub = -1;
         }
     }
+#if defined(TH07_PSP_PERF_A1_SAME)
+    const unsigned long long perfA1EndUs = sceKernelGetSystemTimeWide();
+    Th07PspPerfAddA1SameSample(
+        TH07_PSP_PERF_A1_REMOVE_ALL_ENEMIES,
+        perfA1EndUs - perfA1StartUs, perfA1Sample);
+#endif
     return totalScore;
 }
 

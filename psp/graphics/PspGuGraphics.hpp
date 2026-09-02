@@ -103,6 +103,60 @@ void Th07PspPerfAddDrawChainOverheadTime(unsigned long long elapsedUs);
 void Th07PspPerfAddPlayerShotFrontendTime(unsigned long long elapsedUs,
                                           unsigned int activeShotCount);
 #endif
+#if defined(TH07_PSP_PERF_A1_SAME)
+// Sparse A1 event attribution.  The four bulk functions publish once at
+// return; the bomb entry is the inclusive Bullet-loop upper bound for a frame
+// with at least one active BombClearBox.  These are subsets of existing SC
+// callback time and must never be added to CPU/R again.
+enum Th07PspPerfA1SameKind
+{
+    TH07_PSP_PERF_A1_REMOVE_ALL_BULLETS = 0,
+    TH07_PSP_PERF_A1_DESPAWN_BULLETS = 1,
+    TH07_PSP_PERF_A1_REMOVE_RADIUS = 2,
+    TH07_PSP_PERF_A1_REMOVE_ALL_ENEMIES = 3,
+    TH07_PSP_PERF_A1_BOMB_BULLET_UPDATE = 4,
+    TH07_PSP_PERF_A1_KIND_COUNT = 5,
+};
+
+enum Th07PspPerfA1SameReason
+{
+    TH07_PSP_PERF_A1_REASON_UNKNOWN = 1u << 0,
+    TH07_PSP_PERF_A1_REASON_BEGIN_SPELL = 1u << 1,
+    TH07_PSP_PERF_A1_REASON_SPELL_END = 1u << 2,
+    TH07_PSP_PERF_A1_REASON_BOSS_DEFEAT = 1u << 3,
+    TH07_PSP_PERF_A1_REASON_SPELL_TIMEOUT = 1u << 4,
+    TH07_PSP_PERF_A1_REASON_ECL_ENEMY_CLEAR = 1u << 5,
+    TH07_PSP_PERF_A1_REASON_ECL_BULLET_ITEM = 1u << 6,
+    TH07_PSP_PERF_A1_REASON_ECL_RADIUS = 1u << 7,
+    TH07_PSP_PERF_A1_REASON_ECL_BULLET_FADE = 1u << 8,
+    TH07_PSP_PERF_A1_REASON_DIALOGUE = 1u << 9,
+    TH07_PSP_PERF_A1_REASON_RESPAWN_GRACE = 1u << 10,
+    TH07_PSP_PERF_A1_REASON_FULL_POWER = 1u << 11,
+    TH07_PSP_PERF_A1_REASON_BOMB = 1u << 12,
+};
+
+struct Th07PspPerfA1SameSample
+{
+    // Subjects that passed the existing active/state ownership filters.  The
+    // timed region still includes each function's fixed-capacity traversal;
+    // calls is therefore the traversal/pass count.
+    unsigned int eligible;
+    unsigned int affected;
+    unsigned int itemAttempts;
+    unsigned int popups;
+    unsigned int auxiliary;
+    unsigned int reason;
+    unsigned int mode;
+};
+
+// A caller marks the immediately following bulk call.  The callee consumes
+// the mark at entry, so a re-entrant ECL callback cannot overwrite its owner.
+void Th07PspPerfSetA1SameReason(unsigned int reason);
+unsigned int Th07PspPerfTakeA1SameReason();
+void Th07PspPerfAddA1SameSample(Th07PspPerfA1SameKind kind,
+                               unsigned long long elapsedUs,
+                               const Th07PspPerfA1SameSample &sample);
+#endif
 void Th07PspPerfPhaseGpuSync(int priority);
 void Th07PspPerfBeginGameplayWindow(int stage);
 void Th07PspPerfFinalizeGameplayWindow();

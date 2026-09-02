@@ -94,6 +94,17 @@ def accept_run(
     return lines
 
 
+def a1_same(
+    profile: str = "ACCEPT",
+    run_id: str = "33333333",
+    window: int = 1,
+) -> str:
+    return (
+        f"{tag(profile, run_id, window)} A1S K01 "
+        "RAB1/100/10/10/10/0/0/00000002/00000002 G1 O0"
+    )
+
+
 def split_stage_run(
     profile: str = "ACCEPT",
     run_id: str = "33333333",
@@ -111,6 +122,52 @@ def split_stage_run(
 
 
 class Final60PerfAnalyzerTests(unittest.TestCase):
+    def test_accepts_optional_sparse_a1_same_line_after_accept(self) -> None:
+        lines = accept_run()
+        lines.insert(1, a1_same())
+        result = MODULE.analyze(lines, "accept")
+        self.assertTrue(result["valid"], result["errors"])
+        self.assertEqual(result["a1_same_windows"], 1)
+        self.assertEqual(len(result["a1_same_samples"]), 1)
+
+    def test_rejects_a1_same_before_accept_or_more_than_once_per_window(self) -> None:
+        before = accept_run()
+        before.insert(0, a1_same())
+        before_result = MODULE.analyze(before, "accept")
+        self.assertFalse(before_result["valid"])
+        self.assertTrue(
+            any("A1S must follow" in error for error in before_result["errors"])
+        )
+
+        duplicate = accept_run()
+        duplicate[1:1] = [a1_same(), a1_same()]
+        duplicate_result = MODULE.analyze(duplicate, "accept")
+        self.assertFalse(duplicate_result["valid"])
+        self.assertTrue(
+            any("surplus A1S" in error for error in duplicate_result["errors"])
+        )
+
+    def test_rejects_a1_same_integrity_reason_and_side_effect_faults(self) -> None:
+        mutations = (
+            (" G1 O0", " G0 O0", "observer integrity"),
+            ("00000002/00000002", "00000001/00000002", "unexpected reason"),
+            (
+                "A1S K01",
+                "A1S K05 RAD1/10/5/2/1/0/0/00000080/00000001",
+                "RAD side-effect closure",
+            ),
+        )
+        for old, new, expected_error in mutations:
+            with self.subTest(expected_error=expected_error):
+                lines = accept_run()
+                lines.insert(1, a1_same().replace(old, new))
+                result = MODULE.analyze(lines, "accept")
+                self.assertFalse(result["valid"])
+                self.assertTrue(
+                    any(expected_error in error for error in result["errors"]),
+                    result["errors"],
+                )
+
     def test_accepts_complete_m2_run(self) -> None:
         lines = m2_window()
         lines.append(end("M2", "11111111", 1))

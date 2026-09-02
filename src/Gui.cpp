@@ -31,6 +31,9 @@
 #include "optional_ram_budget.hpp"
 #include <pspkernel.h>
 #endif
+#if defined(TH07_PSP_PERF_A1_SAME)
+#include "graphics/PspGuGraphics.hpp"
+#endif
 
 u32 g_SpellcardTimeColors[4] = {
     0xa0d0ff,
@@ -988,7 +991,13 @@ void GuiImpl::MsgRead(i32 msgIdx)
     this->msg.textColorsB[0] = kMsgTextColorsB[0];
     this->msg.textColorsB[1] = kMsgTextColorsB[1];
     this->msg.dialogueSkippable = 1;
+#if defined(TH07_PSP_PERF_A1_SAME)
+    Th07PspPerfSetA1SameReason(TH07_PSP_PERF_A1_REASON_DIALOGUE);
+#endif
     g_BulletManager.RemoveAllBullets(1);
+#if defined(TH07_PSP_PERF_A1_SAME)
+    Th07PspPerfSetA1SameReason(TH07_PSP_PERF_A1_REASON_DIALOGUE);
+#endif
     g_EnemyManager.RemoveAllEnemies(0, 0);
     g_ItemManager.RemoveAllItems();
     if (msgIdx % 10 == 0)

@@ -1,4 +1,7 @@
 #include "audio_me.h"
+#if defined(TH07_PSP_SFX_DIV1_FAST)
+#include "sfx_div1_fast.h"
+#endif
 
 #include <pspiofilemgr.h>
 #include <pspkernel.h>
@@ -116,6 +119,16 @@ enum
 
 #if defined(TH07_PSP_ME_RENDER_WORKER)
     ME_RENDER_BENCH_TIMEOUT_US = 100000,
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+    // Private command-9 flag: only the boot calibrator may publish it, and
+    // The SC render-begin path additionally authenticates the owned M0
+    // buffers and fixed corpus shape before it reaches the mailbox.
+    ME_RENDER_JOB_CLOCK_CALIBRATION = 1u << 1,
+    ME_CLOCK_CALIBRATION_REPEATS = 32,
+    ME_CLOCK_CALIBRATION_SAMPLES = 7,
+    ME_CLOCK_CALIBRATION_TIMEOUT_US = 250000,
+    ME_CLOCK_CALIBRATION_VERSION = 0x474d4532u, // "GME2"
+#endif
     // The ME has no scheduler service to block on, but polling an uncached
     // Main-RAM mailbox every four instructions measurably competes with SC/GE.
     // About two thousand local instructions add only a few microseconds of
@@ -380,7 +393,13 @@ enum
     ME_BGM_STACK_RESERVED_BYTES = 0x00010000,
     ME_BGM_STACK_BOTTOM = ME_BGM_STACK_TOP - ME_BGM_STACK_RESERVED_BYTES,
 #endif
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+    // GO-ME1 admits every non-Phat hardware model.  A negative model-query
+    // result and model 0 both remain fail-closed before custom-core takeover.
+    ME_BGM_MINIMUM_MODEL = 1,
+#else
     ME_BGM_REQUIRED_MODEL = 3,
+#endif
     ME_BGM_REQUIRED_TABLE = 2,
     ME_BGM_READY_TIMEOUT_US = 3000000,
     ME_BGM_COMMAND_TIMEOUT_US = 50000,
@@ -1290,6 +1309,10 @@ static uint32_t gMeRenderScWritebackUs;
 static uint32_t gMeRenderScOutputPrepareUs;
 static uint32_t gMeRenderScSubmitUs;
 static Th07PspMeRenderJob gMeRenderPublishedJob;
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+static Th07PspMeClockCalibration gMeClockCalibration;
+static volatile unsigned int gMeClockCalibrationActive;
+#endif
 
 _Static_assert(ME_RENDER_BENCH_INPUT_BYTES == 65536u,
                "M0 input upper bound changed");
@@ -7377,11 +7400,35 @@ static void process_render_expand_on_me(volatile MeSharedMailbox *box)
         box->renderResult = ME_RENDER_RESULT_VERSION;
         return;
     }
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+    if (box->renderFlags &
+        ~(TH07_PSP_ME_RENDER_JOB_COLD_CACHE |
+          ME_RENDER_JOB_CLOCK_CALIBRATION))
+#else
     if (box->renderFlags & ~TH07_PSP_ME_RENDER_JOB_COLD_CACHE)
+#endif
     {
         box->renderResult = ME_RENDER_RESULT_PROTOCOL;
         return;
     }
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+    if ((box->renderFlags & ME_RENDER_JOB_CLOCK_CALIBRATION) != 0u &&
+        (box->renderFlags != ME_RENDER_JOB_CLOCK_CALIBRATION ||
+         box->renderInputPhys !=
+             ((uint32_t)(gMeRenderBenchInputArea +
+                         ME_RENDER_BENCH_GUARD_BYTES) & 0x1fffffffu) ||
+         box->renderInputBytes != ME_RENDER_BENCH_INPUT_BYTES ||
+         box->renderInputStride != 64u ||
+         box->renderRecordCount != TH07_PSP_ME_RENDER_MAX_RECORDS ||
+         box->renderOutputPhys !=
+             ((uint32_t)(gMeRenderBenchOutputArea +
+                         ME_RENDER_BENCH_GUARD_BYTES) & 0x1fffffffu) ||
+         box->renderOutputCapacity != ME_RENDER_BENCH_OUTPUT_BYTES))
+    {
+        box->renderResult = ME_RENDER_RESULT_PROTOCOL;
+        return;
+    }
+#endif
     if (!me_render_bounds_valid(box->renderVersion,
                                 box->renderInputPhys,
                                 box->renderInputBytes,
@@ -7421,8 +7468,21 @@ static void process_render_expand_on_me(volatile MeSharedMailbox *box)
     me_render_write_fcr31(0u);
     box->renderFcr31Effective = me_render_read_fcr31();
     const uint32_t kernelStart = me_render_read_count();
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+    const uint32_t repeats =
+        (box->renderFlags & ME_RENDER_JOB_CLOCK_CALIBRATION)
+            ? ME_CLOCK_CALIBRATION_REPEATS
+            : 1u;
+    for (uint32_t repeat = 0u; repeat < repeats; ++repeat)
+    {
+        me_render_expand_kernel(input, box->renderInputStride,
+                                box->renderRecordCount, output);
+        __asm__ volatile("" ::: "memory");
+    }
+#else
     me_render_expand_kernel(input, box->renderInputStride,
                             box->renderRecordCount, output);
+#endif
     const uint32_t kernelEnd = me_render_read_count();
     me_render_write_fcr31(originalFcr31);
     box->renderFcr31After = me_render_read_fcr31();
@@ -9791,10 +9851,31 @@ static void me_render_fill_completion(Th07PspMeRenderCompletion *completion)
 int th07_psp_me_render_begin(const Th07PspMeRenderJob *job)
 {
     if (!job || !job->input || !job->output ||
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+        (job->flags &
+         ~(TH07_PSP_ME_RENDER_JOB_COLD_CACHE |
+           ME_RENDER_JOB_CLOCK_CALIBRATION)) != 0u ||
+#else
         (job->flags & ~TH07_PSP_ME_RENDER_JOB_COLD_CACHE) != 0u ||
+#endif
         !__atomic_load_n(&gMeActive, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&gMePoisoned, __ATOMIC_ACQUIRE))
         return 0;
+
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+    if ((job->flags & ME_RENDER_JOB_CLOCK_CALIBRATION) != 0u &&
+        (job->flags != ME_RENDER_JOB_CLOCK_CALIBRATION ||
+         !__atomic_load_n(&gMeClockCalibrationActive, __ATOMIC_ACQUIRE) ||
+         job->input != gMeRenderBenchInputArea +
+                           ME_RENDER_BENCH_GUARD_BYTES ||
+         job->inputBytes != ME_RENDER_BENCH_INPUT_BYTES ||
+         job->inputStride != 64u ||
+         job->recordCount != TH07_PSP_ME_RENDER_MAX_RECORDS ||
+         job->output != gMeRenderBenchOutputArea +
+                            ME_RENDER_BENCH_GUARD_BYTES ||
+         job->outputBytes != ME_RENDER_BENCH_OUTPUT_BYTES))
+        return 0;
+#endif
 
     const uint32_t inputPhys = (uint32_t)job->input & 0x1fffffffu;
     const uint32_t outputPhys = (uint32_t)job->output & 0x1fffffffu;
@@ -12632,6 +12713,15 @@ int th07_psp_sc_audio_mix_into(const Th07PspMixJob *job, short *io,
     const unsigned int samples = job->frames * 2;
     const int divisor = job->mixDivisor ? (int)job->mixDivisor : 1;
     unsigned int limited = 0;
+#if defined(TH07_PSP_SFX_DIV1_FAST)
+    if (divisor == 1)
+    {
+        limited = th07_psp_sfx_compose_div1(gScWide, io, samples);
+        if (limitedSamples)
+            *limitedSamples = limited;
+        return 1;
+    }
+#endif
     for (unsigned int sample = 0; sample < samples; ++sample)
     {
         const int background = io[sample];
@@ -13117,8 +13207,24 @@ static int selftest_audio(void)
     test.inputs[0].gainQ16 = 65536u;
     if (!th07_psp_sc_audio_mix_into(&test, into, &limited))
         return 0;
+#if !defined(TH07_PSP_SFX_DIV1_FAST)
     return limited == 1 && into[0] == 32767 && into[1] == -31760 &&
            into[2] == -900 && into[3] == -1100;
+#else
+    if (limited != 1 || into[0] != 32767 || into[1] != -31760 ||
+        into[2] != -900 || into[3] != -1100)
+        return 0;
+
+    // Lock the strict headroom boundary and both limiter signs in the exact
+    // division-free helper used by the runtime unity branch.
+    const int edgeWide[8] = {1, -1, 7, -8, 32767, -32768, -123, 456};
+    short edgeInto[8] = {32767, -32768, 32760, -32760, 0, 0, 123, -456};
+    const short edgeExpected[8] = {32767, -32768, 32767, -32768,
+                                   32767, -32768, 0, 0};
+    limited = th07_psp_sfx_compose_div1(edgeWide, edgeInto, 8u);
+    return limited == 2u &&
+           memcmp(edgeInto, edgeExpected, sizeof(edgeExpected)) == 0;
+#endif
 }
 
 static int selftest_vertices(void)
@@ -13318,6 +13424,226 @@ static void me_render_sort_samples(uint32_t *samples, uint32_t count)
         samples[insert] = value;
     }
 }
+
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+static int me_clock_wall_elapsed(unsigned long long startUs,
+                                 unsigned long long endUs,
+                                 uint32_t *elapsedUs)
+{
+    if (!elapsedUs || endUs <= startUs ||
+        endUs - startUs > 0xffffffffull)
+        return 0;
+    *elapsedUs = (uint32_t)(endUs - startUs);
+    return *elapsedUs != 0u;
+}
+
+static int me_clock_measure_sc(uint32_t *wallUs)
+{
+    const uint32_t originalFcr31 = me_render_read_fcr31();
+    me_render_write_fcr31(0u);
+    const unsigned long long startUs = sceKernelGetSystemTimeWide();
+    for (uint32_t repeat = 0u;
+         repeat < ME_CLOCK_CALIBRATION_REPEATS; ++repeat)
+    {
+        me_render_expand_kernel(
+            me_render_bench_input(), 64u,
+            TH07_PSP_ME_RENDER_MAX_RECORDS,
+            (MeVertexTexColorPosition *)me_render_bench_output());
+        __asm__ volatile("" ::: "memory");
+    }
+    const unsigned long long endUs = sceKernelGetSystemTimeWide();
+    me_render_write_fcr31(originalFcr31);
+    return me_render_read_fcr31() == originalFcr31 &&
+           me_clock_wall_elapsed(startUs, endUs, wallUs);
+}
+
+static int me_clock_measure_me(uint32_t sequence, uint32_t *wallUs)
+{
+    Th07PspMeRenderJob job;
+    memset(&job, 0, sizeof(job));
+    job.version = TH07_PSP_ME_RENDER_VERSION;
+    job.flags = ME_RENDER_JOB_CLOCK_CALIBRATION;
+    job.frameSeq = sequence;
+    job.targetDrawSeq = sequence + 1u;
+    job.stageEpoch = ME_CLOCK_CALIBRATION_VERSION;
+    job.managerEpoch = sequence ^ 0x6d653263u;
+    job.replayEpoch = 0x57414c4cu; // "WALL"
+    job.input = me_render_bench_input();
+    job.inputBytes = ME_RENDER_BENCH_INPUT_BYTES;
+    job.inputStride = 64u;
+    job.recordCount = TH07_PSP_ME_RENDER_MAX_RECORDS;
+    job.output = me_render_bench_output();
+    job.outputBytes = ME_RENDER_BENCH_OUTPUT_BYTES;
+
+    const unsigned long long startUs = sceKernelGetSystemTimeWide();
+    if (!th07_psp_me_render_begin(&job))
+        return 0;
+
+    int probe = 0;
+    while ((probe = th07_psp_me_render_probe(0)) == 0)
+    {
+        if (sceKernelGetSystemTimeWide() - startUs >=
+            ME_CLOCK_CALIBRATION_TIMEOUT_US)
+        {
+            th07_psp_me_render_hard_fault();
+            return -1;
+        }
+        sceKernelDelayThread(20);
+    }
+    if (probe < 0)
+        return -1;
+
+    Th07PspMeRenderCompletion completion;
+    if (th07_psp_me_render_retire(&completion) != 1)
+        return -1;
+    const unsigned long long endUs = sceKernelGetSystemTimeWide();
+    if (completion.flags != ME_RENDER_JOB_CLOCK_CALIBRATION ||
+        completion.recordCount != TH07_PSP_ME_RENDER_MAX_RECORDS ||
+        completion.inputStride != 64u ||
+        completion.outputBytes != ME_RENDER_BENCH_OUTPUT_BYTES ||
+        completion.result != ME_RENDER_RESULT_OK ||
+        completion.meFcr31Effective != 0u ||
+        completion.meFcr31Before != completion.meFcr31After)
+        return -1;
+    return me_clock_wall_elapsed(startUs, endUs, wallUs) ? 1 : 0;
+}
+
+// Return 1 for a usable ratio, 0 for a clean measurement rejection (legacy
+// GO-ME1 policy remains active), and -1 only when ME ownership is no longer
+// safe enough to continue the established worker.
+static int me_clock_calibrate(void)
+{
+    uint32_t scWallUs[ME_CLOCK_CALIBRATION_SAMPLES];
+    uint32_t meWallUs[ME_CLOCK_CALIBRATION_SAMPLES];
+    uint32_t sequence = 0x474d3200u;
+    int result = 0;
+    MeOwnerPriorityGuard priority;
+
+    memset(scWallUs, 0, sizeof(scWallUs));
+    memset(meWallUs, 0, sizeof(meWallUs));
+    me_render_bench_fill_input(TH07_PSP_ME_RENDER_MAX_RECORDS, 64u);
+    memset(me_render_bench_output(), 0x39, ME_RENDER_BENCH_OUTPUT_BYTES);
+    memset(me_render_bench_copy(), 0xc6, ME_RENDER_BENCH_OUTPUT_BYTES);
+
+    if (!enter_me_candidate_priority(&priority))
+        return 0;
+    __atomic_store_n(&gMeClockCalibrationActive, 1u, __ATOMIC_RELEASE);
+
+    // Warm both exact paths once before alternating seven measured pairs.
+    uint32_t discardUs = 0u;
+    if (!me_clock_measure_sc(&discardUs))
+        goto clock_calibration_done;
+    result = me_clock_measure_me(sequence++, &discardUs);
+    if (result <= 0)
+        goto clock_calibration_done;
+
+    for (uint32_t sample = 0u;
+         sample < ME_CLOCK_CALIBRATION_SAMPLES; ++sample)
+    {
+        // Alternating the order prevents a monotonic boot-time drift from
+        // being mistaken for a core ratio.  The DAC worker remains above this
+        // temporary 0x11 owner and can preempt either SC endpoint normally.
+        if ((sample & 1u) == 0u)
+        {
+            if (!me_clock_measure_sc(&scWallUs[sample]))
+            {
+                result = 0;
+                goto clock_calibration_done;
+            }
+            result = me_clock_measure_me(sequence++, &meWallUs[sample]);
+            if (result <= 0)
+                goto clock_calibration_done;
+        }
+        else
+        {
+            result = me_clock_measure_me(sequence++, &meWallUs[sample]);
+            if (result <= 0)
+                goto clock_calibration_done;
+            if (!me_clock_measure_sc(&scWallUs[sample]))
+            {
+                result = 0;
+                goto clock_calibration_done;
+            }
+        }
+    }
+
+    memcpy(me_render_bench_copy(), me_render_bench_output(),
+           ME_RENDER_BENCH_OUTPUT_BYTES);
+    gMeClockCalibration.mismatchWords = me_render_bench_compare(
+        TH07_PSP_ME_RENDER_MAX_RECORDS, 64u);
+    if (!me_render_bench_guards_ok())
+    {
+        gMeClockCalibration.guardFaults = 1u;
+        __atomic_fetch_add(&gMeRenderBenchSummary.guardFaults, 1u,
+                           __ATOMIC_RELAXED);
+        poison_me();
+        result = -1;
+        goto clock_calibration_done;
+    }
+    if (gMeClockCalibration.mismatchWords != 0u)
+    {
+        // The established GO-ME1 M0 ownership proof has already passed.
+        // Treat a calibration-only output mismatch as an unusable timing
+        // sample and retain its exact unity policy.  Do not contaminate the
+        // established M0 summary: its downstream checker intentionally cold
+        // reboots on any mismatch, while this probe must not turn an
+        // otherwise playable GO-ME1 boot into a reboot loop.
+        result = 0;
+        goto clock_calibration_done;
+    }
+
+    me_render_sort_samples(scWallUs, ME_CLOCK_CALIBRATION_SAMPLES);
+    me_render_sort_samples(meWallUs, ME_CLOCK_CALIBRATION_SAMPLES);
+    gMeClockCalibration.scMinUs = scWallUs[0];
+    gMeClockCalibration.scMedianUs =
+        scWallUs[ME_CLOCK_CALIBRATION_SAMPLES / 2u];
+    gMeClockCalibration.scMaxUs =
+        scWallUs[ME_CLOCK_CALIBRATION_SAMPLES - 1u];
+    gMeClockCalibration.meMinUs = meWallUs[0];
+    gMeClockCalibration.meMedianUs =
+        meWallUs[ME_CLOCK_CALIBRATION_SAMPLES / 2u];
+    gMeClockCalibration.meMaxUs =
+        meWallUs[ME_CLOCK_CALIBRATION_SAMPLES - 1u];
+
+    const uint32_t ratioPermille = th07_psp_me_clock_ratio_permille(
+        gMeClockCalibration.scMedianUs,
+        gMeClockCalibration.meMedianUs);
+    // The median is the policy input.  Validate the central five samples so
+    // one low and one high boot-time interrupt cannot discard an otherwise
+    // stable calibration, while two same-side outliers still reject it.
+    const int scSpreadOk =
+        (unsigned long long)(scWallUs[ME_CLOCK_CALIBRATION_SAMPLES - 2u] -
+                             scWallUs[1u]) * 100u <=
+        (unsigned long long)gMeClockCalibration.scMedianUs * 8u;
+    const int meSpreadOk =
+        (unsigned long long)(meWallUs[ME_CLOCK_CALIBRATION_SAMPLES - 2u] -
+                             meWallUs[1u]) * 100u <=
+        (unsigned long long)gMeClockCalibration.meMedianUs * 8u;
+    gMeClockCalibration.valid =
+        gMeClockCalibration.scMedianUs >= 8000u &&
+        gMeClockCalibration.meMedianUs >= 8000u &&
+        ratioPermille >= 500u && ratioPermille <= 2000u &&
+        scSpreadOk && meSpreadOk;
+    gMeClockCalibration.policy = th07_psp_me_clock_make_policy(
+        gMeClockCalibration.scMedianUs,
+        gMeClockCalibration.meMedianUs,
+        gMeClockCalibration.valid);
+    result = gMeClockCalibration.valid ? 1 : 0;
+
+clock_calibration_done:
+    __atomic_store_n(&gMeClockCalibrationActive, 0u, __ATOMIC_RELEASE);
+    if (!restore_me_candidate_priority(&priority))
+        result = -1;
+    if (result <= 0)
+    {
+        gMeClockCalibration.valid = 0u;
+        gMeClockCalibration.policy = th07_psp_me_clock_make_policy(
+            gMeClockCalibration.scMedianUs,
+            gMeClockCalibration.meMedianUs, 0u);
+    }
+    return result;
+}
+#endif
 
 static int me_render_bench_dispatch(uint32_t count, uint32_t stride,
                                     uint32_t sequence, int coldCache,
@@ -17324,6 +17650,32 @@ void th07_psp_me_render_bench_snapshot(
         count = caseCapacity;
     memcpy(cases, gMeRenderBenchCases, count * sizeof(*cases));
 }
+
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+void th07_psp_me_clock_calibration_snapshot(
+    Th07PspMeClockCalibration *snapshot)
+{
+    if (snapshot)
+        *snapshot = gMeClockCalibration;
+}
+
+unsigned int th07_psp_me_clock_admission_budget_ticks(void)
+{
+    const unsigned int budget =
+        gMeClockCalibration.policy.admissionBudgetTicks;
+    return budget != 0u
+               ? budget
+               : TH07_PSP_ME_CLOCK_LEGACY_BUDGET_TICKS;
+}
+
+unsigned int th07_psp_me_clock_veto_percent(void)
+{
+    const unsigned int veto = gMeClockCalibration.policy.vetoPercent;
+    return veto != 0u
+               ? veto
+               : TH07_PSP_ME_CLOCK_LEGACY_VETO_PERCENT;
+}
+#endif
 #endif
 
 #if defined(TH07_PSP_MECC_BGM_384K) || defined(TH07_PSP_MECC_AUDIO_4M)
@@ -17490,6 +17842,16 @@ int th07_psp_me_audio_init(void)
     gMeRenderScWritebackUs = 0u;
     gMeRenderScOutputPrepareUs = 0u;
     gMeRenderScSubmitUs = 0u;
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+    memset(&gMeClockCalibration, 0, sizeof(gMeClockCalibration));
+    gMeClockCalibration.version = ME_CLOCK_CALIBRATION_VERSION;
+    gMeClockCalibration.recordCount = TH07_PSP_ME_RENDER_MAX_RECORDS;
+    gMeClockCalibration.inputStride = 64u;
+    gMeClockCalibration.repeats = ME_CLOCK_CALIBRATION_REPEATS;
+    gMeClockCalibration.samples = ME_CLOCK_CALIBRATION_SAMPLES;
+    gMeClockCalibration.policy = th07_psp_me_clock_make_policy(0u, 0u, 0u);
+    gMeClockCalibrationActive = 0u;
+#endif
 #if defined(TH07_PSP_ME_BULLET_FAST_UPDATE)
     memset(&gMeBulletFastOutputArea, 0,
            sizeof(gMeBulletFastOutputArea));
@@ -17603,11 +17965,20 @@ int th07_psp_me_audio_init(void)
 #else
     th07_psp_boot_notef("MECC BGM MODEL %d", model);
 #endif
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+    if (model < ME_BGM_MINIMUM_MODEL)
+    {
+        th07_psp_boot_notef("MECC GATE OFF MODEL %d (SLIM+ MIN 1)", model);
+        return 0;
+    }
+    th07_psp_boot_notef("MECC GATE PASS MODEL %d (SLIM+)", model);
+#else
     if (model != ME_BGM_REQUIRED_MODEL)
     {
         th07_psp_boot_note("MECC BGM OFF (MODEL != PSP-3000)");
         return 0;
     }
+#endif
 #endif
 
 #if defined(TH07_PSP_MECC_AUDIO_4M)
@@ -17732,6 +18103,34 @@ int th07_psp_me_audio_init(void)
         th07_psp_me_audio_shutdown();
         return -1;
     }
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+    const int clockCalibration = me_clock_calibrate();
+    th07_psp_boot_notef(
+        "GO-ME2 CAL %s SC%lu/%lu/%lu MERT%lu/%lu/%lu R%lu Q%lu B%lu V%lu S%lu",
+        clockCalibration > 0
+            ? (gMeClockCalibration.policy.snappedToUnity
+                   ? "PASS-UNITY" : "PASS-SCALED")
+            : (clockCalibration == 0 ? "REJECT-UNITY" : "FATAL"),
+        (unsigned long)gMeClockCalibration.scMinUs,
+        (unsigned long)gMeClockCalibration.scMedianUs,
+        (unsigned long)gMeClockCalibration.scMaxUs,
+        (unsigned long)gMeClockCalibration.meMinUs,
+        (unsigned long)gMeClockCalibration.meMedianUs,
+        (unsigned long)gMeClockCalibration.meMaxUs,
+        (unsigned long)gMeClockCalibration.policy.rawRatioPermille,
+        (unsigned long)gMeClockCalibration.policy.meShareQ16,
+        (unsigned long)gMeClockCalibration.policy.admissionBudgetTicks,
+        (unsigned long)gMeClockCalibration.policy.vetoPercent,
+        (unsigned long)gMeClockCalibration.samples);
+    if (clockCalibration < 0)
+    {
+        __atomic_store_n(&gMeActive, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&gMeUnsafe, 1, __ATOMIC_RELEASE);
+        th07_psp_boot_note("GO-ME2 CAL OWNERSHIP NG -> COLD REBOOT");
+        th07_psp_me_audio_shutdown();
+        return -1;
+    }
+#endif
 #if defined(TH07_PSP_ME_RENDER_CORRECTNESS)
     int renderStreamSelftestPassed;
 #if defined(TH07_PSP_ME_ITEM_RENDER_STREAM)

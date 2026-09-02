@@ -20,6 +20,9 @@
 #if defined(TH07_PSP)
 #include "fileio.hpp"
 #endif
+#if defined(TH07_PSP_PERF_A1_SAME)
+#include "graphics/PspGuGraphics.hpp"
+#endif
 
 #define GET_INT_PTR(enemy, argIdx) GetVar(enemy, &instr->args[argIdx].i, instr->paramMask, argIdx)
 
@@ -794,6 +797,9 @@ void EclManager::BeginSpellcard(Enemy *enemy, EclRawInstr *instr)
         spellcardName[i] = (u8)spellcardName[i] ^ 0xaa;
     }
     g_Gui.ShowSpellcard(instr->args[0].s[0], spellcardName);
+#if defined(TH07_PSP_PERF_A1_SAME)
+    Th07PspPerfSetA1SameReason(TH07_PSP_PERF_A1_REASON_BEGIN_SPELL);
+#endif
     g_BulletManager.RemoveAllBullets(1);
     g_Stage.spellCardState = 1;
     g_Stage.ticksSinceSpellcardStarted = 0;
@@ -886,7 +892,13 @@ void EclManager::EndSpellcard()
         g_Gui.EndEnemySpellcard();
         if (g_EnemyManager.spellcardInfo.isActive == 1)
         {
+#if defined(TH07_PSP_PERF_A1_SAME)
+            Th07PspPerfSetA1SameReason(TH07_PSP_PERF_A1_REASON_SPELL_END);
+#endif
             score = g_BulletManager.DespawnBullets(8000, 1);
+#if defined(TH07_PSP_PERF_A1_SAME)
+            Th07PspPerfSetA1SameReason(TH07_PSP_PERF_A1_REASON_SPELL_END);
+#endif
             score = g_EnemyManager.RemoveAllEnemies(8000, score);
             if (score != 0)
             {
@@ -1911,6 +1923,10 @@ restart:
                 }
                 break;
             case 94:
+#if defined(TH07_PSP_PERF_A1_SAME)
+                Th07PspPerfSetA1SameReason(
+                    TH07_PSP_PERF_A1_REASON_ECL_ENEMY_CLEAR);
+#endif
                 g_EnemyManager.RemoveAllEnemies(8000, 0);
                 break;
             case 128:
@@ -1920,6 +1936,10 @@ restart:
                 enemy->vms[instr->args[0].i].pendingInterrupt = instr->args[1].s[0];
                 break;
             case 80:
+#if defined(TH07_PSP_PERF_A1_SAME)
+                Th07PspPerfSetA1SameReason(
+                    TH07_PSP_PERF_A1_REASON_ECL_BULLET_ITEM);
+#endif
                 g_BulletManager.RemoveAllBullets(1);
                 break;
             case 81:
@@ -1984,6 +2004,10 @@ restart:
                 enemy->invincibilityTimer = GET_INT_VALUE(enemy, 0);
                 break;
             case 143:
+#if defined(TH07_PSP_PERF_A1_SAME)
+                Th07PspPerfSetA1SameReason(
+                    TH07_PSP_PERF_A1_REASON_ECL_RADIUS);
+#endif
                 g_BulletManager.RemoveBulletsInRadius(&enemy->position, GET_FLOAT_VALUE(enemy, 0));
                 break;
             case 145:
@@ -1994,6 +2018,10 @@ restart:
                 }
                 break;
             case 146:
+#if defined(TH07_PSP_PERF_A1_SAME)
+                Th07PspPerfSetA1SameReason(
+                    TH07_PSP_PERF_A1_REASON_ECL_BULLET_FADE);
+#endif
                 g_BulletManager.RemoveAllBullets(0);
                 break;
             case 149:

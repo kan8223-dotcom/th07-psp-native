@@ -17,6 +17,9 @@
 #endif
 #include "audio_me.h"
 #include "fileio.hpp"
+#if defined(TH07_PSP_PERF_SFX_MIX)
+#include "sfx_mixer_telemetry.h"
+#endif
 #if defined(TH07_PSP_SHIKIGAMI)
 #include "shikigami_th07.h"
 #endif
@@ -208,6 +211,26 @@ volatile u32 gSePowerIgnored;
 volatile u32 gSePowerActive;
 u32 gSfxRequestCounts[kSfxLogicalCount];
 u32 gSfxCooldown[kSfxLogicalCount];
+
+#if defined(TH07_PSP_PERF_SFX_MIX)
+constexpr u32 kSfxMixerMeasureSamples = 512u;
+
+struct SfxMixerMeasureSample
+{
+    volatile u32 sequence;
+    volatile u32 elapsedUs;
+    volatile u32 activeVoices;
+    volatile u32 divisor;
+    volatile u32 limitedSamples;
+};
+
+SfxMixerMeasureSample gSfxMixerMeasureSamples[kSfxMixerMeasureSamples];
+u32 gSfxMixerMeasureSortScratch[kSfxMixerMeasureSamples];
+volatile u32 gSfxMixerMeasureCommitted;
+volatile u32 gSfxMixerMeasureTriggerTotal;
+u32 gSfxMixerMeasureReadSequence;
+u32 gSfxMixerMeasureReadTriggers;
+#endif
 
 volatile u32 gReadFrame;
 volatile u32 gWriteFrame;
@@ -441,6 +464,119 @@ u8 EncodeMuLaw8(i32 sample)
 }
 #endif
 
+#if defined(TH07_PSP_PERF_SFX_MIX)
+void RecordSfxMixerMeasure(u32 elapsedUs, u32 activeVoices,
+                           u32 divisor, u32 limitedSamples)
+{
+    // MixSfxBlock has exactly one writer (the audio output thread).  Publish
+    // the payload first and its one-based sequence last; the renderer never
+    // waits on this real-time thread and consumes only committed entries.
+    const u32 sequence =
+        __atomic_load_n(&gSfxMixerMeasureCommitted, __ATOMIC_RELAXED);
+    SfxMixerMeasureSample *const sample =
+        &gSfxMixerMeasureSamples[sequence % kSfxMixerMeasureSamples];
+    __atomic_store_n(&sample->elapsedUs, elapsedUs, __ATOMIC_RELAXED);
+    __atomic_store_n(&sample->activeVoices, activeVoices, __ATOMIC_RELAXED);
+    __atomic_store_n(&sample->divisor, divisor, __ATOMIC_RELAXED);
+    __atomic_store_n(&sample->limitedSamples, limitedSamples, __ATOMIC_RELAXED);
+    __atomic_store_n(&sample->sequence, sequence + 1u, __ATOMIC_RELEASE);
+    __atomic_store_n(&gSfxMixerMeasureCommitted, sequence + 1u,
+                     __ATOMIC_RELEASE);
+}
+
+void RecordSfxMixerTriggers(u32 triggers)
+{
+    if (triggers == 0u)
+    {
+        return;
+    }
+    __atomic_fetch_add(&gSfxMixerMeasureTriggerTotal, triggers,
+                       __ATOMIC_RELAXED);
+}
+
+void ResetSfxMixerMeasureAll()
+{
+    std::memset(gSfxMixerMeasureSamples, 0,
+                sizeof(gSfxMixerMeasureSamples));
+    std::memset(gSfxMixerMeasureSortScratch, 0,
+                sizeof(gSfxMixerMeasureSortScratch));
+    __atomic_store_n(&gSfxMixerMeasureCommitted, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&gSfxMixerMeasureTriggerTotal, 0u, __ATOMIC_RELEASE);
+    gSfxMixerMeasureReadSequence = 0u;
+    gSfxMixerMeasureReadTriggers = 0u;
+}
+
+void TakeSfxMixerMeasure(Th07PspSfxMixerWindow *window)
+{
+    if (!window)
+    {
+        return;
+    }
+    std::memset(window, 0, sizeof(*window));
+
+    const u32 endSequence =
+        __atomic_load_n(&gSfxMixerMeasureCommitted, __ATOMIC_ACQUIRE);
+    const u32 endTriggers =
+        __atomic_load_n(&gSfxMixerMeasureTriggerTotal, __ATOMIC_ACQUIRE);
+    u32 startSequence = gSfxMixerMeasureReadSequence;
+    const u32 span = endSequence - startSequence;
+    window->trigger_count = endTriggers - gSfxMixerMeasureReadTriggers;
+    gSfxMixerMeasureReadSequence = endSequence;
+    gSfxMixerMeasureReadTriggers = endTriggers;
+
+    if (span > kSfxMixerMeasureSamples)
+    {
+        window->sample_overflow = span - kSfxMixerMeasureSamples;
+        startSequence = endSequence - kSfxMixerMeasureSamples;
+    }
+
+    for (u32 sequence = startSequence; sequence != endSequence; ++sequence)
+    {
+        const u32 expected = sequence + 1u;
+        SfxMixerMeasureSample *const sample =
+            &gSfxMixerMeasureSamples[sequence % kSfxMixerMeasureSamples];
+        if (__atomic_load_n(&sample->sequence, __ATOMIC_ACQUIRE) != expected)
+        {
+            ++window->sample_overflow;
+            continue;
+        }
+        const u32 elapsedUs =
+            __atomic_load_n(&sample->elapsedUs, __ATOMIC_RELAXED);
+        const u32 activeVoices =
+            __atomic_load_n(&sample->activeVoices, __ATOMIC_RELAXED);
+        const u32 divisor =
+            __atomic_load_n(&sample->divisor, __ATOMIC_RELAXED);
+        const u32 limitedSamples =
+            __atomic_load_n(&sample->limitedSamples, __ATOMIC_RELAXED);
+        if (__atomic_load_n(&sample->sequence, __ATOMIC_ACQUIRE) != expected)
+        {
+            ++window->sample_overflow;
+            continue;
+        }
+
+        const u32 ordinal = window->mix_calls++;
+        window->mix_total_us += elapsedUs;
+        window->mix_max_us = std::max(window->mix_max_us, elapsedUs);
+        window->active_voice_visits += activeVoices;
+        window->active_voice_max =
+            std::max(window->active_voice_max, activeVoices);
+        window->divisor_one_calls += divisor == 1u ? 1u : 0u;
+        window->limited_samples += limitedSamples;
+        gSfxMixerMeasureSortScratch[ordinal] = elapsedUs;
+    }
+
+    if (window->mix_calls != 0u)
+    {
+        window->mix_average_us = window->mix_total_us / window->mix_calls;
+        std::sort(gSfxMixerMeasureSortScratch,
+                  gSfxMixerMeasureSortScratch + window->mix_calls);
+        const u32 p99Index =
+            (window->mix_calls * 99u + 99u) / 100u - 1u;
+        window->mix_p99_us = gSfxMixerMeasureSortScratch[p99Index];
+    }
+}
+#endif
+
 void ResetSfxVoices()
 {
     __atomic_store_n(&gPendingSfxMaskLow, 0, __ATOMIC_RELEASE);
@@ -627,6 +763,10 @@ __attribute__((noinline)) bool MixSfxBlock(i16 *block, u32 frames)
     gSfxScTotalMixUs += mixElapsedUs;
     gSfxHeadroomLimitedSamples += limitedSamples;
     ++gSfxMixedBlocks;
+#if defined(TH07_PSP_PERF_SFX_MIX)
+    RecordSfxMixerMeasure(mixElapsedUs, mixJob.inputCount,
+                          mixJob.mixDivisor, limitedSamples);
+#endif
     return true;
 }
 #endif
@@ -1293,6 +1433,20 @@ void RemoveFirstCommand(SoundPlayer *player)
 }
 } // namespace
 
+#if defined(TH07_PSP_PERF_SFX_MIX)
+extern "C" void th07_psp_sfx_mixer_window_take(
+    Th07PspSfxMixerWindow *window)
+{
+    TakeSfxMixerMeasure(window);
+}
+
+extern "C" void th07_psp_sfx_mixer_window_discard(void)
+{
+    Th07PspSfxMixerWindow discarded{};
+    TakeSfxMixerMeasure(&discarded);
+}
+#endif
+
 #if defined(TH07_PSP_MECC_AUDIO_4M)
 extern "C" void th07_psp_audio4m_latch_fatal(const char *message)
 {
@@ -1907,6 +2061,9 @@ ZunResult SoundPlayer::InitSoundBuffers()
     gSfxHeadroomLimitedSamples = 0;
     gSfxScTotalMixUs = 0;
     gSfxScMaxMixUs = 0;
+#if defined(TH07_PSP_PERF_SFX_MIX)
+    ResetSfxMixerMeasureAll();
+#endif
     gSePowerStarts = 0;
     gSePowerEnds = 0;
     gSePowerIgnored = 0;
@@ -1976,6 +2133,9 @@ ZunResult SoundPlayer::InitSoundBuffers()
 #endif
 #else
     th07_psp_boot_note("audio mix SC wide SFX residual headroom");
+#endif
+#if defined(TH07_PSP_SFX_DIV1_FAST)
+    th07_psp_boot_note("A5 SCALAR DIV1 FAST ON / GENERIC DIV FALLBACK");
 #endif
     return ZUN_SUCCESS;
 }
@@ -2184,6 +2344,9 @@ i32 SoundPlayer::ProcessQueues()
                     static_cast<unsigned int>(gSfxGainQ15[logical]) << 1);
                 queued = -1;
                 ++gSfxTriggerCount;
+#if defined(TH07_PSP_PERF_SFX_MIX)
+                RecordSfxMixerTriggers(1u);
+#endif
             }
         }
 #else
@@ -2215,8 +2378,15 @@ i32 SoundPlayer::ProcessQueues()
                 __atomic_fetch_or(&gPendingSfxMaskHigh, pendingHigh, __ATOMIC_RELEASE);
             }
             // Only the game thread writes this diagnostic counter.
+#if defined(TH07_PSP_PERF_SFX_MIX)
+            const u32 triggers = static_cast<u32>(__builtin_popcount(pendingLow) +
+                                                   __builtin_popcount(pendingHigh));
+            gSfxTriggerCount += triggers;
+            RecordSfxMixerTriggers(triggers);
+#else
             gSfxTriggerCount += static_cast<u32>(__builtin_popcount(pendingLow) +
                                                   __builtin_popcount(pendingHigh));
+#endif
         }
 #endif
     }

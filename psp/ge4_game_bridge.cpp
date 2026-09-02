@@ -26,7 +26,11 @@ constexpr unsigned int kSetSizeNid = 0x703b997bu;
 constexpr unsigned int kTwoMiB = 0x00200000u;
 constexpr unsigned int kFourMiB = 0x00400000u;
 constexpr unsigned int kExpectedEdramBase = 0x04000000u;
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+constexpr int kMinimumModel = 1;
+#else
 constexpr int kRequiredModel = 3;
+#endif
 constexpr unsigned int kMaxGePolls = 50000000u;
 constexpr unsigned long long kGeTimeoutUs = 5000000ull;
 constexpr unsigned int kGePollDelayUs = 50u;
@@ -77,8 +81,13 @@ bool LoadWrapper()
     gWrapper = pspSdkLoadStartModule(kWrapperPath, PSP_MEMORY_PARTITION_KERNEL);
     if (gWrapper < 0)
     {
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+        th07_psp_boot_notef("GE4 inactive: Slim+ wrapper load rc=%08x",
+                            static_cast<unsigned int>(gWrapper));
+#else
         th07_psp_boot_notef("GE4 inactive: proven wrapper load rc=%08x",
                             static_cast<unsigned int>(gWrapper));
+#endif
         return false;
     }
     return true;
@@ -241,6 +250,21 @@ extern "C" int th07_psp_ge4_prepare()
 
     const int model = static_cast<int>(modelCall.value);
     const unsigned int hwSize = hwSizeCall.value;
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+    if (model < kMinimumModel || base != kExpectedEdramBase ||
+        hwSize != kFourMiB || sizeBefore != kTwoMiB)
+    {
+        th07_psp_boot_notef(
+            "GE4 GATE OFF M%d/MIN1 B%08x/04000000 H%08x/00400000 "
+            "S%08x/00200000",
+            model, base, hwSize, sizeBefore);
+        FailClosedCleanup();
+        return 0;
+    }
+    th07_psp_boot_notef(
+        "GE4 GATE PASS M%d B%08x H%08x S%08x (SLIM+)",
+        model, base, hwSize, sizeBefore);
+#else
     if (model != kRequiredModel || base != kExpectedEdramBase ||
         hwSize != kFourMiB || sizeBefore != kTwoMiB)
     {
@@ -249,6 +273,7 @@ extern "C" int th07_psp_ge4_prepare()
         FailClosedCleanup();
         return 0;
     }
+#endif
 
     const int lockResult = scePowerLock(0);
     if (lockResult < 0)
@@ -266,7 +291,11 @@ extern "C" int th07_psp_ge4_prepare()
     }
     __atomic_store_n(&gPowerLocked, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&gPrepared, 1, __ATOMIC_RELEASE);
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+    th07_psp_boot_note("GE4 prepared: Slim+ gate wrapper resolved at 2MiB");
+#else
     th07_psp_boot_note("GE4 prepared: frozen wrapper resolved at 2MiB");
+#endif
     return 1;
 }
 
@@ -335,7 +364,11 @@ extern "C" int th07_psp_ge4_enable_after_gu_idle()
     }
 
     __atomic_store_n(&gActive, 1, __ATOMIC_RELEASE);
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+    th07_psp_boot_note("GE4 ACTIVE Slim+ upper 2MiB PORTRAIT lock-shared");
+#else
     th07_psp_boot_note("GE4 ACTIVE model3 upper 2MiB PORTRAIT lock-shared");
+#endif
     return 1;
 }
 

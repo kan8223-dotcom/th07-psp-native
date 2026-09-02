@@ -75,6 +75,18 @@
 #if defined(TH07_PSP_ME_BULLET_SEED_SOA) && defined(TH07_PSP_1000)
 #error "D1 SoA is PSP-2000+ research only"
 #endif
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION) && \
+    !defined(TH07_PSP_ME_RENDER_WORKER)
+#error "GO-ME2 clock calibration requires the ME render worker"
+#endif
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION) && \
+    !defined(TH07_PSP_ME_ADAPTIVE_AUX_RENDER)
+#error "GO-ME2 clock calibration requires adaptive auxiliary admission"
+#endif
+
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+#include "me_clock_policy.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -1587,6 +1599,32 @@ typedef struct Th07PspMeRenderBenchSummary
     unsigned int roundTripP99Us;
     unsigned int ready;
 } Th07PspMeRenderBenchSummary;
+
+#if defined(TH07_PSP_ME_CLOCK_CALIBRATION)
+typedef struct Th07PspMeClockCalibration
+{
+    unsigned int version;
+    unsigned int recordCount;
+    unsigned int inputStride;
+    unsigned int repeats;
+    unsigned int samples;
+    unsigned int scMinUs;
+    unsigned int scMedianUs;
+    unsigned int scMaxUs;
+    unsigned int meMinUs;
+    unsigned int meMedianUs;
+    unsigned int meMaxUs;
+    unsigned int mismatchWords;
+    unsigned int guardFaults;
+    unsigned int valid;
+    Th07PspMeClockPolicy policy;
+} Th07PspMeClockCalibration;
+
+void th07_psp_me_clock_calibration_snapshot(
+    Th07PspMeClockCalibration *snapshot);
+unsigned int th07_psp_me_clock_admission_budget_ticks(void);
+unsigned int th07_psp_me_clock_veto_percent(void);
+#endif
 
 // Nonblocking one-job API for M-ME0B shadow work.  begin performs the required
 // SC cache handoff but never waits for ME.  probe is a single status read.

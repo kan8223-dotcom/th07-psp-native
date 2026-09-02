@@ -193,7 +193,11 @@ start:
     if (meRenderInit == 0)
     {
         Th07PspMeRenderSetAvailable(false);
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+        th07_psp_boot_note("MERW M0 OFF (ME INIT R0; SEE PRIOR MECC REASON)");
+#else
         th07_psp_boot_note("MERW M0 OFF (not real PSP-3000)");
+#endif
     }
     else
     {
@@ -237,6 +241,9 @@ start:
             th07_psp_boot_note("MERW M0A FAILED -> STOP / COLD REBOOT");
             goto stop;
         }
+#if defined(TH07_PSP_SLIMPLUS_ME_GATE)
+        th07_psp_boot_note("MERW M0 PASS (SLIM+ GATE; SELFTEST PASS)");
+#endif
         Th07PspMeRenderSetAvailable(true);
 #if defined(TH07_PSP_ME_RENDER_CORRECTNESS)
 #if defined(TH07_PSP_ME_RENDER_GE_CONSUME)

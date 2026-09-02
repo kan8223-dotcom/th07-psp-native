@@ -21,6 +21,21 @@ SEPARATE_HISTOGRAM_RE = re.compile(r"(?:^|\s)H([0-9])(\d+)(?=\s|$)")
 
 ACCEPT_PROFILES = {"ACCEPT", "EMPTY_M2", "EMPTY_M3"}
 M3_SAMPLE_STRIDE = 32
+A1_SAME_LABELS = ("RAB", "DSP", "RAD", "RAE", "BUP")
+A1_SAME_REASON_MASKS = {
+    "RAB": 0x00000F52,
+    "DSP": 0x0000000C,
+    "RAD": 0x00000080,
+    "RAE": 0x0000022C,
+    "BUP": 0x00001000,
+}
+A1_SAME_MODE_MASKS = {
+    "RAB": 0x0000000B,
+    "DSP": 0x00000001,
+    "RAD": 0x00000001,
+    "RAE": 0x0000000B,
+    "BUP": 0x00000001,
+}
 
 
 def _unique_numeric_values(
@@ -59,6 +74,8 @@ def _record_kind(line: str) -> str:
         return "end"
     if "OVERFLOW" in words:
         return "overflow"
+    if "A1S" in words:
+        return "a1s"
     if "ACCEPT" in words:
         return "accept"
     if "M3S" in words:
@@ -445,6 +462,138 @@ def _validate_apb_line(
             errors.append(f"line {line_number}: APB attempts exceed N{frames}")
 
 
+def _validate_a1s_line(
+    line: str, line_number: int, errors: list[str]
+) -> dict[str, object] | None:
+    tuple_pattern = (
+        r"(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/"
+        r"([0-9A-Fa-f]{8})/([0-9A-Fa-f]{8})"
+    )
+    mask_matches = re.findall(r"(?:^|\s)K([0-9A-Fa-f]{2})(?=\s|$)", line)
+    active_mask: int | None = None
+    if not mask_matches:
+        errors.append(f"line {line_number}: A1S missing active-kind mask K")
+    elif len(mask_matches) > 1:
+        errors.append(f"line {line_number}: A1S duplicate active-kind mask K")
+    else:
+        active_mask = int(mask_matches[0], 16)
+        if active_mask & ~((1 << len(A1_SAME_LABELS)) - 1):
+            errors.append(f"line {line_number}: A1S active-kind mask is out of range")
+
+    parsed: dict[str, dict[str, int]] = {}
+    field_names = (
+        "calls", "elapsed_us", "eligible", "affected", "item_attempts",
+        "popups", "auxiliary", "reasons", "modes",
+    )
+    for kind, label in enumerate(A1_SAME_LABELS):
+        matches = re.findall(
+            rf"(?:^|\s){label}{tuple_pattern}(?=\s|$)", line
+        )
+        active = active_mask is not None and (active_mask & (1 << kind)) != 0
+        if not matches and active:
+            errors.append(f"line {line_number}: A1S K marks missing {label}")
+            continue
+        if len(matches) > 1:
+            errors.append(f"line {line_number}: A1S duplicate {label}")
+            continue
+        if not matches:
+            parsed[label] = {name: 0 for name in field_names}
+            continue
+        if not active:
+            errors.append(f"line {line_number}: A1S unmasked {label} tuple")
+        raw_values = matches[0]
+        values = {
+            name: int(raw, 16) if name in {"reasons", "modes"} else int(raw)
+            for name, raw in zip(field_names, raw_values)
+        }
+        parsed[label] = values
+
+    status = _raw_values(line, ("G", "O"), line_number, "A1S", errors)
+    if status.get("G") != 1:
+        errors.append(f"line {line_number}: A1S observer integrity failed")
+    if status.get("O") != 0:
+        errors.append(f"line {line_number}: A1S counter overflow")
+
+    for kind, label in enumerate(A1_SAME_LABELS):
+        if label not in parsed:
+            continue
+        values = parsed[label]
+        active = active_mask is not None and (active_mask & (1 << kind)) != 0
+        calls = values["calls"]
+        payload = sum(
+            values[name]
+            for name in (
+                "elapsed_us", "eligible", "affected", "item_attempts",
+                "popups", "auxiliary", "reasons", "modes",
+            )
+        )
+        if calls == 0 and payload != 0:
+            errors.append(
+                f"line {line_number}: A1S {label} has payload without calls"
+            )
+        if calls != 0:
+            if values["reasons"] == 0:
+                errors.append(f"line {line_number}: A1S {label} has no reason")
+            if values["modes"] == 0:
+                errors.append(f"line {line_number}: A1S {label} has no mode")
+        elif active:
+            errors.append(f"line {line_number}: A1S K marks zero-call {label}")
+        unexpected_reasons = values["reasons"] & ~A1_SAME_REASON_MASKS[label]
+        if unexpected_reasons:
+            errors.append(
+                f"line {line_number}: A1S {label} unexpected reason bits "
+                f"0x{unexpected_reasons:08X}"
+            )
+        unexpected_modes = values["modes"] & ~A1_SAME_MODE_MASKS[label]
+        if unexpected_modes:
+            errors.append(
+                f"line {line_number}: A1S {label} unexpected mode bits "
+                f"0x{unexpected_modes:08X}"
+            )
+        if values["affected"] > values["eligible"]:
+            errors.append(
+                f"line {line_number}: A1S {label} affected exceeds eligible"
+            )
+
+    if parsed and not any(values["calls"] for values in parsed.values()):
+        errors.append(f"line {line_number}: sparse A1S line has no event calls")
+    if "RAD" in parsed and (
+        parsed["RAD"]["affected"] != parsed["RAD"]["item_attempts"]
+        or parsed["RAD"]["popups"] != 0
+        or parsed["RAD"]["auxiliary"] != 0
+    ):
+        errors.append(f"line {line_number}: A1S RAD side-effect closure failed")
+    if "RAE" in parsed and (
+        parsed["RAE"]["item_attempts"] != parsed["RAE"]["popups"]
+    ):
+        errors.append(f"line {line_number}: A1S RAE item/popup closure failed")
+    if "BUP" in parsed and (
+        parsed["BUP"]["affected"] != parsed["BUP"]["item_attempts"]
+        or parsed["BUP"]["popups"] != 0
+        or (
+            parsed["BUP"]["calls"] != 0
+            and parsed["BUP"]["auxiliary"] < parsed["BUP"]["calls"]
+        )
+    ):
+        errors.append(f"line {line_number}: A1S BUP bomb closure failed")
+    if "DSP" in parsed and parsed["DSP"]["popups"] > parsed["DSP"]["affected"]:
+        errors.append(f"line {line_number}: A1S DSP popups exceed affected bullets")
+
+    if (
+        len(parsed) != len(A1_SAME_LABELS)
+        or active_mask is None
+        or "G" not in status
+        or "O" not in status
+    ):
+        return None
+    return {
+        "line_number": line_number,
+        "active_mask": active_mask,
+        "tuples": parsed,
+        **status,
+    }
+
+
 def analyze(
     lines: Iterable[str], expected: str, require_end: bool = True,
     enforce_performance: bool | None = None,
@@ -457,6 +606,8 @@ def analyze(
         "m3_windows": 0,
         "m3_sample_windows": 0,
         "accept_windows": 0,
+        "a1_same_windows": 0,
+        "a1_same_samples": [],
         "accept_eligible_windows": 0,
         "accept_stage_sequence": [],
         "accept_samples": [],
@@ -483,7 +634,7 @@ def analyze(
         marker = {
             "end": "END", "accept": "ACCEPT", "m3": "M3", "m3s": "M3S",
             "m2i": "M2I", "apb": "APB", "draw": "DRAW", "hist": "HIST",
-            "ownmap": "OWNMAP",
+            "ownmap": "OWNMAP", "a1s": "A1S",
         }.get(kind)
         if marker is not None and len(
             re.findall(rf"(?:^|\s){marker}(?=\s|$)", line)
@@ -658,7 +809,13 @@ def analyze(
             elif profile in ACCEPT_PROFILES:
                 result["accept_windows"] = int(result["accept_windows"]) + kinds.count("accept")
                 _exact_count(window_records, "accept", 1, label, errors)
-                unexpected = [kind for kind in kinds if kind != "accept"]
+                if kinds.count("a1s") > 1:
+                    errors.append(f"{label}: surplus A1S lines")
+                if "a1s" in kinds and (
+                    "accept" not in kinds or kinds.index("a1s") < kinds.index("accept")
+                ):
+                    errors.append(f"{label}: A1S must follow PERF ACCEPT")
+                unexpected = [kind for kind in kinds if kind not in {"accept", "a1s"}]
                 if unexpected:
                     errors.append(f"{label}: unexpected {','.join(unexpected)} line(s)")
             else:
@@ -762,6 +919,16 @@ def analyze(
                         )
                     except (KeyError, ValueError):
                         errors.append(f"line {line_number}: malformed PERF-ACCEPT line")
+                elif record["kind"] == "a1s":
+                    a1_sample = _validate_a1s_line(line, line_number, errors)
+                    if a1_sample is not None:
+                        a1_sample.update(
+                            {"profile": profile, "run_id": run_id, "window": window}
+                        )
+                        a1_samples = result["a1_same_samples"]
+                        assert isinstance(a1_samples, list)
+                        a1_samples.append(a1_sample)
+                        result["a1_same_windows"] = int(result["a1_same_windows"]) + 1
 
             if profile == "M3":
                 m3_records = [record for record in window_records if record["kind"] == "m3"]
@@ -1020,7 +1187,8 @@ def main() -> int:
         print(
             f"valid={int(bool(result['valid']))} m2={result['m2_windows']} "
             f"m3={result['m3_windows']}/{result['m3_sample_windows']} "
-            f"accept={result['accept_windows']} end={result['end_markers']}"
+            f"accept={result['accept_windows']} a1s={result['a1_same_windows']} "
+            f"end={result['end_markers']}"
         )
         for error in result["errors"]:  # type: ignore[union-attr]
             print(f"ERROR: {error}", file=sys.stderr)

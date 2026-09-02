@@ -51,6 +51,11 @@ void UnlockBootLog(bool locked)
 // partition; both sizes cover a complete six-stage run measured in this repo.
 #if defined(TH07_PSP_1000)
 constexpr std::size_t kPerfLogBufferBytes = 128u * 1024u;
+#elif defined(TH07_PSP_PERF_SFX_MIX)
+// A5-MEASURE adds one fail-closed attribution line per ACCEPT window.  It is
+// observer-only, so reserve enough bounded RAM for the complete six-stage run
+// instead of accepting a truncated hardware result.
+constexpr std::size_t kPerfLogBufferBytes = 256u * 1024u;
 #elif defined(TH07_PSP_PERF_ACCEPT)
 // RID29 missed the end of a six-stage ACCEPT run by eleven lines.  Keep the
 // PSP-1000 contract at 128 KiB, but give the high-memory target one bounded
@@ -92,7 +97,9 @@ uint32_t PerfLogCrc32(const char *data, std::size_t bytes)
 
 const char *PerfProfileToken()
 {
-#if defined(TH07_PSP_PERF_AB_COMPARE) && \
+#if defined(TH07_PSP_PERF_SFX_MIX)
+    return "A5M";
+#elif defined(TH07_PSP_PERF_AB_COMPARE) && \
     defined(TH07_PSP_ME_RENDER_WORKER)
     return "ABME";
 #elif defined(TH07_PSP_PERF_AB_COMPARE)

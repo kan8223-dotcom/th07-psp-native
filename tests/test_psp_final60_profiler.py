@@ -223,7 +223,7 @@ class PspFinal60ProfilerTests(unittest.TestCase):
         )[1]
         self.assertIn("AVGUS%u MAXUS%u P99US%u", accept)
 
-    def test_perf_accept_is_one_compact_line_per_window(self) -> None:
+    def test_perf_accept_is_one_compact_line_plus_guarded_sparse_a1_event(self) -> None:
         perf = function_body(self.graphics, "void ReportPerfWindow")
         accept = perf.split("#elif defined(TH07_PSP_PERF_ACCEPT)", 1)[1].split(
             "        ResetPerfWindowCounters();", 1
@@ -231,8 +231,19 @@ class PspFinal60ProfilerTests(unittest.TestCase):
         # Legacy detail profiles may emit their owned DENSE/MERW lines above,
         # while the final ACCEPT record itself remains exactly one line.  The
         # RID30 A/B branch deliberately drains those counters without logging.
+        # A1-SAME may add one separate event-only record; feature-off source
+        # retains the frozen one-line behavior.
         format_tail = accept[accept.index("const unsigned int critical10") :]
-        self.assertEqual(format_tail.count("th07_psp_perf_note("), 1)
+        a5_off_tail = without_preprocessor_blocks(
+            format_tail, "#if defined(TH07_PSP_PERF_SFX_MIX)"
+        )
+        default_tail = without_preprocessor_blocks(
+            a5_off_tail, "#if defined(TH07_PSP_PERF_A1_SAME)"
+        )
+        self.assertEqual(default_tail.count("th07_psp_perf_note("), 1)
+        self.assertEqual(a5_off_tail.count("th07_psp_perf_note("), 2)
+        self.assertEqual(format_tail.count("th07_psp_perf_note("), 3)
+        self.assertIn("if (a1SameActivity)", format_tail)
         self.assertIn("PERF ACCEPT", format_tail)
         self.assertIn("PERF DENSE", accept)
         self.assertIn("th07_psp_perf_note(merwMessage)", accept)

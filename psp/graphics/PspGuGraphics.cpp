@@ -30,6 +30,9 @@
 #include "audio_me.h"
 #include "fileio.hpp"
 #include "ge_portrait_telemetry.h"
+#if defined(TH07_PSP_PERF_SFX_MIX)
+#include "sfx_mixer_telemetry.h"
+#endif
 #if defined(TH07_PSP_GE_PORTRAIT_CACHE)
 #include "ge4_game_bridge.hpp"
 #endif
@@ -179,6 +182,147 @@ unsigned int gPerfDrawOutOfRange = 0;
 unsigned long long gPerfPlayerShotFrontendUs = 0;
 unsigned long long gPerfPlayerShotActiveCount = 0;
 unsigned int gPerfPlayerShotFrontendCalls = 0;
+#endif
+#if defined(TH07_PSP_PERF_A1_SAME)
+struct PerfA1SameAggregate
+{
+    unsigned long long elapsedUs;
+    unsigned int calls;
+    unsigned int eligible;
+    unsigned int affected;
+    unsigned int itemAttempts;
+    unsigned int popups;
+    unsigned int auxiliary;
+    unsigned int reasons;
+    unsigned int modes;
+};
+
+PerfA1SameAggregate gPerfA1Same[TH07_PSP_PERF_A1_KIND_COUNT]{};
+unsigned int gPerfA1SameNextReason = 0;
+unsigned int gPerfA1SameInvalid = 0;
+unsigned int gPerfA1SameOverflow = 0;
+
+void PerfA1SameAdd(unsigned int &total, unsigned int value)
+{
+    if (value > 0xffffffffu - total)
+    {
+        total = 0xffffffffu;
+        gPerfA1SameOverflow = 1;
+        return;
+    }
+    total += value;
+}
+
+void PerfA1SameAdd(unsigned long long &total, unsigned long long value)
+{
+    if (value > ~0ull - total)
+    {
+        total = ~0ull;
+        gPerfA1SameOverflow = 1;
+        return;
+    }
+    total += value;
+}
+
+bool PerfA1SameHasActivity()
+{
+    if (gPerfA1SameInvalid != 0u || gPerfA1SameOverflow != 0u)
+    {
+        return true;
+    }
+    for (const PerfA1SameAggregate &entry : gPerfA1Same)
+    {
+        if (entry.calls != 0u)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+int PerfA1SameFormat(char *message, std::size_t capacity)
+{
+    if (!message || capacity == 0u)
+    {
+        return -1;
+    }
+    unsigned int activeMask = 0u;
+    for (unsigned int kind = 0u; kind < TH07_PSP_PERF_A1_KIND_COUNT; ++kind)
+    {
+        if (gPerfA1Same[kind].calls != 0u)
+        {
+            activeMask |= 1u << kind;
+        }
+    }
+    int length = std::snprintf(message, capacity, "PERF A1S K%02X", activeMask);
+    const auto append = [message, capacity](
+                            int currentLength, const char *label,
+                            const PerfA1SameAggregate &entry) {
+        if (currentLength < 0)
+        {
+            return currentLength;
+        }
+        const std::size_t offset =
+            static_cast<std::size_t>(currentLength) < capacity
+                ? static_cast<std::size_t>(currentLength)
+                : capacity;
+        const int suffixLength = std::snprintf(
+            offset < capacity ? message + offset : message,
+            offset < capacity ? capacity - offset : 0u,
+            " %s%u/%llu/%u/%u/%u/%u/%u/%08X/%08X",
+            label, entry.calls, entry.elapsedUs, entry.eligible, entry.affected,
+            entry.itemAttempts, entry.popups, entry.auxiliary, entry.reasons,
+            entry.modes);
+        return suffixLength < 0 ? suffixLength : currentLength + suffixLength;
+    };
+    if ((activeMask & (1u << TH07_PSP_PERF_A1_REMOVE_ALL_BULLETS)) != 0u)
+    {
+        length = append(length, "RAB",
+                        gPerfA1Same[TH07_PSP_PERF_A1_REMOVE_ALL_BULLETS]);
+    }
+    if ((activeMask & (1u << TH07_PSP_PERF_A1_DESPAWN_BULLETS)) != 0u)
+    {
+        length = append(length, "DSP",
+                        gPerfA1Same[TH07_PSP_PERF_A1_DESPAWN_BULLETS]);
+    }
+    if ((activeMask & (1u << TH07_PSP_PERF_A1_REMOVE_RADIUS)) != 0u)
+    {
+        length = append(length, "RAD",
+                        gPerfA1Same[TH07_PSP_PERF_A1_REMOVE_RADIUS]);
+    }
+    if ((activeMask & (1u << TH07_PSP_PERF_A1_REMOVE_ALL_ENEMIES)) != 0u)
+    {
+        length = append(length, "RAE",
+                        gPerfA1Same[TH07_PSP_PERF_A1_REMOVE_ALL_ENEMIES]);
+    }
+    if ((activeMask & (1u << TH07_PSP_PERF_A1_BOMB_BULLET_UPDATE)) != 0u)
+    {
+        length = append(length, "BUP",
+                        gPerfA1Same[TH07_PSP_PERF_A1_BOMB_BULLET_UPDATE]);
+    }
+    if (length < 0)
+    {
+        return length;
+    }
+    const std::size_t offset =
+        static_cast<std::size_t>(length) < capacity
+            ? static_cast<std::size_t>(length)
+            : capacity;
+    const int suffixLength = std::snprintf(
+        offset < capacity ? message + offset : message,
+        offset < capacity ? capacity - offset : 0u, " G%u O%u",
+        gPerfA1SameInvalid == 0u && gPerfA1SameOverflow == 0u ? 1u : 0u,
+        gPerfA1SameOverflow);
+    return suffixLength < 0 ? suffixLength : length + suffixLength;
+}
+
+void PerfA1SameReset()
+{
+    std::memset(gPerfA1Same, 0, sizeof(gPerfA1Same));
+    gPerfA1SameNextReason = 0;
+    gPerfA1SameInvalid = 0;
+    gPerfA1SameOverflow = 0;
+}
 #endif
 #if defined(TH07_PSP_PERF_M2)
 constexpr unsigned int kPerfDrawOwnerSlots = 32u;
@@ -3599,6 +3743,11 @@ class PspGuGraphics final : public ZunGraphics
             // there, but reset/activate only at this completed swap boundary
             // so stage-load work and a partial first frame cannot enter M2/M3.
             ResetPerfWindowCounters();
+#if defined(TH07_PSP_PERF_SFX_MIX)
+            // Drop menu/stage-load audio at the same completed-swap boundary
+            // that arms the first gameplay PERF window.
+            th07_psp_sfx_mixer_window_discard();
+#endif
             mPerfGameplayActive = true;
             mPerfGameplayPending = false;
             mPerfWindowStage = mPerfPendingStage;
@@ -4685,6 +4834,11 @@ class PspGuGraphics final : public ZunGraphics
 
         th07_psp_perf_set_window_id(++mPerfWindowSerial);
 
+#if defined(TH07_PSP_PERF_SFX_MIX)
+        Th07PspSfxMixerWindow sfxMixerWindow{};
+        th07_psp_sfx_mixer_window_take(&sfxMixerWindow);
+#endif
+
 #if defined(TH07_PSP_PERF_ATTRIB) || defined(TH07_PSP_PERF_AB_COMPARE)
         const unsigned long long elapsedUs = geEndUs - mPerfStartUs;
         const unsigned int fps10 = elapsedUs
@@ -5195,6 +5349,21 @@ class PspGuGraphics final : public ZunGraphics
         int acceptProfileValid = th07_psp_perf_log_valid();
         unsigned int abMeAverageUs = 0u;
         unsigned int abMeFaults = 0u;
+#if defined(TH07_PSP_PERF_A1_SAME)
+        const bool a1SameActivity = PerfA1SameHasActivity();
+        char a1SameMessage[600] = {};
+        const int a1SameLength =
+            a1SameActivity
+                ? PerfA1SameFormat(a1SameMessage, sizeof(a1SameMessage))
+                : 0;
+        const bool a1SameFormatValid =
+            !a1SameActivity ||
+            (a1SameLength > 0 &&
+             static_cast<std::size_t>(a1SameLength) < sizeof(a1SameMessage));
+        acceptProfileValid = acceptProfileValid && a1SameFormatValid &&
+                             gPerfA1SameInvalid == 0u &&
+                             gPerfA1SameOverflow == 0u;
+#endif
 #if defined(TH07_PSP_PERF_AB_COMPARE)
         // The A/B build writes exactly one compact timing record per window.
         // Drain normal diagnostic accumulators without formatting their
@@ -6389,6 +6558,49 @@ class PspGuGraphics final : public ZunGraphics
             acceptProfileValid);
 #endif /* TH07_PSP_PERF_AB_COMPARE */
         th07_psp_perf_note(acceptMessage);
+#if defined(TH07_PSP_PERF_SFX_MIX)
+        const bool sfxMixerValid =
+            sfxMixerWindow.sample_overflow == 0u &&
+            sfxMixerWindow.divisor_one_calls == sfxMixerWindow.mix_calls &&
+            ((sfxMixerWindow.mix_calls == 0u &&
+              sfxMixerWindow.mix_total_us == 0u &&
+              sfxMixerWindow.mix_average_us == 0u &&
+              sfxMixerWindow.mix_p99_us == 0u &&
+              sfxMixerWindow.mix_max_us == 0u &&
+              sfxMixerWindow.active_voice_visits == 0u &&
+              sfxMixerWindow.active_voice_max == 0u) ||
+             (sfxMixerWindow.mix_calls != 0u &&
+              sfxMixerWindow.active_voice_visits >= sfxMixerWindow.mix_calls &&
+              sfxMixerWindow.active_voice_max != 0u &&
+              sfxMixerWindow.mix_p99_us <= sfxMixerWindow.mix_max_us));
+        char sfxMixerMessage[256];
+        const int sfxMixerLength = std::snprintf(
+            sfxMixerMessage, sizeof(sfxMixerMessage),
+            "PERF A5M S%d ST%d N%u MU%u MC%u MA%u MP99%u MX%u "
+            "AV%u AVM%u D1%u TR%u FX%d/%u LIM%u OF%u G%u",
+            mPerfWindowState, mPerfWindowStage, mPerfFrames,
+            sfxMixerWindow.mix_total_us, sfxMixerWindow.mix_calls,
+            sfxMixerWindow.mix_average_us, sfxMixerWindow.mix_p99_us,
+            sfxMixerWindow.mix_max_us, sfxMixerWindow.active_voice_visits,
+            sfxMixerWindow.active_voice_max, sfxMixerWindow.divisor_one_calls,
+            sfxMixerWindow.trigger_count, g_EffectManager.activeEffectsCount,
+            mPerfMaxEffects, sfxMixerWindow.limited_samples,
+            sfxMixerWindow.sample_overflow, sfxMixerValid ? 1u : 0u);
+        th07_psp_perf_note(
+            sfxMixerLength > 0 &&
+                    static_cast<std::size_t>(sfxMixerLength) <
+                        sizeof(sfxMixerMessage)
+                ? sfxMixerMessage
+                : "PERF A5M FORMAT_OVERFLOW G0");
+#endif
+#if defined(TH07_PSP_PERF_A1_SAME)
+        if (a1SameActivity)
+        {
+            th07_psp_perf_note(
+                a1SameFormatValid ? a1SameMessage
+                                  : "PERF A1S FORMAT_OVERFLOW G0 O1");
+        }
+#endif
 #endif
 
         ResetPerfWindowCounters();
@@ -6433,6 +6645,9 @@ class PspGuGraphics final : public ZunGraphics
         gPerfPlayerShotFrontendUs = 0;
         gPerfPlayerShotActiveCount = 0;
         gPerfPlayerShotFrontendCalls = 0;
+#endif
+#if defined(TH07_PSP_PERF_A1_SAME)
+        PerfA1SameReset();
 #endif
         for (unsigned long long &jobUs : gPerfCalcJobUs)
         {
@@ -7434,6 +7649,64 @@ void Th07PspPerfAddPlayerShotFrontendTime(unsigned long long elapsedUs,
     gPerfPlayerShotFrontendUs += elapsedUs;
     gPerfPlayerShotActiveCount += activeShotCount;
     ++gPerfPlayerShotFrontendCalls;
+}
+#endif
+
+#if defined(TH07_PSP_PERF_A1_SAME)
+void Th07PspPerfSetA1SameReason(unsigned int reason)
+{
+    if (gPerfA1SameNextReason != 0u)
+    {
+        ++gPerfA1SameInvalid;
+        gPerfA1SameNextReason = TH07_PSP_PERF_A1_REASON_UNKNOWN;
+        return;
+    }
+    const unsigned int knownReasons =
+        (TH07_PSP_PERF_A1_REASON_BOMB << 1u) - 1u;
+    if (reason == 0u || (reason & (reason - 1u)) != 0u ||
+        (reason & ~knownReasons) != 0u)
+    {
+        ++gPerfA1SameInvalid;
+        gPerfA1SameNextReason = TH07_PSP_PERF_A1_REASON_UNKNOWN;
+        return;
+    }
+    gPerfA1SameNextReason = reason;
+}
+
+unsigned int Th07PspPerfTakeA1SameReason()
+{
+    if (gPerfA1SameNextReason == 0u)
+    {
+        ++gPerfA1SameInvalid;
+        return TH07_PSP_PERF_A1_REASON_UNKNOWN;
+    }
+    const unsigned int reason = gPerfA1SameNextReason;
+    gPerfA1SameNextReason = 0u;
+    return reason;
+}
+
+void Th07PspPerfAddA1SameSample(Th07PspPerfA1SameKind kind,
+                               unsigned long long elapsedUs,
+                               const Th07PspPerfA1SameSample &sample)
+{
+    if (kind < 0 || kind >= TH07_PSP_PERF_A1_KIND_COUNT)
+    {
+        ++gPerfA1SameInvalid;
+        return;
+    }
+    PerfA1SameAggregate &entry = gPerfA1Same[kind];
+    PerfA1SameAdd(entry.elapsedUs, elapsedUs);
+    PerfA1SameAdd(entry.calls, 1u);
+    PerfA1SameAdd(entry.eligible, sample.eligible);
+    PerfA1SameAdd(entry.affected, sample.affected);
+    PerfA1SameAdd(entry.itemAttempts, sample.itemAttempts);
+    PerfA1SameAdd(entry.popups, sample.popups);
+    PerfA1SameAdd(entry.auxiliary, sample.auxiliary);
+    entry.reasons |=
+        sample.reason != 0u
+            ? sample.reason
+            : static_cast<unsigned int>(TH07_PSP_PERF_A1_REASON_UNKNOWN);
+    entry.modes |= sample.mode;
 }
 #endif
 #endif

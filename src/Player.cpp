@@ -25,7 +25,10 @@
 #endif
 #if defined(TH07_PSP_PERF_PLAYER_SHOT)
 #include <pspkernel.h>
+#endif
 
+#if defined(TH07_PSP_PERF_PLAYER_SHOT) || \
+    defined(TH07_PSP_PERF_A1_SAME)
 #include "graphics/PspGuGraphics.hpp"
 #endif
 
@@ -1971,6 +1974,10 @@ void Player::UpdateState()
     if (this->bulletGracePeriod != 0)
     {
         this->bulletGracePeriod--;
+#if defined(TH07_PSP_PERF_A1_SAME)
+        Th07PspPerfSetA1SameReason(
+            TH07_PSP_PERF_A1_REASON_RESPAWN_GRACE);
+#endif
         g_BulletManager.RemoveAllBullets(0);
     }
     if (this->playerState == PLAYER_STATE_INVULNERABLE)
