@@ -1,99 +1,65 @@
 # 更新履歴
 
-このプロジェクトは開発途中です。実機未確認の修正は、その旨を明記します。
+この文書は公開版とrelease候補の履歴です。実機未確認の修正は、その旨を明記します。
 
-## 2026-09-02 — v0.2.2-beta（Slim+全機種ME対応・Go実機検証）
+## 2026-09-03 — v1.0.0-rc1 最終テスター／プレリリース（実機受入）
 
-- **Media Engine（第2CPU）によるゲーム処理を全64MB機で有効化**しました
-  （PSP-2000/3000/Go/Street。従来はPSP-3000のみ、PSP-1000は引き続き非対応）。
-  PSP Go実機（model 4）でGE 4MiB・MECC・MEレンダーワーカーの全起動検査PASS、
-  1〜6面全編完走、MEフォルト0を確認済みです。
-- `ge4wrap_texv1.prx` を Slim+対応版に更新。**v0.2.1から更新する場合は
-  EBOOTとprxを必ず両方差し替えてください**。
-- オーバークロック環境（383/423MHz、PSP Go）での動作を実機確認。383MHz以上では
-  重い弾幕の処理落ちが大幅に減少します（定格333MHzでも従来どおり動作）。
-- 配布EBOOTはPSP Go実機で全編完走を確認した個体そのものです（再現ビルド:
-  `make pspgo-me1-slimplus-build`）。SHIKIGAMIはホスト未設定で完全休眠。
-
-## 2026-09-01 — v0.2.1-beta hotfix 2（6面開始クラッシュ修正）
-
-- **通常プレイで5面ボス撃破後、6面初期化中にXMBへ戻る問題を修正**しました。6面ボス立ち絵ANM
-  （3MiB連続確保）がヒープ断片化で失敗する問題で、キャラ・経路依存（実機再現は咲夜A。
-  霊夢Aリプレイでは非再現）。face ANMの展開を、stage遷移中は空いているフォントarena後方の
-  連続領域（約5.1MiB）へ貸出す方式に変更し、一般ヒープの断片化と無縁にしました。
-  貸出が成立しない場合は従来経路へfail-closedです。
-- 実機（PSP-3000）で失敗条件と同一の咲夜A通常プレイ5面ボス撃破→6面到達を確認済み。
-- v0.2.1-betaのリリースzipは本修正入りEBOOTに差し替えました（バージョン番号は据え置き、
-  build ID 0x26090141）。
-
-## 2026-09-01 — v0.2.1-beta hotfix（Music Room文字サイズ）
-
-- **Music Roomの曲名・コメントの文字が小さく表示される問題を修正**しました。
-  フォント再読込（subset切替）後にサイズキャッシュが失効せず、旧サイズのまま
-  描画される問題です。修正はサイズキャッシュの失効処理のみ。
-- v0.2.1-betaのリリースzipは本修正入りEBOOTに差し替えました（バージョン番号は据え置き）。
-
-## 2026-09-01 — v0.2.1-beta（断片化OOM修正・MSゴシックsubset・波ダッシュ）
-
-- **デモ放置/リプレイ後のタイトル復帰OOMを修正**しました。タイトル画面ANM（5,411KiB）の
-  連続確保が断片化ヒープで失敗する問題で、起動時予約の共有arenaへ常時ロードする方式に
-  変更。デモ4面→5面→3面放置、リプレイ5面終了→リザルト→タイトル復帰の実機テストを通過。
-  v0.2.0の既知問題「デモ3周目OOM」はこの版で解消です。
-- **フォントの使用文字subset方式を追加**。EBOOT隣の優先順は
-  `msgothic-subset.ttf` → `msgothic.ttc` → `NotoSansJP-Regular.ttf`（同梱）。
-  同梱ツール `tools/build_local_msgothic_subset.py` で、所有するWindowsの
-  msgothic.ttc から使用1,190字のsubset（約300KB、元の1/15）をローカル生成できます。
-  Microsoftフォント本体・subsetは配布物に含まれません。文字キャッシュの別確保
-  1,536KiBを廃止し、実行時RAMも削減。欠字があればsubset全体を不採用にして
-  次候補フォントへ戻るfail-closed設計です。
-- **波ダッシュ「～」の表示を修正**（SJIS 0x8160をWindows/MS Gothicと同じU+FF5Eへ）。
-- SC/ME使用率メーターのLトリガ表示切替は実機確認済みになりました。
-- 配布EBOOTは今回もネットワーク観測（SHIKIGAMI）をホスト未設定で完全休眠にしています。
-  ビルド再現: `make psp3000-dist-v021-build`。
-
-## 2026-09-01 — v0.2.0-beta（MEレンダーワーカー世代・大型更新）
-
-コードベースをMECC統合開発線（RID30系）へ全面更新しました。PSPの第2CPU（Media Engine）を
-ゲーム処理に本格投入した初の版です。**本版の実機検証はPSP-3000のみ**。PSP-1000プロファイルは
-ビルド可能ですが今期未検証です。
-
-- **MEレンダーワーカー**: 安定NORMAL弾の移動更新と頂点生成をMEが実行し、GEが直接消費します。
-  SC出力とのbit一致を起動時自己検査（30ケース）で毎回検証。実機で6面完走・ボス戦走行を確認済み。
-- **Item描画のME prefix / SC suffix分担**と決定論的予算器（record数×較正レート、80%閾値）。
-  幽々子撃破直後の実測でAVG −1.32ms、VSync MISS 85→32/120（約35→47fps）を確認済み。
-- **Item吸引移動のME更新（A1-MOVE）**: 実機で起動・自己検査合格（6経路bit一致）。
-  性能効果は比較可能区間で中立であり、対象場面での採用実証はまだ取れていません（検証継続中）。
-- **SC/ME使用率メーター**: XPタスクマネージャ風の履歴グラフ2枚をロゴ付近に常時表示
-  （SC=フレーム時間、ME=実測busyサイクル。100%超は赤で振切表示）。実機動作確認済み。
-  **今回Lトリガで表示トグルを追加（PC実装のみ・実機未確認）**。
-- **起動安全化**: Item系自己検査がclean失敗した場合、Itemのみ従来SC処理へ降格して
-  弾ME・ゲーム起動を継続します（XMBへ戻る強制再起動を廃止）。実機確認済み。
-- **MEキャッシュ安定化**: 連続ジョブ間のstale読みを排除するため、Item入力は
-  MEのuncached alias読みへ変更。実機確認済み。
-- 同梱: 実証済みGEラッパー `ge4wrap_texv1.prx`（SHA256はMakefile内に記載、ビルド時に検証）、
-  メモステ操作ツール `tools/psp_stick.py`、原作データ混入ガード
-  `tools/check_no_original_assets.py`、開発経緯ドキュメント `docs/devlog/`。
-- ビルド: `make psp3000-a1-item-motion-build`（MECCはCMakeで自動ビルド）。
-  原作の `th07.dat` / `thbgm.dat` 等は従来どおり各自の所有データを使用してください。
-  本リポジトリに原作データは一切含まれません（ガードで機械検証済み）。
-
-### 配布EBOOT（GitHub Release）
-
-- Releaseに `TH07PSP-v0.2.0-beta.zip`（EBOOT.PBP / ge4wrap_texv1.prx /
-  NotoSansJP-Regular.ttf / INSTALL_JP.txt）を添付しました。
-  ビルド再現は `make psp3000-dist-v020-build`。
-- 配布ビルドはネットワーク観測（SHIKIGAMI）をホスト未設定で完全休眠にしています
-  （スレッド生成・通信なし、ホストIPのリテラルもバイナリに含まれません）。
-- **この配布構成そのものの実機通し確認は未実施**です（同一機能構成のRID30は
-  PSP-3000実機で6面完走・ボス戦走行を確認済み）。Lトリガのメーター切替も実機未確認。
-
-### 既知の問題
-
-- **デモプレイを放置すると、3回目のデモあたりでメモリ不足（OOM）により落ちる
-  可能性が高いです。** タイトル画面の長時間放置にご注意ください。
-- PSボタンからの終了はフリーズすることがあります。タイトルのQuitから終了してください。
-- Item吸引移動のME化（A1-MOVE）は動作しますが、性能効果の実証はまだ取れていません。
->>>>>>> 52e0783 (feat: v0.2.0-beta — ME render worker era (bullet/item ME offload, SC/ME usage meter with L-toggle, safe-demotion boot))
+- **同期保証へ切り替えた根拠:** EBOOT SHA-256
+  `18CF0136DE1525EF6B0ECA4FCA5BC2415A0A65875D8C0D88D53A9A509A94C365`を、物理
+  PSP-1000で使用し（CFW名・versionは当該boot logに未記録のため未確定）、固定
+  Lunatic外部リプレイ`th7_udLUNA.rpy`（72,308 bytes、SHA-256
+  `D6B6634FB12DBA2DF5084D04DB05612FC681735DBC0D035A42A52143DFFB498F`）が1面から6面、
+  幽々子撃破、Replay選択画面への復帰まで同期完走したことを2026-09-03に実機確認しました。
+- 受入logは`TH07PSP_BOOT.PSP1000-E480-FULLRUN.20260903-003152.LOG`、SHA-256
+  `00FAB988A1430A08D5F67CD76CD98AB535E4B032E7E03A15004ECA3C5DC13611`です。固定replay epoch内の
+  `REPLAY INVALID`、fatal、crash、arena/pool確保失敗は0件でした。EBOOTは
+  `release-anchors/psp1000-e480-hw-pass-20260903/`へ固定し、
+  log本体やリプレイを配布せず検証用SHAだけを記録しています。
+- この受入は上記固定replayの保証です。任意replay、全難易度、全機体への一般化はしません。旧版の
+  「ほぼ全replayが同期しない」「幽々子後にReplay選択へ戻れない」「CFW/build条件を調査中」という
+  現行警告はREADMEと既知問題から削除し、旧version当時の履歴は本CHANGELOG内に残します。
+- 正式版は1つの外側EBOOTから起動時のmodel判定でPSP-1000 32MB profileとPSP-2000/3000/Go
+  64MB profileを自動選択します。機種別ZIP、Beta／tester titleは廃止します。最終テスター／
+  プレリリースはGitHub Releasesから配布し、正式stableへの昇格は実機受入後に別途判断します。
+- 対応CFWはARK-5のみとし、PSP-2000/3000/Goでは`Use Extra Memory = Max`を必須条件にしました。
+  `Default`、`Off`、`always, highmem, off`は非対応です。追加Main RAMのないPSP-1000にはMax設定を
+  適用しません。
+- 配布EBOOTのICON0/PIC1は生成ツール製の完全透明な中立placeholderで、初回XMBではサムネイルと
+  背景を表示しません。利用者所有の正しい`th07.dat`/`thbgm.dat`を実機上で確認できた場合だけ、
+  固定slot本体へXMB画像をlocal生成します。PBP offset table、DATA.PSP、DATA.PSARは変更しません。
+  生成後のEBOOTと画像は原作由来物を含むため再配布禁止です。
+- 統合候補EBOOT SHA-256
+  `3CD05B30A359F9226D77DF7A11C6FFBD1EC7185E8D5B81DB85975C2FEB9D3B8C`について、物理
+  PSP-1000の初回起動で生成中の電源断禁止表示、ICON0/PIC1のlocal生成、32MB profile起動を確認し、
+  同じMemory Stickを物理PSP-3000へ移した次の起動で64MB profileへ自動切替されることを確認しました。
+  PSP-3000では高解像度surfaceが選択されました。一方、当初の「ボム時の立ち絵cut-inに停止なし」という
+  tester報告は同日中の再確認で撤回され、cut-in時のカクつきを確認しました。回収した3000 boot log
+  `TH07PSP_BOOT.UNIFIED-3000-BOMB-STUTTER.20260903-124326.LOG`（SHA-256
+  `1032A4717962F17F1683306534F4CE5292D53CA5761E6B20F9DCE5D7C47F65A0`）と抽出runtime
+  `55DC6C2E254D1CAD8C63E3965DFDD1B4059021CCECD3BD57A70BD945370BC278`には、通常の一時
+  `surface cache EDRAM`だけがあり、GE4 Upper 2MiB portrait poolと立ち絵prewarmは含まれていません。
+  比較対象のGo log `TH07PSP_BOOT.GO-UPPER-COMPARISON.20260903-124326.LOG`（SHA-256
+  `674DDEC53C30AF56272EC10BBEE6C8A136BC07D2B7D813DF95C98728E254446F`）には
+  `GE4 ACTIVE Slim+ upper 2MiB PORTRAIT`、role 1～5のUpper配置、peak 1408KiB、fallback/allocfail 0が
+  記録されています。したがって本候補について「eDRAM拡張常駐済み」という主張は行いません。
+- 直前の自己脱皮実機runでは、初期EBOOT SHA-256
+  `B053E77F3BA5B05CEBB5CCEC605C01C03CA7846EBD0101B5C84C86F0EFF8C6A3`がlocal生成後に
+  `B804BABE561A069B798184EC85559EE683917058D68FCB45D8CB6936200FDF0C`へ変化しました。両者は同一sizeで、
+  ICON0/PIC1固定領域だけが異なり、PBP header、PARAM.SFO、DATA.PSP、DATA.PSARを含むその他の領域は
+  byte単位で一致しました。launcher logのselfwrap結果も`1`でした。
+- PSP-3000のUpper欠落を直す次候補は、PSP-1000 demo修正済みpayload
+  `D49F1683F370224E102B13C8A14A1D09D9BEAD77D55BFF449ED26F0B65C08EF6`、診断表示を除いた
+  GO-ME1/A7系64MB payload `356FBD32EE75DCED8B1C9384B31A47613D1848EBD6A2AF0B3B21CC92BA8E5A3D`、
+  Slim+ GE4 wrapper `3DC5C753497349D6FB0AB5AE2A819B240CC51E8AA412DED10BB52DAA540D841D`を1つにした
+  `TH07UP02`です。neutral EBOOTは13,669,996 bytes、SHA-256
+  `822E0A4C43AC84509A25AF16D921B0BB9BCB1C4597DCDBB315E9583D5E92FAD4`で、二重clean build、
+  container/nested payload/no-original-assets監査とfocused 67 testsを通過しました。このPC gate時点では
+  Upperによるcut-in改善を未確認とし、直後の次項で実機受入を記録しています。
+- 上記SHA-256 `822E0A4C43AC84509A25AF16D921B0BB9BCB1C4597DCDBB315E9583D5E92FAD4`を物理
+  PSP-3000で起動し、model 3用64MB profileへの自動切替とゲーム動作を確認しました。tester実機確認では
+  GE4 Upper立ち絵常駐が有効になり、ボム時の立ち絵cut-inで旧統合候補にあったカクつきが解消しました。
+  本runのlog回収はtester判断により不要とされ、意図的に省略しています。この結果を最終テスター／
+  プレリリースのPSP-3000実機PASSとして記録しますが、正式stable公開の宣言ではありません。
 
 ## 2026-08-27 — v0.1.7-beta（ARK-5 high-memory互換性更新）
 

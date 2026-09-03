@@ -80,6 +80,33 @@ static_assert(kDacBufferCount == 2,
 static_assert(kDacBufferBytes == 2048,
               "PSP DAC output block must remain 512-frame stereo s16");
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+struct BootJitterSfxScope
+{
+    explicit BootJitterSfxScope(unsigned int bufferIndex)
+        : index(bufferIndex), beginUs(th07_psp_boot_jitter_now()),
+          archiveEndUs(beginUs)
+    {
+    }
+
+    void ArchiveReady()
+    {
+        archiveEndUs = th07_psp_boot_jitter_now();
+    }
+
+    ~BootJitterSfxScope()
+    {
+        const unsigned long long endUs = th07_psp_boot_jitter_now();
+        th07_psp_boot_jitter_record_sfx(
+            index, archiveEndUs - beginUs, endUs - archiveEndUs);
+    }
+
+    unsigned int index;
+    unsigned long long beginUs;
+    unsigned long long archiveEndUs;
+};
+#endif
+
 #if defined(TH07_PSP_MECC_LOCAL_BGM)
 constexpr u32 kRingBytes = kRingFrames * kBytesPerFrame;
 constexpr u32 kMeccFifoBlocks = kPrefillFrames / kFramesPerOutput;
@@ -1736,7 +1763,13 @@ ZunResult SoundPlayer::LoadSound(i32 idx, const char *path)
         return ZUN_ERROR;
     }
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    BootJitterSfxScope bootJitterSfx(static_cast<unsigned int>(idx));
+#endif
     u8 *wav = static_cast<u8 *>(FileSystem::OpenFile(path, 0));
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    bootJitterSfx.ArchiveReady();
+#endif
     const u32 wavSize = g_LastFileSize;
     if (!wav || wavSize < 44 || std::memcmp(wav, "RIFF", 4) != 0 ||
         std::memcmp(wav + 8, "WAVE", 4) != 0)

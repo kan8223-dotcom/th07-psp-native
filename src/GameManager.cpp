@@ -813,7 +813,17 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     if (g_GameManager.replay)
     {
         arg->InitializeRank();
-        ReplayManager::RegisterChain(1, g_GameManager.replayFilename);
+        const ZunResult replayResult =
+            ReplayManager::RegisterChain(1, g_GameManager.replayFilename);
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (replayResult != ZUN_SUCCESS)
+        {
+            th07_psp_boot_note("REPLAY INVALID replay load failed");
+            return ZUN_ERROR;
+        }
+#else
+        (void)replayResult;
+#endif
         oldSeed = g_Rng.seed;
         arg->RegenerateGameIntegrityCsum();
         g_Rng.seed = oldSeed;
@@ -893,11 +903,39 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     // compacted those sources; otherwise face_0x archives and the enemy pool
     // compete for the same contiguous 32 MiB heap window.
     th07_psp_boot_note("game added PSP1000 pools begin");
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    u32 enemyArenaExtraBytes = 0u;
+    if (!g_EnemyManager.PspPrepareEnemyManifest(arg->currentStage,
+                                                &enemyArenaExtraBytes))
+    {
+        th07_psp_boot_notef(
+            "REPLAY INVALID enemy reserve failed S%d reason=prepare",
+            arg->currentStage);
+        return ZUN_ERROR;
+    }
+    if (!th07_psp_1000_begin_pools(enemyArenaExtraBytes))
+    {
+        th07_psp_boot_notef(
+            "REPLAY INVALID enemy reserve failed S%d extra%u reason=arena",
+            arg->currentStage, enemyArenaExtraBytes);
+        return ZUN_ERROR;
+    }
+    if (!g_BulletManager.PspEnsureBulletPool() ||
+        !g_EnemyManager.PspEnsureEnemyPool() ||
+        !g_ItemManager.PspEnsureItemPool() ||
+        !g_EffectManager.PspEnsureEffectPool())
+#else
     if (!th07_psp_1000_begin_pools() || !g_BulletManager.PspEnsureBulletPool() ||
         !g_EnemyManager.PspEnsureEnemyPool() ||
         !g_ItemManager.PspEnsureItemPool() ||
         !g_EffectManager.PspEnsureEffectPool())
+#endif
     {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        th07_psp_boot_notef(
+            "REPLAY INVALID enemy reserve failed S%d extra%u reason=pool",
+            arg->currentStage, enemyArenaExtraBytes);
+#endif
         th07_psp_boot_note("game added PSP1000 pools failed");
         return ZUN_ERROR;
     }

@@ -21,6 +21,106 @@ char gLaunchDevice[8] = "ms0:";
 bool gLaunchDirSet;
 bool gInitialized;
 bool gOriginalDataReady;
+SceUID gBootLogFd = -1;
+bool gBootLogShutdown;
+
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+struct BootJitterAggregate
+{
+    unsigned int count;
+    unsigned int totalUs;
+    unsigned int maxUs;
+    unsigned int maxTag;
+};
+
+struct BootJitterState
+{
+    bool active;
+    unsigned int phase;
+    unsigned long long startedUs;
+    unsigned long long phaseStartedUs;
+    unsigned int phaseUs[TH07_PSP_BOOT_JITTER_PHASE_COUNT];
+
+    BootJitterAggregate sfxArchive;
+    BootJitterAggregate sfxConvert;
+    BootJitterAggregate archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_OP_COUNT];
+    BootJitterAggregate fontOpen;
+    BootJitterAggregate fontRead;
+    BootJitterAggregate fontCoverage;
+    unsigned int fontAttempts;
+    unsigned int fontSelected;
+    unsigned int fontLastResult;
+
+    BootJitterAggregate logCall;
+    BootJitterAggregate logLock;
+    BootJitterAggregate logOpen;
+    BootJitterAggregate logWrite;
+    BootJitterAggregate logClose;
+};
+
+BootJitterState gBootJitter{};
+bool gBootJitterFinished;
+
+unsigned int BootJitterElapsed(unsigned long long beginUs,
+                               unsigned long long endUs)
+{
+    const unsigned long long elapsed = endUs >= beginUs ? endUs - beginUs : 0u;
+    return elapsed > 0xffffffffull ? 0xffffffffu
+                                   : static_cast<unsigned int>(elapsed);
+}
+
+void BootJitterAccumulate(BootJitterAggregate &aggregate,
+                          unsigned long long elapsedUs, unsigned int tag)
+{
+    if (!__atomic_load_n(&gBootJitter.active, __ATOMIC_ACQUIRE))
+    {
+        return;
+    }
+    const unsigned int elapsed = elapsedUs > 0xffffffffull
+                                     ? 0xffffffffu
+                                     : static_cast<unsigned int>(elapsedUs);
+    ++aggregate.count;
+    aggregate.totalUs = aggregate.totalUs > 0xffffffffu - elapsed
+                            ? 0xffffffffu
+                            : aggregate.totalUs + elapsed;
+    if (elapsed > aggregate.maxUs)
+    {
+        aggregate.maxUs = elapsed;
+        aggregate.maxTag = tag;
+    }
+}
+
+char BootJitterPhaseCode(unsigned int phase)
+{
+    static constexpr char kCodes[] = {'R', 'I', 'M', 'S', 'A',
+                                      'C', 'V', 'T', 'F', 'X'};
+    return phase < sizeof(kCodes) ? kCodes[phase] : '?';
+}
+
+void BootJitterRecordLogIo(BootJitterAggregate &aggregate,
+                           unsigned long long elapsedUs, unsigned int phase)
+{
+    BootJitterAccumulate(aggregate, elapsedUs, phase);
+}
+
+struct BootJitterLogCallScope
+{
+    BootJitterLogCallScope()
+        : phase(gBootJitter.phase), startedUs(sceKernelGetSystemTimeWide())
+    {
+    }
+
+    ~BootJitterLogCallScope()
+    {
+        BootJitterRecordLogIo(
+            gBootJitter.logCall,
+            sceKernelGetSystemTimeWide() - startedUs, phase);
+    }
+
+    unsigned int phase;
+    unsigned long long startedUs;
+};
+#endif
 
 constexpr unsigned int kMaxDataCandidates = 16;
 constexpr unsigned long long kTh07DatBytes = 23829135ull;
@@ -28,7 +128,6 @@ constexpr unsigned long long kThBgmDatBytes = 444516656ull;
 char gDataCandidates[kMaxDataCandidates][sizeof(gDataDir)]{};
 unsigned int gDataCandidateCount;
 
-#if defined(TH07_PSP_PERF_DIAG)
 SceUID gBootLogSema = -1;
 
 bool LockBootLog()
@@ -44,6 +143,7 @@ void UnlockBootLog(bool locked)
     }
 }
 
+#if defined(TH07_PSP_PERF_DIAG)
 // PERF windows are generated while timing the game. Writing each one through
 // the Memory Stick synchronously perturbs the very frame times being measured.
 // Keep a fixed diagnostic-only buffer and commit it at a non-gameplay boundary.
@@ -163,6 +263,26 @@ std::size_t WriteAvailable(SceUID fd, const char *data, std::size_t bytes)
         written += static_cast<std::size_t>(result);
     }
     return written;
+}
+
+SceUID OpenBootLogAppend()
+{
+    if (gBootLogFd >= 0 || gBootLogShutdown)
+    {
+        return gBootLogFd;
+    }
+    gBootLogFd =
+        sceIoOpen(gBootLog, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+    return gBootLogFd;
+}
+
+void CloseBootLog()
+{
+    if (gBootLogFd >= 0)
+    {
+        sceIoClose(gBootLogFd);
+        gBootLogFd = -1;
+    }
 }
 
 bool JoinPath(char *out, std::size_t outSize, const char *root, const char *relative)
@@ -312,6 +432,196 @@ const char *SkipDotSlash(const char *path)
 }
 } // namespace
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+extern "C" unsigned long long th07_psp_boot_jitter_now()
+{
+    return sceKernelGetSystemTimeWide();
+}
+
+extern "C" void th07_psp_boot_jitter_begin()
+{
+    if (__atomic_load_n(&gBootJitter.active, __ATOMIC_ACQUIRE) ||
+        gBootJitterFinished)
+    {
+        return;
+    }
+    std::memset(&gBootJitter, 0, sizeof(gBootJitter));
+    gBootJitter.fontSelected = 0xffffffffu;
+    gBootJitter.phase = TH07_PSP_BOOT_JITTER_RELEASE;
+    gBootJitter.startedUs = sceKernelGetSystemTimeWide();
+    gBootJitter.phaseStartedUs = gBootJitter.startedUs;
+    __atomic_store_n(&gBootJitter.active, true, __ATOMIC_RELEASE);
+}
+
+extern "C" void th07_psp_boot_jitter_advance(unsigned int phase)
+{
+    if (!__atomic_load_n(&gBootJitter.active, __ATOMIC_ACQUIRE) ||
+        phase >= TH07_PSP_BOOT_JITTER_PHASE_COUNT)
+    {
+        return;
+    }
+    const unsigned long long nowUs = sceKernelGetSystemTimeWide();
+    const unsigned int current = gBootJitter.phase;
+    if (current < TH07_PSP_BOOT_JITTER_PHASE_COUNT)
+    {
+        const unsigned int elapsed =
+            BootJitterElapsed(gBootJitter.phaseStartedUs, nowUs);
+        gBootJitter.phaseUs[current] =
+            gBootJitter.phaseUs[current] > 0xffffffffu - elapsed
+                ? 0xffffffffu
+                : gBootJitter.phaseUs[current] + elapsed;
+    }
+    gBootJitter.phase = phase;
+    gBootJitter.phaseStartedUs = nowUs;
+}
+
+extern "C" void th07_psp_boot_jitter_record_sfx(
+    unsigned int index, unsigned long long archiveUs,
+    unsigned long long convertUs)
+{
+    BootJitterAccumulate(gBootJitter.sfxArchive, archiveUs, index);
+    BootJitterAccumulate(gBootJitter.sfxConvert, convertUs, index);
+}
+
+extern "C" void th07_psp_boot_jitter_record_font(
+    unsigned int candidate, unsigned int result,
+    unsigned long long openUs, unsigned long long readUs,
+    unsigned long long coverageUs)
+{
+    if (!__atomic_load_n(&gBootJitter.active, __ATOMIC_ACQUIRE))
+    {
+        return;
+    }
+    ++gBootJitter.fontAttempts;
+    gBootJitter.fontLastResult = result;
+    if (result == 2u)
+    {
+        gBootJitter.fontSelected = candidate;
+    }
+    BootJitterAccumulate(gBootJitter.fontOpen, openUs, candidate);
+    BootJitterAccumulate(gBootJitter.fontRead, readUs, candidate);
+    BootJitterAccumulate(gBootJitter.fontCoverage, coverageUs, candidate);
+}
+
+extern "C" void th07_psp_boot_jitter_record_archive_io(
+    unsigned int operation, unsigned long long elapsedUs)
+{
+    if (operation >= TH07_PSP_BOOT_JITTER_ARCHIVE_OP_COUNT)
+    {
+        return;
+    }
+    BootJitterAccumulate(gBootJitter.archiveIo[operation], elapsedUs,
+                         gBootJitter.phase);
+}
+
+extern "C" void th07_psp_boot_jitter_finish()
+{
+    if (!__atomic_load_n(&gBootJitter.active, __ATOMIC_ACQUIRE))
+    {
+        return;
+    }
+    const unsigned long long nowUs = sceKernelGetSystemTimeWide();
+    const unsigned int current = gBootJitter.phase;
+    if (current < TH07_PSP_BOOT_JITTER_PHASE_COUNT)
+    {
+        const unsigned int elapsed =
+            BootJitterElapsed(gBootJitter.phaseStartedUs, nowUs);
+        gBootJitter.phaseUs[current] =
+            gBootJitter.phaseUs[current] > 0xffffffffu - elapsed
+                ? 0xffffffffu
+                : gBootJitter.phaseUs[current] + elapsed;
+    }
+    const unsigned int totalUs = BootJitterElapsed(gBootJitter.startedUs, nowUs);
+
+    // Close the sample before formatting or touching ef0:/ms0:.  The report's
+    // own logger open/write/close can therefore never contaminate any field.
+    __atomic_store_n(&gBootJitter.active, false, __ATOMIC_RELEASE);
+    gBootJitterFinished = true;
+
+    const char fontSelected = gBootJitter.fontSelected == 0xffffffffu
+                                  ? '-'
+                                  : static_cast<char>('0' +
+                                                      (gBootJitter.fontSelected % 10u));
+    const char logOpenPhase = gBootJitter.logOpen.count
+                                  ? BootJitterPhaseCode(gBootJitter.logOpen.maxTag)
+                                  : '-';
+    const char logCallPhase = gBootJitter.logCall.count
+                                  ? BootJitterPhaseCode(gBootJitter.logCall.maxTag)
+                                  : '-';
+    const char logLockPhase = gBootJitter.logLock.count
+                                  ? BootJitterPhaseCode(gBootJitter.logLock.maxTag)
+                                  : '-';
+    const char logWritePhase = gBootJitter.logWrite.count
+                                   ? BootJitterPhaseCode(gBootJitter.logWrite.maxTag)
+                                   : '-';
+    const char logClosePhase = gBootJitter.logClose.count
+                                   ? BootJitterPhaseCode(gBootJitter.logClose.maxTag)
+                                   : '-';
+    const auto archivePhase = [](const BootJitterAggregate &aggregate) {
+        return aggregate.count ? BootJitterPhaseCode(aggregate.maxTag) : '-';
+    };
+
+    char report[640];
+    std::snprintf(
+        report, sizeof(report),
+        "BOOTJIT V1 US T%u P%u,%u,%u,%u,%u,%u,%u,%u,%u,%u "
+        "SFX%u AO%u/%u@%u CV%u/%u@%u "
+        "ARC O%u/%u@%c R%u/%u@%c S%u/%u@%c M%u/%u@%c C%u/%u@%c "
+        "FONT A%u SEL%c RES%u O%u/%u@%u R%u/%u@%u C%u/%u@%u "
+        "LOG N%u T%u/%u@%c L%u/%u@%c O%u/%u@%c W%u/%u@%c C%u/%u@%c",
+        totalUs,
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_RELEASE],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_INPUT],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_MIDI],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_SFX],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_ANM],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_ASCII],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_VERTEX],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_TTF_INIT],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_FONT],
+        gBootJitter.phaseUs[TH07_PSP_BOOT_JITTER_TEXT_POST],
+        gBootJitter.sfxArchive.count,
+        gBootJitter.sfxArchive.totalUs, gBootJitter.sfxArchive.maxUs,
+        gBootJitter.sfxArchive.maxTag,
+        gBootJitter.sfxConvert.totalUs, gBootJitter.sfxConvert.maxUs,
+        gBootJitter.sfxConvert.maxTag,
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_OPEN].totalUs,
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_OPEN].maxUs,
+        archivePhase(
+            gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_OPEN]),
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_READ].totalUs,
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_READ].maxUs,
+        archivePhase(
+            gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_READ]),
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_SEEK].totalUs,
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_SEEK].maxUs,
+        archivePhase(
+            gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_SEEK]),
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_META].totalUs,
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_META].maxUs,
+        archivePhase(
+            gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_META]),
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_CLOSE].totalUs,
+        gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_CLOSE].maxUs,
+        archivePhase(
+            gBootJitter.archiveIo[TH07_PSP_BOOT_JITTER_ARCHIVE_CLOSE]),
+        gBootJitter.fontAttempts, fontSelected, gBootJitter.fontLastResult,
+        gBootJitter.fontOpen.totalUs, gBootJitter.fontOpen.maxUs,
+        gBootJitter.fontOpen.maxTag,
+        gBootJitter.fontRead.totalUs, gBootJitter.fontRead.maxUs,
+        gBootJitter.fontRead.maxTag,
+        gBootJitter.fontCoverage.totalUs, gBootJitter.fontCoverage.maxUs,
+        gBootJitter.fontCoverage.maxTag,
+        gBootJitter.logCall.count,
+        gBootJitter.logCall.totalUs, gBootJitter.logCall.maxUs, logCallPhase,
+        gBootJitter.logLock.totalUs, gBootJitter.logLock.maxUs, logLockPhase,
+        gBootJitter.logOpen.totalUs, gBootJitter.logOpen.maxUs, logOpenPhase,
+        gBootJitter.logWrite.totalUs, gBootJitter.logWrite.maxUs, logWritePhase,
+        gBootJitter.logClose.totalUs, gBootJitter.logClose.maxUs, logClosePhase);
+    th07_psp_boot_note(report);
+}
+#endif
+
 extern "C" void th07_psp_fileio_set_launch_path(const char *argv0)
 {
     if (gInitialized || !argv0)
@@ -381,15 +691,21 @@ extern "C" void th07_psp_fileio_init()
     if (JoinPath(stateDir, sizeof(stateDir), gGameDir, "replay")) sceIoMkdir(stateDir, 0777);
     if (JoinPath(stateDir, sizeof(stateDir), gGameDir, "snapshot")) sceIoMkdir(stateDir, 0777);
     sceIoRemove(gBootLog);
-    const SceUID fd = sceIoOpen(gBootLog, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-    if (fd >= 0)
-    {
-        sceIoClose(fd);
-    }
+    // Keep the one sceIo descriptor for the process lifetime.  PSP Go's ef0
+    // occasionally adds an almost exact 30-second timeout to an otherwise
+    // ordinary open.  Reopening this append-only log for every diagnostic
+    // line let that storage jitter freeze arbitrary title/menu transitions.
+    // sceIoWrite is unbuffered at the libc layer, so retaining the descriptor
+    // does not defer a userspace FILE buffer; shutdown closes it explicitly.
+    gBootLogShutdown = false;
+    gBootLogFd = sceIoOpen(
+        gBootLog, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC | PSP_O_APPEND, 0777);
+    // The retained descriptor is shared with rare audio/observer diagnostics.
+    // Serialize it in every PSP profile, not only PERF builds.
+    gBootLogSema = sceKernelCreateSema("th07_boot_log", 0, 1, 1, nullptr);
 #if defined(TH07_PSP_PERF_DIAG)
     // This was already proven in the 2026-08-24 delayed logger: one lock must
     // serialize a bulk PERF commit with rare audio-worker failure notes.
-    gBootLogSema = sceKernelCreateSema("th07_boot_log", 0, 1, 1, nullptr);
     // The boot log is truncated once per process, so a low uptime nonce is
     // sufficient to distinguish a new hardware run inside that file. Window
     // IDs then remain monotonic across stage teardown/re-registration.
@@ -453,6 +769,11 @@ extern "C" void th07_psp_boot_note(const char *message)
     {
         return;
     }
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    // Scope the whole synchronous logger call, including its real semaphore
+    // wait. This is constructed only after recursive fileio initialization.
+    BootJitterLogCallScope bootJitterLogCall;
+#endif
 #if defined(TH07_PSP_PERF_DIAG)
 #if !defined(TH07_PSP_1000)
     if (__atomic_load_n(&gPerfStageLoadActive, __ATOMIC_ACQUIRE))
@@ -473,35 +794,88 @@ extern "C" void th07_psp_boot_note(const char *message)
         th07_psp_perf_note(message);
         return;
     }
+#endif
     const bool bootLogLockAvailable = gBootLogSema >= 0;
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const unsigned long long bootJitterLockStartUs =
+        sceKernelGetSystemTimeWide();
+#endif
     const bool bootLogLocked = LockBootLog();
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    BootJitterRecordLogIo(
+        gBootJitter.logLock,
+        sceKernelGetSystemTimeWide() - bootJitterLockStartUs,
+        bootJitterLogCall.phase);
+#endif
     if (bootLogLockAvailable && !bootLogLocked)
     {
         return;
     }
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const unsigned int bootJitterPhase = bootJitterLogCall.phase;
 #endif
-    const SceUID fd = sceIoOpen(gBootLog, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const bool bootLogOpenAttempt = gBootLogFd < 0 && !gBootLogShutdown;
+    const unsigned long long bootJitterOpenStartUs =
+        bootLogOpenAttempt ? sceKernelGetSystemTimeWide() : 0u;
+#endif
+    SceUID fd = gBootLogFd;
     if (fd < 0)
     {
-#if defined(TH07_PSP_PERF_DIAG)
-        UnlockBootLog(bootLogLocked);
+        fd = OpenBootLogAppend();
+    }
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    if (bootLogOpenAttempt)
+    {
+        BootJitterRecordLogIo(
+            gBootJitter.logOpen,
+            sceKernelGetSystemTimeWide() - bootJitterOpenStartUs,
+            bootJitterPhase);
+    }
 #endif
+    if (fd < 0)
+    {
+        UnlockBootLog(bootLogLocked);
         return;
     }
     // Millisecond uptime prefix: the log doubles as a coarse profile of the
     // menu/Music Room transitions without a separate diagnostic build.
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const unsigned long long bootJitterWriteStartUs =
+        sceKernelGetSystemTimeWide();
+#endif
     char stamp[16];
     const int stampLength = FormatUptimeStamp(stamp, sizeof(stamp));
-    if (stampLength > 0)
-    {
-        sceIoWrite(fd, stamp, static_cast<unsigned int>(stampLength));
-    }
-    sceIoWrite(fd, message, std::strlen(message));
-    sceIoWrite(fd, "\n", 1);
-    sceIoClose(fd);
-#if defined(TH07_PSP_PERF_DIAG)
-    UnlockBootLog(bootLogLocked);
+    const std::size_t messageLength = std::strlen(message);
+    const bool writeOk = stampLength > 0 &&
+                         WriteAvailable(fd, stamp, static_cast<std::size_t>(stampLength)) ==
+                             static_cast<std::size_t>(stampLength) &&
+                         WriteAvailable(fd, message, messageLength) == messageLength &&
+                         WriteAvailable(fd, "\n", 1u) == 1u;
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    BootJitterRecordLogIo(
+        gBootJitter.logWrite,
+        sceKernelGetSystemTimeWide() - bootJitterWriteStartUs,
+        bootJitterPhase);
 #endif
+    if (!writeOk)
+    {
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        const unsigned long long bootJitterCloseStartUs =
+            sceKernelGetSystemTimeWide();
+#endif
+        // A media reset can invalidate a live descriptor.  Fail this line,
+        // close the stale handle, and let the next note attempt one append
+        // reopen instead of silently discarding every later diagnostic.
+        CloseBootLog();
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        BootJitterRecordLogIo(
+            gBootJitter.logClose,
+            sceKernelGetSystemTimeWide() - bootJitterCloseStartUs,
+            bootJitterPhase);
+#endif
+    }
+    UnlockBootLog(bootLogLocked);
 }
 
 extern "C" void th07_psp_perf_note(const char *message)
@@ -589,13 +963,15 @@ extern "C" void th07_psp_perf_log_flush()
     {
         return;
     }
-    const SceUID fd = sceIoOpen(gBootLog, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+    const SceUID fd = OpenBootLogAppend();
     if (fd < 0)
     {
         UnlockBootLog(bootLogLocked);
         return;
     }
-    const std::size_t written = WriteAvailable(fd, gPerfLogBuffer, gPerfLogUsed);
+    const std::size_t bufferedBytes = gPerfLogUsed;
+    const std::size_t written = WriteAvailable(fd, gPerfLogBuffer, bufferedBytes);
+    bool logIoOk = written == bufferedBytes;
     if (written > 0)
     {
         const std::size_t remaining = gPerfLogUsed - written;
@@ -620,16 +996,27 @@ extern "C" void th07_psp_perf_log_flush()
                              static_cast<std::size_t>(stampLength) < sizeof(stamp);
         const bool messageOk = messageLength > 0 &&
                                static_cast<std::size_t>(messageLength) < sizeof(droppedMessage);
-        if (stampOk && messageOk &&
+        const bool droppedWritten =
+            stampOk && messageOk &&
             WriteAvailable(fd, stamp, static_cast<std::size_t>(stampLength)) ==
                 static_cast<std::size_t>(stampLength) &&
             WriteAvailable(fd, droppedMessage, static_cast<std::size_t>(messageLength)) ==
-                static_cast<std::size_t>(messageLength))
+                static_cast<std::size_t>(messageLength);
+        if (droppedWritten)
         {
             gPerfLogDroppedLines = 0;
         }
+        else
+        {
+            logIoOk = false;
+        }
     }
-    sceIoClose(fd);
+    if (!logIoOk)
+    {
+        // Preserve the unwritten RAM suffix and retry it on a fresh append
+        // descriptor at the next safe flush boundary.
+        CloseBootLog();
+    }
     UnlockBootLog(bootLogLocked);
 #endif
 }
@@ -783,18 +1170,31 @@ extern "C" void th07_psp_perf_set_window_id(unsigned int windowId)
 
 extern "C" void th07_psp_fileio_shutdown()
 {
-#if defined(TH07_PSP_PERF_DIAG)
     if (gBootLogSema >= 0)
     {
         // main calls this after the observer and all audio workers have
         // stopped. Take the final token before deleting the kernel object.
         if (LockBootLog())
         {
-            sceKernelDeleteSema(gBootLogSema);
+            gBootLogShutdown = true;
+            CloseBootLog();
+            const SceUID bootLogSema = gBootLogSema;
             gBootLogSema = -1;
+            sceKernelDeleteSema(bootLogSema);
+            return;
         }
     }
-#endif
+    // A failed/missing semaphore is only possible during partial init or
+    // kernel teardown. Workers have already stopped at this call site, so an
+    // idempotent close remains safe and avoids leaking the retained handle.
+    gBootLogShutdown = true;
+    CloseBootLog();
+    if (gBootLogSema >= 0)
+    {
+        const SceUID bootLogSema = gBootLogSema;
+        gBootLogSema = -1;
+        sceKernelDeleteSema(bootLogSema);
+    }
 }
 
 extern "C" void th07_psp_boot_notef(const char *format, ...)

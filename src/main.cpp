@@ -514,9 +514,7 @@ stop:
 #endif
 #endif
     th07_psp_boot_note("main exited");
-#if defined(TH07_PSP_PERF_DIAG)
     th07_psp_fileio_shutdown();
-#endif
 #endif
     return 0;
 }

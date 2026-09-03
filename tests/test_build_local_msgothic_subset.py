@@ -125,9 +125,12 @@ class LocalMsGothicSubsetTest(unittest.TestCase):
             with self.assertRaisesRegex(self.tool.SubsetToolError, r"pip install --user Pillow"):
                 self.tool.require_pillow()
 
-    def test_release_audit_rejects_derived_msgothic_font_names(self) -> None:
+    def test_release_audit_allows_only_exact_formal_noto_compatibility_file(self) -> None:
         audit = (ROOT / "tools" / "release_audit.sh").read_text(encoding="utf-8")
         self.assertIn(r"msgothic[^/]*\.(ttc|ttf|otf)", audit)
+        self.assertIn("approved_tracked_subset='psp/assets/msgothic-subset.ttf'", audit)
+        self.assertIn("private/unapproved msgothic font", audit)
+        self.assertIn("tools/build_release_noto_subset.py --check", audit)
 
     def _fonttools_or_skip(self):
         try:

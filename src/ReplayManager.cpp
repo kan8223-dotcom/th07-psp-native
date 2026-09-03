@@ -36,6 +36,19 @@ constexpr size_t kPspReplayEndBytes = 4096u;
 // every live stage on a 32 MiB PSP.
 constexpr size_t kPspReplayInputBytes = 192u * 1024u;
 #endif
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+u64 PspReplayRawFnv1a(const void *data, u32 bytes)
+{
+    const u8 *cursor = static_cast<const u8 *>(data);
+    u64 hash = 0xcbf29ce484222325ULL;
+    for (u32 i = 0; cursor && i < bytes; ++i)
+    {
+        hash ^= cursor[i];
+        hash *= 0x100000001b3ULL;
+    }
+    return cursor ? hash : 0u;
+}
+#endif
 }
 #endif
 
@@ -455,6 +468,14 @@ ZunResult ReplayManager::AddedCallbackDemo(ReplayManager *arg)
     {
         arg->data =
             (ReplayFile *)FileSystem::OpenFile(arg->replayFilename, !g_GameManager.demo);
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        arg->rawFileBytes = arg->data ? g_LastFileSize : 0u;
+        arg->rawFileFnv1a = PspReplayRawFnv1a(arg->data, arg->rawFileBytes);
+        th07_psp_boot_notef("replay raw identity bytes%u fnv%08X%08X",
+                            arg->rawFileBytes,
+                            static_cast<unsigned int>(arg->rawFileFnv1a >> 32u),
+                            static_cast<unsigned int>(arg->rawFileFnv1a));
+#endif
 #if defined(TH07_PSP)
         th07_psp_boot_note(arg->data ? "demo replay raw loaded" : "demo replay raw missing");
 #endif
@@ -626,9 +647,37 @@ ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
 #if defined(TH07_PSP)
         th07_psp_boot_note("replay manager allocated");
 #endif
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        // AddToCalcChain invokes the replay loader synchronously. If that
+        // callback rejects a missing/corrupt replay, Supervisor still tears
+        // this partially registered manager down. Initialize every pointer
+        // its DeletedCallback can observe before entering the callback.
+        mgr->frameId = 0;
+        mgr->unused_40 = nullptr;
+        mgr->replayInputs = nullptr;
+        mgr->fpsCursor = nullptr;
+        mgr->stageReplayData = nullptr;
+        mgr->calcChain = nullptr;
+        mgr->drawChain = nullptr;
+        mgr->demoCalcChain = nullptr;
+        mgr->rngCalcChain = nullptr;
+        mgr->rngSeed = 0u;
+        mgr->replayEventFlags = 0u;
+        for (i32 i = 0; i < 7; ++i)
+        {
+            mgr->stageReplayDataSize[i] = 0;
+            mgr->stageEndDataSize[i] = 0;
+            mgr->replayInputsByStage[i] = nullptr;
+            mgr->replayDataEndPointers[i] = 0u;
+        }
+#endif
         g_ReplayManager = mgr;
         mgr->recordingStage = -1;
         mgr->data = NULL;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        mgr->rawFileFnv1a = 0u;
+        mgr->rawFileBytes = 0u;
+#endif
         mgr->isDemo = isDemo;
         mgr->replayFilename = replayFilename;
         switch (isDemo)
@@ -642,6 +691,10 @@ ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
             mgr->calcChain->arg = mgr;
             if (g_Chain.AddToCalcChain(mgr->calcChain, 16))
             {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+                delete mgr->drawChain;
+                mgr->drawChain = nullptr;
+#endif
                 return ZUN_ERROR;
             }
 #if defined(TH07_PSP)
@@ -664,6 +717,10 @@ ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
             mgr->calcChain->arg = mgr;
             if (g_Chain.AddToCalcChain(mgr->calcChain, 5))
             {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+                delete mgr->drawChain;
+                mgr->drawChain = nullptr;
+#endif
                 return ZUN_ERROR;
             }
 
@@ -681,15 +738,25 @@ ZunResult ReplayManager::RegisterChain(i32 isDemo, const char *replayFilename)
     }
     else
     {
+        ZunResult replayAddedResult = ZUN_SUCCESS;
         switch (isDemo)
         {
         case 0:
-            AddedCallback(g_ReplayManager);
+            replayAddedResult = AddedCallback(g_ReplayManager);
             break;
         case 1:
-            AddedCallbackDemo(g_ReplayManager);
+            replayAddedResult = AddedCallbackDemo(g_ReplayManager);
             break;
         }
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (replayAddedResult != ZUN_SUCCESS)
+        {
+            th07_psp_boot_note("REPLAY INVALID replay stage load failed");
+            return ZUN_ERROR;
+        }
+#else
+        (void)replayAddedResult;
+#endif
     }
 #if defined(TH07_PSP)
     th07_psp_boot_note("replay register ready");
@@ -801,7 +868,7 @@ void ReplayManager::SaveReplay(const char *filename, char *replayName)
     if (g_ReplayManager)
     {
         mgr = g_ReplayManager;
-        if (!mgr->IsDemo())
+        if (!mgr->IsDemo() && mgr->data)
         {
             if (!g_GameManager.practice && g_GameManager.difficulty < 4 &&
                 memcmp(&g_Supervisor.cfg, &mgr->data->data.cfg, sizeof(g_Supervisor.cfg)) != 0)

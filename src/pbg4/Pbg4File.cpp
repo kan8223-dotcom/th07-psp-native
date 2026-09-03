@@ -66,7 +66,15 @@ bool Pbg4File::Open(const char *path, const char *mode)
     else
     {
         GetFullPath(local_114, path);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        const unsigned long long openStartUs = th07_psp_boot_jitter_now();
+#endif
         this->file = fopen(local_114, this->access);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_record_archive_io(
+            TH07_PSP_BOOT_JITTER_ARCHIVE_OPEN,
+            th07_psp_boot_jitter_now() - openStartUs);
+#endif
         if (!this->file)
         {
             return false;
@@ -84,7 +92,15 @@ void Pbg4File::Close()
 {
     if (this->file)
     {
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        const unsigned long long closeStartUs = th07_psp_boot_jitter_now();
+#endif
         fclose(this->file);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_record_archive_io(
+            TH07_PSP_BOOT_JITTER_ARCHIVE_CLOSE,
+            th07_psp_boot_jitter_now() - closeStartUs);
+#endif
         this->file = NULL;
         this->access = 0;
     }
@@ -100,7 +116,15 @@ u32 Pbg4File::Read(void *data, u32 len)
         return 0;
     }
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const unsigned long long readStartUs = th07_psp_boot_jitter_now();
+#endif
     local_8 = fread(data, 1, len, this->file);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_record_archive_io(
+        TH07_PSP_BOOT_JITTER_ARCHIVE_READ,
+        th07_psp_boot_jitter_now() - readStartUs);
+#endif
     return local_8;
 }
 
@@ -126,7 +150,16 @@ u32 Pbg4File::Tell()
     }
     else
     {
-        return ftell(this->file);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        const unsigned long long metaStartUs = th07_psp_boot_jitter_now();
+#endif
+        const u32 offset = ftell(this->file);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_record_archive_io(
+            TH07_PSP_BOOT_JITTER_ARCHIVE_META,
+            th07_psp_boot_jitter_now() - metaStartUs);
+#endif
+        return offset;
     }
 }
 
@@ -138,10 +171,18 @@ u32 Pbg4File::GetSize()
     }
     else
     {
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        const unsigned long long metaStartUs = th07_psp_boot_jitter_now();
+#endif
         long cur = ftell(this->file);
         fseek(this->file, 0, SEEK_END);
         u32 size = ftell(this->file);
         fseek(this->file, cur, SEEK_SET);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_record_archive_io(
+            TH07_PSP_BOOT_JITTER_ARCHIVE_META,
+            th07_psp_boot_jitter_now() - metaStartUs);
+#endif
         return size;
     }
 }
@@ -153,7 +194,15 @@ bool Pbg4File::Seek(u32 offset, u32 seekFrom)
         return false;
     }
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const unsigned long long seekStartUs = th07_psp_boot_jitter_now();
+#endif
     fseek(this->file, offset, seekFrom);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_record_archive_io(
+        TH07_PSP_BOOT_JITTER_ARCHIVE_SEEK,
+        th07_psp_boot_jitter_now() - seekStartUs);
+#endif
     return true;
 }
 

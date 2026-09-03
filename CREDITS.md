@@ -35,8 +35,12 @@
 - [PPSSPP](https://github.com/hrydgard/ppsspp) — 高速な回帰試験に使用。最終判定はPSP実機です。
 - SDL2、SDL2_image、SDL2_ttf、FreeType、libpng、libjpeg、zlib、bzip2 —
   portable engineおよびPSPビルドで使用するライブラリ。
-- Noto Sans JP — 日本語テキスト表示。配布フォントのライセンスは`licenses/NotoSansJP/OFL.txt`を
-  参照してください。
+- [Noto Sans CJK JP](https://github.com/notofonts/noto-cjk) 2.004 — 日本語テキスト表示。
+  PSP-2000/3000/Go用full payloadとPSP-1000用1,190-codepoint Modified Versionを、Adobeの
+  copyright noticeおよびSIL Open Font License 1.1の下で同梱します。
+  `msgothic-subset.ttf`はruntime互換filenameでありMicrosoft fontではありません。licenseは
+  `licenses/NotoSansJP/OFL.txt`、upstream hash・変更内容・provenanceの制約は
+  `licenses/NotoSansJP/FONTLOG-TH07PSP.txt`を参照してください。
 
 本プロジェクトについて、上記の原作者・上流・参照先へ問い合わせないでください。
 これらのプロジェクトは本移植のサポート窓口ではありません。

@@ -89,7 +89,19 @@ u8 *Pbg4Archive::ReadDecompressEntry(const char *filename, u8 *buf)
         goto err;
     }
 
-    if (this->fileAbstraction->Open(this->filename, g_AccessModes[0]) == 0)
+#if defined(TH07_PSP)
+    // OpenArchive keeps the archive FILE alive until Release.  Reopening the
+    // same th07.dat for every entry gives ef0:/ thirty chances to enter its
+    // observed 30-second fopen timeout during SFX startup.  Reuse the live
+    // handle; if an unexpected caller closed it, retain the original reopen
+    // failure path before the absolute entry seek below.
+    if (!this->fileAbstraction->file &&
+        !this->fileAbstraction->Open(this->filename, g_AccessModes[0]))
+#else
+    // Preserve the original desktop behavior; the hardware fix is default-on
+    // for every PSP model rather than tied to the Go diagnostic profile.
+    if (!this->fileAbstraction->Open(this->filename, g_AccessModes[0]))
+#endif
     {
         goto err;
     }

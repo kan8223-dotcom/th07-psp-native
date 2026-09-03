@@ -2,124 +2,100 @@
 
 **日本語** | [English](README_EN.md)
 
-東方妖々夢 ～ Perfect Cherry Blossom 1.00bをPSP上でネイティブ動作させる、
-非公式・開発途中の移植です。Windows版をエミュレーションするものではありません。
+> [!IMPORTANT]
+> **現在の配布版`v1.0.0-rc1`は最終テスター版（正式stable公開前のプレリリース）です。**
+> 入手先は[GitHub Releases](https://github.com/kan8223-dotcom/th07-psp-native/releases)です。
+> 全機種共通の単一EBOOT（初期SHA-256 `822E0A4C43AC84509A25AF16D921B0BB9BCB1C4597DCDBB315E9583D5E92FAD4`）が起動時に
+> PSP-1000用profileとPSP-2000/3000/Go用profileを自動選択します。対応CFWはARK-5のみで、
+> PSP-2000/3000/Goでは`Use Extra Memory = Max`が必須です。
+>
+> 初期EBOOTのXMBアイコンと背景は完全透明です。利用者自身の正しい`th07.dat`と`thbgm.dat`を
+> 初回起動で検証できた場合だけ、実機上でアイコンと背景をlocal生成します。生成後のEBOOTは
+> 原作由来画像を含むため、共有・再配布しないでください。
+
+東方妖々夢 ～ Perfect Cherry Blossom 1.00bをPSP上でネイティブ動作させる、非公式の移植です。
+Windows版をエミュレーションするものではありません。
 
 > [!WARNING]
-> このリポジトリと配布EBOOTには、東方妖々夢の原作データを一切含みません。
+> このリポジトリと配布物には、東方妖々夢の原作データおよび原作から生成した画像を一切含みません。
 > 動作には、利用者自身が所有するPC版東方妖々夢 1.00bのインストールフォルダが必要です。
 
 ## 特徴
 
 - [some100/th07のportable branch](https://github.com/some100/th07/tree/portable)を基にした、
   PSP向けネイティブ移植です。
+- 1つのEBOOTが起動時にPSPの型番を判定し、PSP-1000用32MB profileまたは
+  PSP-2000/3000/Go用64MB profileを自動選択します。機種別EBOOTを選ぶ必要はありません。
 - PSPSDKのlibGU/libGUMからPSPのGraphics Engine（GE）へ描画します。
 - VFPU対応libGUMとPSP向け数値処理を使用します。
 - m-c/dの[Media Engine Custom Core（MECC）](https://github.com/mcidclan/psp-media-engine-custom-core)を使い、
-  実機ではMedia Engine（ME）にPCM音声ミキシングを担当させます。利用できない場合やPPSSPPでは
+  実機ではMedia Engine（ME）にPCM音声ミキシングを担当させます。利用できない場合は
   メインCPU（SC）へ安全にフォールバックします。
 - PSP-1000の省メモリ音声profileでは、M-cid（m-c/d）氏の
   [PSP Media Engine Safe Task](https://github.com/mcidclan/psp-media-engine-safe-task)が提供する
-  **MIST方式**を利用します。BGM ringをME local eDRAMへ移すことで、Main RAMを正味
-  393,088 bytes（383.875 KiB、約384 KiB）回収し、PSP-1000で発生していたOOMを防げました。
-  実機で1面から6面、Ending、Result、タイトル復帰まで通して確認しています。
+  MIST方式を利用します。BGM ringをME local eDRAMへ移してMain RAMを正味393,088 bytes
+  （383.875 KiB）回収し、32MB環境のOOMを防ぎます。
 - 原作の論理解像度640x480を保ち、PSPの480x272へ4:3表示または全画面引き伸ばしで出力します。
 - 設定、スコア、リプレイは原作フォルダへ書かず、EBOOTと同じ場所へ保存します。
+- 正式ZIPはPSP-2000/3000/Go用のfull Noto fontと、PSP-1000用の同じOFL Noto由来
+  1,190文字subsetを両方同梱します。
 
-## ベータ版の状態
+## 正式統合版の状態
 
-現在はテスター向けのv0.1.7-betaです。PSP-2000/3000/Goの64MB版と、メモリ使用量を縮小した
-PSP-1000専用32MB版を別々のZIPで配布します。PSP-1000版は引き続きテスター向けです。
+現在は、XMB上のBeta／tester表記を外した単一EBOOTの最終テスター／プレリリースを
+GitHub Releasesで公開しています。正式stableへの昇格は、対象実機での受入結果を根拠に別途判断します。
+PCまたはPPSSPPだけの結果を実機受入とは扱いません。
 
-v0.1.7はARK-5向けhigh-memory起動手順を64MB版ZIPへ追加した互換性更新です。ゲーム本体が
-`main()`へ入る前に黒画面または電源断となり、`TH07PSP_BOOT.LOG`も更新されない場合は、
-[ARK-5 high-memory手順](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md)を確認してください。
+PSP-1000のリプレイ同期に関する旧い「未確認」記述は、2026-09-03の実機受入によって更新されました。
+EBOOT SHA-256
+`18cf0136de1525ef6b0eca4fca5bc2415a0a65875d8c0d88d53a9a509a94c365`を物理PSP-1000で使用し、
+固定Lunatic外部リプレイ`th7_udLUNA.rpy`が1面から6面、幽々子撃破、Replay選択画面への復帰まで
+同期完走しました。当該boot logにはCFW名とversionが記録されていないため、このrunのCFWは未確定です。
+今後の正式サポート条件はARK-5へ限定します。固定リプレイ、EBOOT、実機ログのhashは[更新履歴](CHANGELOG.md)と
+[受入anchor](release-anchors/psp1000-e480-hw-pass-20260903/README.md)に固定しています。
+
+この合格は上記の固定リプレイに対するものです。任意の外部リプレイ、全難易度、全機体を一括して
+保証するものではありません。identityまたは予約容量の契約を満たさないPSP-1000リプレイは、敵を
+黙って欠落させず`REPLAY INVALID`を記録して中止します。
 
 > [!IMPORTANT]
-> **安定してプレイする場合は、起動後にSELECTを押して固定30fpsモードを使用することを推奨します。**
-> 描画を30fpsへ固定して負荷の余裕を作りますが、ゲーム進行、入力、BGM、SEの速度は変わりません。
-> SELECTをもう一度押すと通常の60fpsモードへ戻ります。
+> 対応CFWはARK-5のみです。PSP-2000、PSP-3000、PSP Goでは、ARK-5の
+> `Use Extra Memory`を起動前に必ず`Max`へ設定してください。`Default`、`Off`、または
+> `always, highmem, off`のままではサポート対象外で、起動前に終了する場合があります。
+> PSP-1000には追加Main RAMがないためMax設定は適用されませんが、CFWはARK-5を使用します。
 
-> [!WARNING]
-> **PSP-1000版は現在、リプレイの同期互換性を保証できません。**
-> 32MB RAMへ収めるため敵の実体上限を64MB版より減らしています。
-> v0.1.5では弾1024発、Item 1100個、Effect 400個を原作相当の物理スロットへ戻しましたが、
-> Enemyの上限差では原作や64MB版から分岐する可能性があります。テスターからも、
-> PSP-1000で試したリプレイのほぼすべてが同期しなかったとの報告があります。現行PSP-1000版を
-> リプレイ互換性やスコアの検証には使用しないでください。
-> 外部リプレイだけでなく、タイトル放置で始まる原作内蔵デモも同期しないとの追加報告があり、
-> v0.1.5以降のPSP-1000版はPPSSPP上の同一内蔵デモで64MB版と8160フレームまで一致しましたが、
-> PSP実機と外部リプレイによる確認が終わるまでは保証しません。
-> 同じテスターによる移植元upstream版ではデモが同期するため、PSP移植後の変更またはPSP向け
-> ビルド条件による回帰として切り分けています。
-> 報告者は5.50 GEN-D3と6.61 ARK-5を使用しており、5.50用EBOOTは自己ビルドです。
-> 配布EBOOTでの再現範囲と、ビルド条件の違いによる影響も調査中です。
-> また、Lunaticのリプレイが幽々子撃破まで完走した後、Replay選択画面へ戻れないとの報告も
-> 調査中です。再現機種と32/64MBビルドは未確定です。
-
-- PSP-1000向けv0.1.4-beta通常EBOOTを実機で使用し、Normalで1面から6面、幽々子撃破後の
-  Ending、スタッフロール、タイトル復帰まで確認済みです。別の実機試験では、ポーズとゲーム復帰、
-  コンティニューを使い切った後のResult画面、そこからのタイトル復帰も確認しています。
-- Normalの妖夢撃破後の5面→6面遷移もPSP-1000実機で確認済みです。終了した面のリプレイ記録領域を
-  実使用量へ縮小し、面切替時の未使用テクスチャを解放してから次の面を登録します。
-- PSP-1000版v0.1.4-betaのEasy、Hard、Lunatic、Extra、Phantasmは未確認です。
-- 参考として、PSP-1000対応前のv0.1.3-betaについては、Gensokyoclubのメンバーから、Lunaticの
-  リプレイで5面到達まで確認したとの報告があります。そのリプレイが終了した理由は、残機消尽による
-  通常終了か異常終了か判別できておらず、6面到達とゲームクリアは未確認です。この報告は
-  PSP-1000版v0.1.4-betaの動作確認には含めません。
-- タイトル、機体選択、通常プレイ、BGM、SE、日本語会話、1～6面の各面単独起動を確認しています。
-- v0.1.6ではBGMだけの出力を無加工のまま保ち、再生中のSEだけを32bit幅でSC上に合成してから、
-  BGMの残りヘッドルームへ加算します。PSP-1000実機でOPのBGM、雑魚の爆散音、ボム音が
-  クリアになったことと、BGM入力ringのunderrunが0回だったことを確認しています。
-  両版のクリーンビルドとPPSSPPの32MB/64MBモデルによるスモーク試験は通過していますが、
-  64MB実機での聴感確認はまだです。
-- PPSSPPの32MBモデルでは通常メニューから1面を開始できることに加え、診断用の強制遷移で
-  Stage 1～8の連続登録、Result画面、タイトル復帰を確認しています。これはExtraとPhantasmの
-  通常プレイ、ボス戦、ゲームクリアを確認したものではありません。
-- タイトル放置デモをボタンで中断した際のクラッシュと、タイトルへ戻った際の表示欠落を修正しています。
-- PSP-1000版の弾payloadを縮小し、64MB版の内蔵デモで計測した最大1002発を収容できる
-  原作相当の1024物理slotへ戻しました。Item 1100個とEffect 400個も原作相当の物理slotへ
-  戻しています。PPSSPPでは同一内蔵デモの136地点で32MB/64MB版のゲーム状態が一致しました。
-  Enemyの上限差は残るため、リプレイ同期は引き続き実機検証中です。
-- Music Roomの背景展開、文字更新、入退室時の同期を軽量化し、戻る操作でXMBへ終了する経路を修正しています。
-- 立ち絵の下端がフレームバッファ境界を越えて画面最上段へ1ピクセルだけ現れる問題には、
-  下端側の座標とUVを補間する立ち絵専用クリップを入れています。実機での再確認が必要です。
-- PSP-1000で後半面からポーズした際のメモリ不足対策として、ポーズ背景を追加ヒープなしで
-  RGB565フレームバッファから既存テクスチャへ直接取り込むようにしています。PSP-1000実機で
-  4面以降のポーズとゲーム復帰を確認済みです。
-- 弾・Effectの2頂点描画、背景行列の共有、固定オブジェクト配列の走査削減などを適用していますが、
-  4面以降や大量の弾・Effectが重なる場面には処理落ちが残ります。詳細は
-  [更新履歴](CHANGELOG.md)と[既知の不具合](docs/KNOWN_ISSUES.md)を参照してください。
-
-PPSSPPでの動作だけでは実機互換を保証できません。完成版ではないことを理解したうえで使用してください。
+> [!TIP]
+> 重い弾幕や後半面で安定性を優先する場合は、プレイ中にSELECTを押して固定30fpsモードを使用できます。
+> 描画を30fpsへ固定しても、ゲーム進行、入力、BGM、SEの速度は変わりません。
 
 ## インストール
 
 必要なもの:
 
-- CFWでhomebrewを起動できるPSP-1000/2000/3000/Go
-- Releasesにある、本体の型番に対応したベータ版ZIP
+- ARK-5でhomebrewを起動できるPSP-1000/2000/3000/Go
+- GitHub Releasesにある最終テスター／プレリリース統合版ZIP（全機種共通）
 - 利用者自身が所有するPC版東方妖々夢 1.00bのインストールフォルダ
-
-PSP-1000では「PSP-1000専用」と明記したテスター向けZIPを使用してください。
-PSP-2000/3000/Go用の64MB版は別ZIPです。通常は本体の型番に合うZIPだけを使用してください。
-両方を同じメモリースティックへ置く場合は、後述のように必ず別フォルダへ展開します。
+- USB接続またはカードリーダー
 
 一番簡単な手順:
 
-1. 配布ZIPを展開します。
-2. ZIP内の`TH07PSP`フォルダを、メモリースティックの`PSP/GAME/`へコピーします。
-3. PCにある東方妖々夢のインストールフォルダを、フォルダごと`TH07PSP`の中へコピーします。
-4. コピーした原作フォルダの名前を、半角英数字の`th7`へ変更します。
-5. XMBのゲーム一覧から`Touhou 7 PSP-1000 Beta`または
-   `Touhou 7 PSP-2000+ Beta`を起動します。
+現在の最終テスター／プレリリース統合版は、次の手順で導入します。
 
-最終的な配置は次の形です。原作フォルダの中身を個別に選別したり、DATを展開したりする必要はありません。
+1. ARK-5を導入します。PSP-2000/3000/Goでは対象アプリの`Use Extra Memory`を`Max`へ設定します。
+2. 配布ZIPを展開します。
+3. ZIP内の`TH07PSP`フォルダを、メモリースティックまたは内蔵ストレージの`PSP/GAME/`へコピーします。
+4. PCにある東方妖々夢のインストールフォルダを、フォルダごと`TH07PSP`の中へコピーします。
+5. コピーした原作フォルダの名前を、半角英数字の`th7`へ変更します。すでに`th7`がある場合は、
+   原作フォルダそのものではなく、その**中身**を`th7`直下へコピーします。
+6. XMBから`東方妖々夢 ～ Perfect Cherry Blossom.`を起動します。
+
+最終的な配置は次の形です。DATを展開したり、日本語名の原作ファイルを個別に選別したりする必要はありません。
 
 ```text
 PSP/GAME/TH07PSP/
 ├── EBOOT.PBP
 ├── NotoSansJP-Regular.ttf
+├── msgothic-subset.ttf
 ├── README.md
 ├── CREDITS.md
 ├── LICENSE
@@ -131,44 +107,72 @@ PSP/GAME/TH07PSP/
     └── その他の原作ファイル
 ```
 
-EBOOTは`th07.dat`と`thbgm.dat`のヘッダおよび1.00bのファイルサイズを確認します。
-別バージョンや不足したデータでは起動できません。
+2つのfontはどちらも必須です。PSP-1000 payloadは264,288-byteの
+`msgothic-subset.ttf`、PSP-2000/3000/Go payloadは4,491,696-byteの
+`NotoSansJP-Regular.ttf`を使用します。前者はruntime互換のfilenameにすぎず、内部も字形も
+OFL-licensed Noto Sans CJK JP 2.004由来で、Microsoft MS Gothicではありません。Windowsから
+作ったprivate subsetで置き換えたり再配布したりしないでください。生成・hash・licenseの契約は
+[正式配布font仕様](docs/PSP_RELEASE_FONTS.md)に記録しています。
 
-PSP-1000専用EBOOTは初回のタイトル読込時に、利用者自身の`th07.dat`から約1.7MBの
-`title01.psp1000.cache`をEBOOTと同じ場所へ生成します。クリア後のタイトル復帰時に使う16bitキャッシュで、
-削除しても次回起動時に再生成されます。原作由来のユーザーデータなので、不具合報告や配布物へ添付しないでください。
+EBOOTは`th07.dat`と`thbgm.dat`のheaderおよび1.00bのfile sizeを確認します。
+対応する1.00bのsizeはそれぞれ23,829,135 bytesと444,516,656 bytesです。
+別versionや不足したデータでは起動しません。
 
-### 別のデータ配置
+> [!WARNING]
+> `th7`の中へ原作フォルダをもう一度入れないでください。
+> `TH07PSP/th7/東方妖々夢/th07.dat`のように一段深い配置にすると、統合launcherと
+> model別runtimeの起動までは成功しても、runtimeが`original TH07 1.00b data not found`を
+> 記録して終了します。`th07.dat`と`thbgm.dat`は必ず`TH07PSP/th7/`直下へ置いてください。
 
-容量や管理上の理由で原作フォルダを`TH07PSP`内へ置きたくない場合は、`ms0:`またはPSP Goの`ef0:`直下へ
-原作フォルダを置くこともできます。直下のフォルダを1階層だけ調べ、正しい`th07.dat`と`thbgm.dat`が
-揃った場所を自動検出します。まずは上記の`TH07PSP/th7`配置を推奨します。
+### 初回のXMB表示とローカル生成物
 
-PSP-1000版と64MB版を同じメモリースティックへ置く場合は、例えば`TH07PSP`と
-`TH07PSP3000`のように別フォルダへ配置できます。各EBOOTは`PSP/GAME/`直下の兄弟フォルダも調べるため、
-片方の`th7`を共有でき、約469MBのDATを複製する必要はありません。設定、スコア、リプレイ、
-PSP-1000用タイトルキャッシュは起動したEBOOTのフォルダごとに別管理されます。
+配布直後のEBOOTは、ICON0とPIC1に生成ツール製の完全透明な中立placeholderだけを持ち、XMB上では
+サムネイルも背景も表示しません。正しい`th07.dat`と`thbgm.dat`を
+初回起動で検証できた場合だけ、利用者のPSP上でXMB用ICON0とPIC1を生成し、次にXMBへ表示された時から
+画像が現れます。生成ツールだけを配布し、生成済み画像をリポジトリやZIPへ収録することはありません。
+このローカル更新経路は実機で安全な更新と次回XMB表示まで確認済みです。現在の配布物は
+最終テスター／プレリリースであり、この確認だけを正式stable公開の宣言とは扱いません。
+
+ローカル生成後の`EBOOT.PBP`には利用者所有の原作から派生した画像が入ります。
+そのEBOOT、生成画像、PSP-1000の`title01.psp1000.cache`を再配布したり、不具合報告へ添付したり
+しないでください。モデルに応じて生成される`TH07RUNTIME.PBP`は、削除しても次回起動時に再生成されます。
+
+設定、スコア、新規リプレイはEBOOTの隣に作成されます。主な生成物は`th07.cfg`、`score.dat`、
+`replay/`です。
+
+### 別の原作データ配置
+
+推奨配置は`PSP/GAME/TH07PSP/th7/`です。容量や管理上の理由がある場合は、原作folderを
+`ms0:`またはPSP Goの`ef0:`直下へ置くこともできます。launcherとmodel別runtimeはそれぞれ、
+起動device直下とその1階層下、および`PSP/GAME/`の兄弟folderにある`th7`を非再帰で探索します。
+どの配置でも、探索対象folderの**直下**に正しい`th07.dat`と`thbgm.dat`の組が必要です。
+その中へさらに原作folderを入れ子にしても探索しません。全機種で同じ規則を使います。
 
 ### 起動しない場合
 
 次を順に確認してください。
 
-1. `EBOOT.PBP`が`PSP/GAME/TH07PSP/`にある。
-2. `NotoSansJP-Regular.ttf`を削除していない。
-3. `TH07PSP/th7/th07.dat`と`TH07PSP/th7/thbgm.dat`がある。
-4. 原作が東方妖々夢 1.00bである。
+1. CFWがARK-5である。
+2. PSP-2000/3000/Goでは`Use Extra Memory`が`Max`である。
+3. `EBOOT.PBP`が`PSP/GAME/TH07PSP/`にある。
+4. `NotoSansJP-Regular.ttf`と`msgothic-subset.ttf`を削除・置換していない。
+5. `TH07PSP/th7/th07.dat`と`TH07PSP/th7/thbgm.dat`が**直下に**あり、さらに原作folderの
+   中へ入れ子になっていない。
+6. 原作が東方妖々夢1.00bである。
 
-PSP-2000/3000/Goの64MB版をARK-5で起動し、上記を満たしてもログを一行も残さず起動前に終了する場合は、
-CFW設定の`Use Extra Memory`を`Off`のままにせず、`Default`を選んでください。手動編集時はARKの
-明示的な`always, highmem, off`設定を確認してください。既存設定をバックアップし、retail gameへ
-影響させない`homebrew, highmem, on`（このEBOOTではARK-5 UIの`Default`と同じ結果）へ置き換えて
-ゲームを起動し直します。
-反映されない場合だけVSH再起動または本体の電源入れ直しを行います。配布ZIPの
-`ARK5_HIGHMEM_SNIPPET.txt`を設定ファイル全体として上書きしてはいけません。詳細は
-[ARK-5 high-memory手順](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md)にあります。
+`TH07PSP_BOOT.LOG`に`original TH07 1.00b data not found`と出る場合は、まず手順5の配置を
+確認してください。統合launcherからmodel別runtimeへの切替に成功した後でも、この配置違いで
+runtimeだけが終了することがあります。
 
-起動・面移動の記録はメモリースティック直下の`TH07PSP_BOOT.LOG`へ出ます。不具合報告時は、
-このログ、PSPの型番、CFW、問題が起きた場面を添えてください。原作データそのものは添付しないでください。
+ARK-5の設定はMemory Stick交換やARK環境の入れ直しで失われる場合があります。以前起動していても、
+storageを交換した後は`Max`を再確認してください。`always, highmem, off`が残っている場合の安全な
+修正方法は[ARK-5設定手順](docs/ARK5_HIGH_MEMORY.md)にあります。付属snippetを
+`SETTINGS.TXT`全体へ上書きしてはいけません。
+
+起動・面移動の記録は起動device直下の`TH07PSP_BOOT.LOG`へ出ます。不具合を再現したら、ゲームを
+もう一度起動する前にログをPCへ退避してください。報告にはログ、PSPの正確な型番、ARK-5のversion、
+ゲームmode・難易度・面・再現操作、使用EBOOTのSHA-256を添えてください。原作データや原作由来の
+ローカル生成物は添付しないでください。
 
 ## 操作
 
@@ -178,19 +182,33 @@ CFW設定の`Use Extra Memory`を`Off`のままにせず、`Default`を選んで
 - □ または L/R: 低速移動
 - △: 会話スキップ
 - START: ポーズ
-- SELECT: 通常60fps / ゲーム進行速度を保つ固定30fpsモードの切り替え（安定プレイ時は30fps推奨）
-- HOME/PSボタン: PSPの終了・中断メニュー
+- SELECT: 通常60fps / ゲーム進行速度を保つ固定30fpsモードの切り替え
+- HOME/PSボタン: PSPの終了・中断menu
 
-原作のウィンドウ表示設定は`4:3 FIT`（362x272）、フルスクリーン設定は
-`FULL STRETCH`（480x272）として扱います。
+原作のwindow表示設定は`4:3 FIT`（362x272）、fullscreen設定は`FULL STRETCH`（480x272）として扱います。
+
+## 現在の制限
+
+- PPSSPPで正常でも、Memory Stick I/O、ARK-5、ME、32/64MB RAMの挙動は実機と異なる場合があります。
+- 重い弾幕、Effect、後半面の3D背景では処理落ちが残ります。これはゲーム進行を遅くする原作準拠の
+  frame skipです。必要に応じて固定30fpsを使用してください。
+- セーブデータと任意の外部リプレイは、更新前にbackupしてください。2026-09-03の同期受入範囲は
+  上記の固定Lunaticリプレイです。
+- Music Roomと一部の表示修正には、PPSSPP合格後も代表実機で再確認が必要な経路があります。
+- 同梱するNoto由来`msgothic-subset.ttf`のPC監査は合格していますが、このexact hashを使う
+  PSP-1000実機の4面および固定Lunatic 1～6面runは正式stable昇格前のgateとして残っています。
+
+詳細は[既知の不具合](docs/KNOWN_ISSUES.md)と[更新履歴](CHANGELOG.md)を参照してください。
 
 ## 含まれないもの
 
 - 東方妖々夢のEXE、DAT、画像、音楽、SE、その他の原作データ
+- 原作から生成済みのXMB画像またはそれを埋め込んだEBOOT
 - 原作または開発中に作成したリプレイ（`.rpy`）
-- 設定、スコア、ログなどのユーザーデータ
-- Microsoftのフォント
-- 自動プレイ、無限残機、MAXパワーなどを有効にした開発用EBOOT
+- 設定、スコア、logなどのuser data
+- Microsoftのfont（`msgothic-subset.ttf`という互換filenameの同梱物はMicrosoft fontではなく、
+  OFL Noto Sans CJK JP由来です）
+- 自動play、無限残機、MAX powerなどを有効にした開発用EBOOT
 
 ## 非公式プロジェクトについて
 
@@ -204,21 +222,25 @@ PSPDEV、PPSSPP、または参照先の作者・保守担当者へ問い合わ�
 ## ビルド
 
 PSPDEV/PSPSDKが`/usr/local/pspdev`に導入済みで、CMakeが使える環境で実行します。
-同梱したMECCも初回の`make`でソースからビルドします。
+同梱したMECCもsourceからbuildします。正式archiveのfont再生成監査には
+`fontTools==4.62.1`が必要です。
 
 ```sh
 make -j"$(nproc)" all
 make psp1000-build
+make psp2000plus-build
 make release
 ```
 
-`make release`は両機種向けを順にクリーンビルドし、
-`dist/th07-psp-native-v0.1.7-beta-psp1000.zip`と
-`dist/th07-psp-native-v0.1.7-beta-psp2000plus.zip`を作ります。原作データ、ユーザーデータ、
-開発用EBOOTの混入と、各ZIPのビルド種別も自動検査します。`make psp1000-build`と
-`make psp2000plus-build`では、対応する専用EBOOTだけをクリーンビルドできます。
+`make release`は固定済みの両profileとclean buildした統合launcherから、local候補archive
+`dist/th07-psp-native-v1.0.0.zip`を1つ作ります。このcommandだけではGitHub tagやReleaseを
+発行しません。初期EBOOTのXMB画像slotが規定の完全透明placeholderと一致すること、
+モデル別runtimeのhash、原作データ・user data・診断EBOOT・原作由来画像が混入していないことを
+release auditで検査します。加えて両Noto fontのsource/license/output hash、1,190文字cmap、
+`kern`のみのlayout契約を再生成で検査します。個別profile targetは開発と回帰確認用であり、
+機種別ZIPは配布しません。
 
-開発用の面直行ビルドは明示した場合だけ有効です。配布物には使用しません。
+開発用の面直行buildは明示した場合だけ有効です。配布物には使用しません。
 
 ```sh
 make PSP_DIRECT_GAME=1 PSP_DIRECT_STAGE=5 -j"$(nproc)"
@@ -226,10 +248,10 @@ make PSP_DIRECT_GAME=1 PSP_DIRECT_STAGE=5 -j"$(nproc)"
 
 ## 参照・謝辞
 
-参考元のデコンパイル、TH06 PSP移植、MECC、MISTを含む実装出所は
+参考元のdecompile、TH06 PSP移植、MECC、MISTを含む実装出所は
 [CREDITS.md](CREDITS.md)へURLと用途を記載しています。
 
 ## ライセンス
 
-本体はベースのsome100/th07と同じくCC0 1.0 Universalです。全文は[LICENSE](LICENSE)を参照してください。
-同梱third-partyとフォントは各ライセンスに従います。原作データの権利は本ライセンスの対象外です。
+本体はbaseのsome100/th07と同じくCC0 1.0 Universalです。全文は[LICENSE](LICENSE)を参照してください。
+同梱third-partyとfontは各licenseに従います。原作データの権利は本licenseの対象外です。

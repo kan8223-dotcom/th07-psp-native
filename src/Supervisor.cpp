@@ -222,6 +222,25 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                     // application exit, which looks like a forced PSP
                     // shutdown.  Tear the partial game chain down through its
                     // normal lifecycle and restore the title instead.
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+                    if (g_GameManager.demo || g_GameManager.replay)
+                    {
+                        th07_psp_boot_note(
+                            g_GameManager.replay && !g_GameManager.demo
+                                ? "replay init failed; REPLAY INVALID; return title"
+                                : "demo init failed; return title");
+                        GameManager::CutChain();
+                        if (g_ReplayManager)
+                        {
+                            ReplayManager::SaveReplay(NULL, NULL);
+                        }
+                        g_GameManager.SetReplay(0);
+                        g_GameManager.demo = 0;
+                        arg->prevState = 2;
+                        arg->curState = 0;
+                        goto CASE_0;
+                    }
+#else
                     if (g_GameManager.demo)
                     {
                         th07_psp_boot_note("demo init failed; return title");
@@ -230,6 +249,7 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                         arg->curState = 0;
                         goto CASE_0;
                     }
+#endif
 #endif
                     return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
                 }
@@ -409,6 +429,18 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                         // releases them and leaves enough memory for the title.
                         arg->curState = 1;
                         GameManager::CutChain();
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+                        if (g_GameManager.replay)
+                        {
+                            th07_psp_boot_note(
+                                "replay stage init failed; REPLAY INVALID; discard");
+                            if (g_ReplayManager)
+                            {
+                                ReplayManager::SaveReplay(NULL, NULL);
+                            }
+                            g_GameManager.SetReplay(0);
+                        }
+#endif
                         g_GameManager.currentStage = completedStage;
                         arg->prevState = 2;
                         arg->curState = 0;
@@ -720,7 +752,15 @@ ZunResult Supervisor::AddedCallback(Supervisor *arg)
             i++;
         }
     }
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    // Start immediately before the line whose synchronous logger return can
+    // otherwise masquerade as time spent by the following SFX load.
+    th07_psp_boot_jitter_begin();
+#endif
     g_AnmManager->ReleaseSurface(0);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_INPUT);
+#endif
     arg->isInEnding = 0;
     arg->renderSkipFrames = 0;
     arg->lastTotalPlayTimeUpdate = SDL_GetTicks64();
@@ -730,31 +770,58 @@ ZunResult Supervisor::AddedCallback(Supervisor *arg)
     {
         arg->midiOutput = new MidiOutput;
     }
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_MIDI);
+#endif
     if (arg->midiOutput)
     {
         arg->midiOutput->ReadFileData(30, "bgm/init.mid");
     }
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_SFX);
+#endif
 #if defined(TH07_PSP_MECC_AUDIO_4M)
     if (g_SoundPlayer.InitSoundBuffers() != ZUN_SUCCESS)
     {
         th07_psp_boot_note("MECC AUDIO4M SFX initialization failed");
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_finish();
+#endif
         return ZUN_ERROR;
     }
 #else
     g_SoundPlayer.InitSoundBuffers();
 #endif
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_ANM);
+#endif
     if (g_AnmManager->LoadAnms(ANM_FILE_TEXT, "data/text.anm", ANM_OFFSET_TEXT) != ZUN_SUCCESS)
     {
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_finish();
+#endif
         return ZUN_ERROR;
     }
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_ASCII);
+#endif
     if (AsciiManager::RegisterChain() != ZUN_SUCCESS)
     {
         g_GameErrorContext.Log("error : 文字の初期化に失敗しました\n");
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_finish();
+#endif
         return ZUN_ERROR;
     }
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_VERTEX);
+#endif
     g_AnmManager->SetupVertexBuffer();
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_TTF_INIT);
+#endif
     if (TextHelper::CreateTextBuffer() != ZUN_SUCCESS)
     {
         return ZUN_ERROR;

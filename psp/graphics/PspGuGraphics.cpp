@@ -3731,6 +3731,13 @@ class PspGuGraphics final : public ZunGraphics
 #if defined(TH07_PSP_ME_RENDER_GE_CONSUME)
         ReleaseMeRenderGeTokenAfterSync();
 #endif
+#if defined(TH07_PSP_ME_BUSY_METER) && !defined(TH07_PSP_PERF_DIAG)
+        // Production ME admission needs the same one-frame-delayed busy veto
+        // as the diagnostic meter, but no history buffers or visible graph.
+        // Close the accumulated ME interval exactly once after all frame work
+        // and the final GE ownership fence have completed.
+        th07_usage_meter_frame(0u);
+#endif
 #if defined(TH07_PSP_PERF_DIAG)
         AccumulateAndReportPerf(finishEndUs, vblankEndUs, geEndUs, vblankCount);
 #if defined(TH07_PSP_PERF_DETAIL)

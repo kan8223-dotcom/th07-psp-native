@@ -1,0 +1,91 @@
+TH07 PSP Noto Sans CJK JP modification log
+============================================
+
+License and upstream identity
+-----------------------------
+
+Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font
+Name "Source". The fonts described here remain under the SIL Open Font
+License 1.1 in OFL.txt. Their primary font name is Noto Sans CJK JP; the
+Reserved Font Name "Source" is not used as their primary name.
+OFL.txt SHA-256: babcfe66c8a098b2fa279bc724a3a342f8124f77ce18941fbcc1bbb39823cded
+(current upstream text with one trailing space normalized)
+
+Upstream release: Noto CJK Sans 2.004 (2021-04-28)
+Release page: https://github.com/notofonts/noto-cjk/releases/tag/Sans2.004
+JP download: https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/06_NotoSansCJKjp.zip
+Download size: 94,832,242 bytes
+Download SHA-256: bf5b26feb83ee02533d4eb4a127bd90ed9d42bdd7ca7cb6e4030b2f21ef55cc5
+Source member: NotoSansCJKjp-Regular.otf
+Source member size: 16,467,736 bytes
+Source member SHA-256: 68a3fc98800b2a27b371f2fb79991daf3633bd89309d4ffaa6946fd587f375b5
+
+Bundled full payload
+--------------------
+
+File: NotoSansJP-Regular.ttf
+Role: fixed PSP-2000/3000/Go runtime payload
+Size: 4,491,696 bytes
+SHA-256: 6ab1664d8adc20b19237ddc451c94e31f493cb851a1917242debf66f9af6da05
+
+Repository/build history shows that this existing file was made from face 0
+of /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc (19,484,784 bytes,
+SHA-256 b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a).
+The historical pyftsubset invocation selected printable ASCII, Latin-1,
+valid CP932 mappings, and the then-required game strings, while retaining all
+layout features, names, symbol/legacy cmaps, .notdef, and recommended glyphs.
+It first entered the TH06 PSP history in commit
+a7ea2ffaefc65086e8af7b633e80abef37713d97 and TH07 in commit
+952a595740168e50ccb5ab326774f70925797c7e.
+
+Provenance limitation: that historical build record did not capture the
+fontTools version, so byte-for-byte regeneration of this already-pinned full
+payload from the TTC is not claimed. The release audit instead fixes its
+current bytes by SHA-256. This limitation does not apply to the PSP-1000
+subset below: its generator and tool version are pinned, and the same result
+was independently reproduced from the official Sans2.004 JP OTF above.
+
+Bundled PSP-1000 modified payload
+---------------------------------
+
+File: msgothic-subset.ttf
+Role: fixed PSP-1000 runtime compatibility filename
+Size: 264,288 bytes
+SHA-256: c456df98197c895c2919a690c737ab3c4a2924799bb4d92fa3a53849c6b56dec
+
+Despite its compatibility filename, this file is not MS Gothic and contains
+no Microsoft font data. It is an OFL Noto Sans CJK JP 2.004 Modified Version.
+tools/build_release_noto_subset.py produces it with fontTools 4.62.1 from
+either approved Noto source hash above. The input character set is exactly the
+1,190 numeric codepoints in src/Th07FontCoverage.hpp (profile SHA-256
+da81e0e1a2b8b5d44c135d2ac43f3f91a90ce684c62b985206992e3855a90aa4).
+
+Modification summary:
+
+- delete glyphs outside the 1,190-codepoint TH07 PSP authority;
+- retain .notdef plus one mapped glyph per authority codepoint (1,191 glyphs);
+- retain only the horizontal GPOS "kern" layout feature and no GSUB feature;
+- retain CFF outlines, horizontal/vertical metrics, hinting, and OFL/copyright
+  name records 0-6, 13, and 14 in English;
+- use deterministic table ordering, bounds recalculation, and no timestamp
+  recalculation.
+
+The kern-only candidate matched the full font for all 1,623 unique, non-empty
+real Japanese game strings in the local stock-data HarfBuzz audit with
+language=ja. Two additional synthetic ASCII/name-entry stress rows accounted
+for the only two differences in the 1,625-row audit. Original strings and
+original game data were kept local and are not recorded in this repository.
+
+Validation boundary
+-------------------
+
+The generator runs two clean builds and requires identical output. Its
+--check mode additionally compares the checked-in file, exact cmap, glyph and
+table inventory, layout features, legal name records, embedding fsType,
+license hash, size, and SHA-256.
+
+Remaining release gate: this exact c456df98... font must still be exercised by
+the unified PSP-1000 payload on real hardware through the memory-heavy stage 4
+path and the fixed stage 1-6 Lunatic replay, with normal Japanese text and no
+allocation, font-coverage, REPLAY INVALID, or fatal errors. PC/PPSSPP and a
+different local/private subset do not satisfy that gate.

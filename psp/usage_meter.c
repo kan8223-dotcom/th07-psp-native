@@ -7,14 +7,17 @@
  *  depthMask=GU_FALSE, fog=OFF, texture=OFF）の基準値へ復元する。
  * ここが本体の状態キャッシュと矛盾しないことはCodexレビューで確認する。
  */
-#if defined(TH07_PSP_USAGE_METER)
+#if defined(TH07_PSP_USAGE_METER) || defined(TH07_PSP_ME_BUSY_METER)
 
 #if defined(TH07_PSP_USAGE_METER_TOGGLE)
 #include <pspctrl.h>
 #endif
+#if defined(TH07_PSP_USAGE_METER)
 #include <pspgu.h>
+#endif
 #include "usage_meter.h"
 
+#if defined(TH07_PSP_USAGE_METER)
 /* ---- 配置（480x272画面座標、ロゴ上の空きに仮置き。実機目視で調整） ---- */
 #define UM_X 408
 #define UM_W 64
@@ -40,6 +43,7 @@ typedef struct
 static unsigned char gScPct[UM_HISTORY];
 static unsigned char gMePct[UM_HISTORY];
 static unsigned int gHead;
+#endif
 static unsigned int gMeCycleAccum;
 static unsigned int gLastMePct;
 
@@ -54,10 +58,11 @@ void th07_usage_meter_frame(unsigned int criticalUs)
     const unsigned int meUs = (unsigned int)(
         ((unsigned long long)gMeCycleAccum * 2ull) / 333ull);
     gMeCycleAccum = 0u;
-
-    unsigned int sc = criticalUs / 167u; /* /16667×100 ≒ /167 (%) */
     unsigned int me = meUs / 167u;
     gLastMePct = me;
+
+#if defined(TH07_PSP_USAGE_METER)
+    unsigned int sc = criticalUs / 167u; /* /16667×100 ≒ /167 (%) */
     if (sc > 200u)
         sc = 200u;
     if (me > 200u)
@@ -65,6 +70,9 @@ void th07_usage_meter_frame(unsigned int criticalUs)
     gHead = (gHead + 1u) % UM_HISTORY;
     gScPct[gHead] = (unsigned char)sc;
     gMePct[gHead] = (unsigned char)me;
+#else
+    (void)criticalUs;
+#endif
 }
 
 unsigned int th07_usage_meter_last_me_percent(void)
@@ -72,6 +80,7 @@ unsigned int th07_usage_meter_last_me_percent(void)
     return gLastMePct;
 }
 
+#if defined(TH07_PSP_USAGE_METER)
 static UmVertex *um_quad(UmVertex *v, int x0, int y0, int x1, int y1,
                          unsigned int color)
 {
@@ -179,5 +188,6 @@ void th07_usage_meter_draw(void)
     sceGuDisable(GU_FOG);
     sceGuDisable(GU_TEXTURE_2D);
 }
+#endif
 
-#endif /* TH07_PSP_USAGE_METER */
+#endif /* TH07_PSP_USAGE_METER || TH07_PSP_ME_BUSY_METER */

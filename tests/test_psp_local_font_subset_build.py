@@ -19,16 +19,38 @@ class PspLocalFontSubsetBuildTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.makefile = MAKEFILE.read_text(encoding="utf-8")
 
-    def test_profile_is_opt_in_psp2000plus_only_and_stamped(self) -> None:
+    def test_profile_is_opt_in_file_backed_on_psp1000_and_stamped(self) -> None:
         self.assertIn("PSP_LOCAL_FONT_SUBSET ?= 0", self.makefile)
         self.assertIn("ifeq ($(PSP_LOCAL_FONT_SUBSET),1)", self.makefile)
-        self.assertIn("PSP_LOCAL_FONT_SUBSET is PSP-2000+ only", self.makefile)
+        self.assertNotIn("PSP_LOCAL_FONT_SUBSET is PSP-2000+ only", self.makefile)
         self.assertIn("-DTH07_PSP_LOCAL_FONT_SUBSET", self.makefile)
         stamp = self.makefile[
             self.makefile.index("PROFILE_STAMP :=") :
             self.makefile.index(".PHONY: FORCE_PROFILE")
         ]
         self.assertIn("$(PSP_LOCAL_FONT_SUBSET)", stamp)
+
+    def test_psp1000_font_ram_measurement_pair_changes_only_selection(self) -> None:
+        control = target_body(
+            self.makefile,
+            "psp1000-font-heap-control-build",
+            "psp1000-font-heap-subset-build:",
+        )
+        subset = target_body(
+            self.makefile,
+            "psp1000-font-heap-subset-build",
+            "psp2000plus-build:",
+        )
+        for body in (control, subset):
+            self.assertIn("PSP_1000=1", body)
+            self.assertIn("PSP_FONT_HEAP_DIAG=1", body)
+            self.assertIn("psp1000-build", body)
+        self.assertIn("PSP_LOCAL_FONT_SUBSET=0", control)
+        self.assertIn("PSP_LOCAL_FONT_SUBSET=1", subset)
+        self.assertIn(
+            "PSP_LOCAL_FONT_SUBSET=$(PSP_LOCAL_FONT_SUBSET)",
+            target_body(self.makefile, "psp1000-build", "# PC/PPSSPP-only A/B pair"),
+        )
 
     def test_a6v4_changes_only_the_local_font_gate_over_a6v3_contract(self) -> None:
         base = target_body(

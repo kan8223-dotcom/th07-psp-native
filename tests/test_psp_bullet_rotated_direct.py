@@ -73,8 +73,9 @@ class PspBulletRotatedDirectSourceTests(unittest.TestCase):
         self.assertIn(f"$({MAKE_FEATURE})", stamp)
 
     def test_standard_and_release_recipes_keep_candidate_off(self) -> None:
-        # release-build and the packaging targets are deliberately chained to
-        # these named builds.  None may silently promote an unaccepted A/B bit.
+        # Standalone profile builds must not silently promote an unaccepted A/B
+        # bit.  The formal package uses exact hardware/rollback anchors instead
+        # of rebuilding either payload from a dirty research worktree.
         for target in (
             "psp1000-build",
             "psp2000plus-build",
@@ -84,9 +85,11 @@ class PspBulletRotatedDirectSourceTests(unittest.TestCase):
         ):
             with self.subTest(target=target):
                 self.assertIn(f"{MAKE_FEATURE}=0", recipe_body(self.makefile, target))
-        self.assertIn("release-build: psp2000plus-build", self.makefile)
-        self.assertIn("$(MAKE) psp2000plus-build", recipe_body(self.makefile, "release-psp2000plus"))
-        self.assertIn("$(MAKE) psp1000-build", recipe_body(self.makefile, "release-psp1000"))
+        self.assertIn("release-build: psp-unified-build", self.makefile)
+        unified = recipe_body(self.makefile, "psp-unified-build")
+        self.assertIn("$(PSP_RELEASE_1000_ANCHOR)", unified)
+        self.assertIn("$(PSP_RELEASE_2000PLUS_ANCHOR)", unified)
+        self.assertNotIn(f"{MAKE_FEATURE}=1", unified)
 
     def test_attribution_profiles_reject_the_changed_boundary(self) -> None:
         self.assertRegex(

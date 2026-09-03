@@ -120,6 +120,19 @@ class PspLocalFontSubsetRuntimeTest(unittest.TestCase):
         self.assertNotIn("TTF_GlyphIsProvided32", render)
         self.assertNotIn("OpenCoverageCheckedFont", render)
 
+    def test_psp1000_heap_probe_brackets_open_and_prewarm(self) -> None:
+        create = section(
+            self.text,
+            "ZunResult TextHelper::CreateTextBuffer()",
+            "void TextHelper::ReleaseTextBuffer()",
+        )
+        self.assertIn("TH07_PSP_FONT_HEAP_DIAG", create)
+        before = create.index('th07_psp_heap_note("FONT M0 before TTF init")')
+        opened = create.index('th07_psp_heap_note("FONT M0 after font open")')
+        prewarm = create.index('th07_psp_heap_note("FONT M0 after prewarm")')
+        self.assertLess(before, opened)
+        self.assertLess(opened, prewarm)
+
 
 if __name__ == "__main__":
     unittest.main()

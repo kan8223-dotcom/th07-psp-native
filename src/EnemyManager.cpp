@@ -7,6 +7,10 @@
 #include "GameManager.hpp"
 #include "Gui.hpp"
 #include "Player.hpp"
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+#include "ReplayManager.hpp"
+#include <cstring>
+#endif
 #include "Rng.hpp"
 #include "SoundPlayer.hpp"
 #include "ZunResult.hpp"
@@ -108,6 +112,49 @@ inline const PspEnemyP5WarmQueue *PspGetEnemyP5WarmQueue(const EnemyManager *man
 Th07PspEnemyP5WarmWindow gPspEnemyP5WarmWindow{};
 #endif
 #endif
+
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+// Runtime identity for the audited external replay. Its file SHA-256 is
+// D6B6634FB12DBA2DF5084D04DB05612FC681735DBC0D035A42A52143DFFB498F.
+// FNV is not the evidence hash; it is a cheap whole-file runtime guard used
+// together with the validated replay header below.
+constexpr u64 kUdLunaRawFnv1a = 0xdf8402d05977cfaaULL;
+constexpr u32 kUdLunaRawBytes = 72308u;
+constexpr u32 kUdLunaChecksum = 0x3fa1d445u;
+constexpr i32 kUdLunaReplayBytes = 510499;
+constexpr i32 kUdLunaCompressedBytes = 72224;
+constexpr i32 kUdLunaPayloadBytes = 510415;
+constexpr u32 kUdLunaStageOffsets[7] = {
+    232u, 45700u, 107292u, 179140u, 289776u, 376912u, 0u,
+};
+constexpr u32 kUdLunaStageEndOffsets[7] = {
+    506276u, 506656u, 507170u, 507770u, 508693u, 509420u, 0u,
+};
+// High-water values came from the complete 480-cap physical-PSP run. The
+// reservation rounds the highest occupied prefix to four-Enemy chunks.
+constexpr i32 kUdLunaEnemyHighWater[7] = {0, 69, 37, 24, 105, 17, 25};
+constexpr i32 kUdLunaEnemyReservation[7] = {0, 72, 64, 64, 108, 64, 64};
+
+bool PspReplayMatchesUdLuna()
+{
+    if (!g_ReplayManager || !g_ReplayManager->data ||
+        g_ReplayManager->rawFileBytes != kUdLunaRawBytes ||
+        g_ReplayManager->rawFileFnv1a != kUdLunaRawFnv1a)
+    {
+        return false;
+    }
+
+    const ReplayHeader &head = g_ReplayManager->data->head;
+    return static_cast<u32>(head.checksum) == kUdLunaChecksum &&
+           head.replaySize == kUdLunaReplayBytes &&
+           head.compressedSize == kUdLunaCompressedBytes &&
+           head.sizeWithoutHeader == kUdLunaPayloadBytes &&
+           std::memcmp(head.stageReplayDataOffsets, kUdLunaStageOffsets,
+                       sizeof(kUdLunaStageOffsets)) == 0 &&
+           std::memcmp(head.stageEndDataOffsets, kUdLunaStageEndOffsets,
+                       sizeof(kUdLunaStageEndOffsets)) == 0;
+}
+#endif
 } // namespace
 #endif
 
@@ -161,6 +208,10 @@ void EnemyManager::Initialize()
 #if defined(TH07_PSP_1000)
     Enemy *chunks[kEnemyChunkCount];
     memcpy(chunks, this->enemyChunks, sizeof(chunks));
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    const i32 reservedCapacity = this->pspEnemyReservedCapacity;
+    const i32 manifestStage = this->pspEnemyManifestStage;
+#endif
 #endif
 #if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
     // A direct reinitialize must not orphan the stage allocation.  Invalidate
@@ -171,6 +222,12 @@ void EnemyManager::Initialize()
     memset(this, 0, sizeof(EnemyManager));
 #if defined(TH07_PSP_1000)
     memcpy(this->enemyChunks, chunks, sizeof(chunks));
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    this->pspEnemyReservedCapacity = reservedCapacity;
+    this->pspEnemyManifestStage = manifestStage;
+    this->pspEnemyManifestInvalid = 0;
+    this->pspEnemyAbortRequested = 0;
+#endif
     for (i = 0; i < kEnemyChunkCount; i++)
     {
         if (this->enemyChunks[i])
@@ -254,6 +311,12 @@ EnemyManager::EnemyManager()
 {
 #if defined(TH07_PSP_1000)
     memset(this->enemyChunks, 0, sizeof(this->enemyChunks));
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    this->pspEnemyReservedCapacity = 0;
+    this->pspEnemyManifestStage = 0;
+    this->pspEnemyManifestInvalid = 0;
+    this->pspEnemyAbortRequested = 0;
+#endif
 #endif
 #if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
     this->pspEnemyP5WarmQueue = NULL;
@@ -406,8 +469,142 @@ bool EnemyManager::PspEnemyP5WarmQueueReady() const
 #endif
 
 #if defined(TH07_PSP_1000)
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+static_assert(sizeof(Enemy) == 20296u,
+              "PSP-1000 Enemy manifest must be recalculated when Enemy changes");
+static_assert(sizeof(Enemy) * 8u == 162368u,
+              "udLUNA stage 1 Enemy reservation drifted");
+static_assert(sizeof(Enemy) * 44u == 893024u,
+              "udLUNA stage 4 Enemy reservation drifted");
+
+bool EnemyManager::PspPrepareEnemyManifest(i32 stage, u32 *arenaExtraBytes)
+{
+    if (arenaExtraBytes)
+    {
+        *arenaExtraBytes = 0u;
+    }
+    PspReleaseEnemyPool();
+    this->pspEnemyManifestStage = stage;
+    this->pspEnemyManifestInvalid = 0;
+    this->pspEnemyAbortRequested = 0;
+
+    if (!arenaExtraBytes || stage < 1 || stage > 6)
+    {
+        this->pspEnemyManifestInvalid = 1;
+        th07_psp_boot_notef("REPLAY INVALID enemy manifest stage %d", stage);
+        return false;
+    }
+
+    i32 reservation = kEnemyBaseCapacity;
+    // The three stock title demos use the ordinary proven 64-slot PSP-1000
+    // footprint. They set both replay and demo; treating every replay bit as
+    // an external replay made the fixed-udLUNA identity gate reject them
+    // before their first frame. Keep unknown user replays fail-loud while
+    // allowing the built-in demo path to run under the same bounded pool as
+    // interactive play.
+    const bool externalReplay = g_GameManager.replay && !g_GameManager.demo;
+    if (externalReplay)
+    {
+        if (!PspReplayMatchesUdLuna())
+        {
+            this->pspEnemyManifestInvalid = 1;
+            const u32 rawBytes = g_ReplayManager ? g_ReplayManager->rawFileBytes : 0u;
+            const u64 rawFnv = g_ReplayManager ? g_ReplayManager->rawFileFnv1a : 0u;
+            th07_psp_boot_notef(
+                "REPLAY INVALID enemy manifest unknown replay S%d B%u F%08X%08X",
+                stage, rawBytes, static_cast<unsigned int>(rawFnv >> 32u),
+                static_cast<unsigned int>(rawFnv));
+            return false;
+        }
+        reservation = kUdLunaEnemyReservation[stage];
+        th07_psp_boot_notef(
+            "enemy manifest udLUNA S%d high%d cap%d overflow%d bytes%u",
+            stage, kUdLunaEnemyHighWater[stage], reservation,
+            reservation - kEnemyBaseCapacity,
+            static_cast<unsigned int>((reservation - kEnemyBaseCapacity) * sizeof(Enemy)));
+    }
+    else if (g_GameManager.demo)
+    {
+        th07_psp_boot_notef(
+            "enemy manifest built-in demo S%d cap%d fail-loud",
+            stage, reservation);
+    }
+    else
+    {
+        // Interactive play is not covered by the fixed-replay high-water
+        // proof. Preserve the established 64-slot footprint, but retain the
+        // same fail-loud exhaustion path instead of silently corrupting a slot.
+        th07_psp_boot_notef("enemy manifest live unproven S%d cap%d fail-loud",
+                            stage, reservation);
+    }
+
+    if (reservation < kEnemyBaseCapacity || reservation > kEnemyCapacity ||
+        reservation % kEnemyChunkCapacity != 0)
+    {
+        this->pspEnemyManifestInvalid = 1;
+        th07_psp_boot_notef("REPLAY INVALID enemy manifest bad capacity S%d cap%d",
+                            stage, reservation);
+        return false;
+    }
+
+    this->pspEnemyReservedCapacity = reservation;
+    const u32 overflowBytes = static_cast<u32>(
+        (reservation - kEnemyBaseCapacity) * static_cast<i32>(sizeof(Enemy)));
+    *arenaExtraBytes = overflowBytes;
+    th07_psp_boot_notef("enemy manifest reserve S%d cap%d extra%u",
+                        stage, reservation, *arenaExtraBytes);
+    return true;
+}
+
+i32 EnemyManager::PspEnemySlotLimit() const
+{
+    return this->pspEnemyReservedCapacity >= 0 &&
+                   this->pspEnemyReservedCapacity <= kEnemyCapacity
+               ? this->pspEnemyReservedCapacity
+               : 0;
+}
+#endif
+
 bool EnemyManager::PspEnsureEnemyPool()
 {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    const i32 slotLimit = PspEnemySlotLimit();
+    if (slotLimit < kEnemyBaseCapacity ||
+        slotLimit % kEnemyChunkCapacity != 0)
+    {
+        this->pspEnemyManifestInvalid = 1;
+        th07_psp_boot_notef(
+            "REPLAY INVALID enemy reserve failed S%d cap%d reason=manifest",
+            this->pspEnemyManifestStage, slotLimit);
+        return false;
+    }
+
+    Enemy *stageSlab = static_cast<Enemy *>(th07_psp_1000_alloc_pool(
+        sizeof(Enemy) * static_cast<size_t>(slotLimit)));
+    if (!stageSlab)
+    {
+        this->pspEnemyManifestInvalid = 1;
+        th07_psp_boot_notef(
+            "REPLAY INVALID enemy reserve failed S%d cap%d bytes%u",
+            this->pspEnemyManifestStage, slotLimit,
+            static_cast<unsigned int>(slotLimit * sizeof(Enemy)));
+        PspReleaseEnemyPool();
+        this->pspEnemyManifestInvalid = 1;
+        return false;
+    }
+
+    memset(stageSlab, 0, sizeof(Enemy) * static_cast<size_t>(slotLimit));
+    const i32 reservedChunks = slotLimit / kEnemyChunkCapacity;
+    for (i32 i = 0; i < reservedChunks; ++i)
+    {
+        this->enemyChunks[i] = stageSlab + i * kEnemyChunkCapacity;
+    }
+    th07_psp_boot_notef(
+        "PSP1000 enemy pool stage reserve once S%d cap%d chunks%d bytes%u",
+        this->pspEnemyManifestStage, slotLimit, reservedChunks,
+        static_cast<unsigned int>(sizeof(Enemy) * slotLimit));
+    return true;
+#else
     for (i32 i = 0; i < kEnemyChunkCount; i++)
     {
         if (!this->enemyChunks[i])
@@ -432,6 +629,7 @@ bool EnemyManager::PspEnsureEnemyPool()
                         kEnemyChunkCount,
                         static_cast<unsigned int>(sizeof(Enemy) * kEnemyCapacity / 1024u));
     return true;
+#endif
 }
 
 void EnemyManager::PspReleaseEnemyPool()
@@ -441,7 +639,50 @@ void EnemyManager::PspReleaseEnemyPool()
         this->enemyChunks[i] = nullptr;
     }
     memset(this->pspActiveEnemyBits, 0, sizeof(this->pspActiveEnemyBits));
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    this->pspEnemyReservedCapacity = 0;
+    this->pspEnemyManifestStage = 0;
+#endif
 }
+
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+Enemy *EnemyManager::PspLatchEnemyManifestExhausted(i32 eclSubId)
+{
+    if (!this->pspEnemyManifestInvalid)
+    {
+        this->pspEnemyManifestInvalid = 1;
+        th07_psp_boot_notef(
+            "REPLAY INVALID enemy manifest exhausted S%d frame%d sub%d cap%d",
+            this->pspEnemyManifestStage, g_GameManager.framesThisStage,
+            eclSubId, PspEnemySlotLimit());
+    }
+
+    // Exhaustion invalidates the replay immediately. Callers either ignore
+    // the return value or guard it before use; OnUpdate observes the latch at
+    // the timeline/nested-ECL checkpoint and leaves gameplay in this frame.
+    return nullptr;
+}
+
+bool EnemyManager::PspAbortInvalidReplay()
+{
+    if (!this->pspEnemyManifestInvalid)
+    {
+        return false;
+    }
+    if (!this->pspEnemyAbortRequested)
+    {
+        this->pspEnemyAbortRequested = 1;
+        const i32 returnState =
+            g_GameManager.replay && !g_GameManager.demo ? 7 : 1;
+        th07_psp_boot_notef(
+            "REPLAY INVALID enemy manifest abort S%d frame%d return%d",
+            this->pspEnemyManifestStage, g_GameManager.framesThisStage,
+            returnState);
+        g_Supervisor.curState = returnState;
+    }
+    return true;
+}
+#endif
 #endif
 
 Enemy::Enemy()
@@ -455,12 +696,33 @@ EnemyEclContext::EnemyEclContext()
 Enemy *EnemyManager::SpawnEnemy(i32 eclSubId, ZunVec3 *pos, i32 life, i32 itemDrop, i32 score,
                                 u8 mirror)
 {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    if (this->pspEnemyManifestInvalid)
+    {
+        return PspLatchEnemyManifestExhausted(eclSubId);
+    }
+    Enemy *enemy = nullptr;
+    const i32 slotLimit = PspEnemySlotLimit();
+#else
     Enemy *enemy;
+#endif
     i32 i;
 
-    for (i = 0; i < kEnemyCapacity; i++)
+    for (i = 0;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+         i < slotLimit;
+#else
+         i < kEnemyCapacity;
+#endif
+         i++)
     {
         enemy = this->EnemyAt(i);
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (!enemy)
+        {
+            return PspLatchEnemyManifestExhausted(eclSubId);
+        }
+#endif
 #if defined(TH07_PSP)
         if (this->PspIsEnemySlotTracked(i))
         {
@@ -509,18 +771,45 @@ Enemy *EnemyManager::SpawnEnemy(i32 eclSubId, ZunVec3 *pos, i32 life, i32 itemDr
         }
         break;
     }
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    if (i == slotLimit)
+    {
+        return PspLatchEnemyManifestExhausted(eclSubId);
+    }
+#endif
     return enemy;
 }
 
 Enemy *EnemyManager::SpawnEnemyEx(i32 eclSubId, ZunVec3 *pos, i32 life, i32 itemDrop, i32 score,
                                   EclContextArgs *args)
 {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    if (this->pspEnemyManifestInvalid)
+    {
+        return PspLatchEnemyManifestExhausted(eclSubId);
+    }
+    Enemy *enemy = nullptr;
+    const i32 slotLimit = PspEnemySlotLimit();
+#else
     Enemy *enemy;
+#endif
     i32 i;
 
-    for (i = 0; i < kEnemyCapacity; i++)
+    for (i = 0;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+         i < slotLimit;
+#else
+         i < kEnemyCapacity;
+#endif
+         i++)
     {
         enemy = this->EnemyAt(i);
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (!enemy)
+        {
+            return PspLatchEnemyManifestExhausted(eclSubId);
+        }
+#endif
 #if defined(TH07_PSP)
         if (this->PspIsEnemySlotTracked(i))
         {
@@ -573,6 +862,12 @@ Enemy *EnemyManager::SpawnEnemyEx(i32 eclSubId, ZunVec3 *pos, i32 life, i32 item
         }
         break;
     }
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    if (i == slotLimit)
+    {
+        return PspLatchEnemyManifestExhausted(eclSubId);
+    }
+#endif
     return enemy;
 }
 
@@ -731,7 +1026,10 @@ void EnemyManager::RunEclTimeline(EclTimeline *timeline)
                     enemy = g_EnemyManager.SpawnEnemy(timeline->timelineInstr->arg0, &pos3,
                                                       args4->args[3].i, args4->args[4].i,
                                                       args4->args[5].i, 0);
-                    enemy->mirror = 1;
+                    if (enemy)
+                    {
+                        enemy->mirror = 1;
+                    }
                 }
                 break;
             case 7:
@@ -754,7 +1052,10 @@ void EnemyManager::RunEclTimeline(EclTimeline *timeline)
                     }
                     enemy = g_EnemyManager.SpawnEnemy(timeline->timelineInstr->arg0, &pos4, -1, -1,
                                                       -1, 0);
-                    enemy->mirror = 1;
+                    if (enemy)
+                    {
+                        enemy->mirror = 1;
+                    }
                 }
                 break;
             case 8:
@@ -783,6 +1084,17 @@ void EnemyManager::RunEclTimeline(EclTimeline *timeline)
                     goto stop;
                 }
             }
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+            // A failed spawn invalidates the whole fixed-replay run. Do not
+            // execute another same-timestamp opcode: later instructions can
+            // legitimately dereference a boss that the failed spawn was
+            // meant to create. OnUpdate converts the latch to a title/replay
+            // return immediately after leaving the timeline loop.
+            if (g_EnemyManager.pspEnemyManifestInvalid)
+            {
+                return;
+            }
+#endif
         }
         else if (timeline->timelineTime < timeline->timelineInstr->time)
         {
@@ -824,7 +1136,13 @@ i32 Enemy::HandleLifeCallback()
             this->stackDepth = 0;
             this->bulletProps = g_EnemyManager.enemyTemplate.bulletProps;
             this->shootInterval = 0;
-            for (j = 0; j < EnemyManager::kEnemyCapacity; j++)
+            for (j = 0;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+                 j < g_EnemyManager.PspEnemySlotLimit();
+#else
+                 j < EnemyManager::kEnemyCapacity;
+#endif
+                 j++)
             {
                 enemy = g_EnemyManager.EnemyAt(j);
 #if defined(TH07_PSP)
@@ -912,7 +1230,13 @@ i32 Enemy::HandleTimerCallback()
             cherryPenalty -= (i32)cherryPenalty % 10;
             g_GameManager.cherry -= cherryPenalty;
         }
-        for (j = 0; j < EnemyManager::kEnemyCapacity; j++)
+        for (j = 0;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+             j < g_EnemyManager.PspEnemySlotLimit();
+#else
+             j < EnemyManager::kEnemyCapacity;
+#endif
+             j++)
         {
             enemy = g_EnemyManager.EnemyAt(j);
 #if defined(TH07_PSP)
@@ -1042,6 +1366,9 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
     i32 collisionOut;
     i32 stageFactor;
     ZunVec3 enemyDiff;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    ZunResult eclResult;
+#endif
 #if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
     bool pspEnemyP5CaptureComplete = arg->PspBeginEnemyP5WarmQueue();
 #endif
@@ -1069,12 +1396,39 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
             arg->timelines[i].timelineInstr = g_EclManager.GetTimeline(i);
         }
         RunEclTimeline(&arg->timelines[i]);
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (arg->pspEnemyManifestInvalid)
+        {
+            break;
+        }
+#endif
     }
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    if (arg->PspAbortInvalidReplay())
+    {
+        return CHAIN_CALLBACK_RESULT_BREAK;
+    }
+#endif
 
     arg->enemyCountReal = 0;
-    for (i = 0; i < kEnemyCapacity; i++)
+    for (i = 0;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+         i < arg->PspEnemySlotLimit();
+#else
+         i < kEnemyCapacity;
+#endif
+         i++)
     {
         enemy = arg->EnemyAt(i);
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (!enemy)
+        {
+            arg->PspLatchEnemyManifestExhausted(-1);
+            return arg->PspAbortInvalidReplay()
+                       ? CHAIN_CALLBACK_RESULT_BREAK
+                       : CHAIN_CALLBACK_RESULT_CONTINUE;
+        }
+#endif
 #if defined(TH07_PSP)
         if (!arg->PspIsEnemySlotTracked(i))
         {
@@ -1096,7 +1450,16 @@ u32 EnemyManager::OnUpdate(EnemyManager *arg)
             goto LAB_00421da7;
         }
     HUH:
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        eclResult = g_EclManager.RunEcl(enemy);
+        if (arg->PspAbortInvalidReplay())
+        {
+            return CHAIN_CALLBACK_RESULT_BREAK;
+        }
+        if (eclResult == ZUN_ERROR)
+#else
         if (g_EclManager.RunEcl(enemy) == ZUN_ERROR)
+#endif
         {
             enemy->active = 0;
             enemy->Despawn();
@@ -2119,7 +2482,13 @@ i32 EnemyManager::RemoveAllEnemies(i32 scoreMax, i32 scoreMin)
 
     totalScore = scoreMin;
     popupScore = 2000;
-    for (i = 0; i < kEnemyCapacity; i++)
+    for (i = 0;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+         i < PspEnemySlotLimit();
+#else
+         i < kEnemyCapacity;
+#endif
+         i++)
     {
         enemy = this->EnemyAt(i);
 #if defined(TH07_PSP)

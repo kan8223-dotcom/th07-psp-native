@@ -45,7 +45,7 @@ class PspPerfRamLogTests(unittest.TestCase):
         self.assertIn("UnlockBootLog(bootLogLocked)", note)
         self.assertIn("LockBootLog()", flush)
         self.assertIn("UnlockBootLog(bootLogLocked)", flush)
-        self.assertIn("sceKernelDeleteSema(gBootLogSema)", shutdown)
+        self.assertIn("sceKernelDeleteSema(bootLogSema)", shutdown)
 
     def test_perf_note_only_appends_to_ram_in_diagnostic_build(self):
         body = function_body(self.fileio, 'extern "C" void th07_psp_perf_note')
@@ -60,7 +60,10 @@ class PspPerfRamLogTests(unittest.TestCase):
         body = function_body(self.fileio, 'extern "C" void th07_psp_boot_note')
         self.assertIn("__atomic_load_n(&gPerfGameplayActive", body)
         self.assertIn("th07_psp_perf_note(message);", body)
-        self.assertLess(body.index("th07_psp_perf_note(message);"), body.index("sceIoOpen"))
+        self.assertLess(
+            body.index("th07_psp_perf_note(message);"),
+            body.index("SceUID fd = gBootLogFd;"),
+        )
         self.assertIn("th07_psp_perf_set_gameplay_active(1)", self.graphics)
         self.assertIn("th07_psp_perf_set_gameplay_active(0)", self.graphics)
 
@@ -68,9 +71,11 @@ class PspPerfRamLogTests(unittest.TestCase):
         body = function_body(self.fileio, 'extern "C" void th07_psp_boot_note')
         self.assertIn("__atomic_load_n(&gPerfStageLoadActive", body)
         stage_redirect = body.index("__atomic_load_n(&gPerfStageLoadActive")
-        synchronous_open = body.index("sceIoOpen")
-        self.assertLess(stage_redirect, synchronous_open)
-        self.assertIn("th07_psp_perf_note(message);", body[stage_redirect:synchronous_open])
+        synchronous_write = body.index("SceUID fd = gBootLogFd;")
+        self.assertLess(stage_redirect, synchronous_write)
+        self.assertIn(
+            "th07_psp_perf_note(message);", body[stage_redirect:synchronous_write]
+        )
         self.assertIn(
             "#if defined(TH07_PSP_PERF_DIAG) && !defined(TH07_PSP_1000)\n"
             'extern "C" void th07_psp_perf_set_stage_load_active(int active)',
@@ -129,11 +134,13 @@ class PspPerfRamLogTests(unittest.TestCase):
         flush = self.main.index("th07_psp_perf_log_flush();", stop)
         self.assertLess(flush, release)
 
-    def test_flush_uses_one_open_close_session_and_retains_partial_data(self):
+    def test_flush_reuses_process_fd_and_retains_partial_data(self):
         body = function_body(self.fileio, 'extern "C" void th07_psp_perf_log_flush')
-        self.assertEqual(body.count("sceIoOpen("), 1)
-        self.assertEqual(body.count("sceIoClose("), 1)
-        self.assertIn("WriteAvailable(fd, gPerfLogBuffer, gPerfLogUsed)", body)
+        self.assertNotIn("sceIoOpen(", body)
+        self.assertNotIn("sceIoClose(", body)
+        self.assertEqual(body.count("OpenBootLogAppend()"), 1)
+        self.assertEqual(body.count("CloseBootLog()"), 1)
+        self.assertIn("WriteAvailable(fd, gPerfLogBuffer, bufferedBytes)", body)
         self.assertIn("std::memmove(gPerfLogBuffer", body)
         self.assertIn("PERF PROFILE INVALID OVERFLOW %u LINES", body)
         self.assertIn("PERF END VALID=%u DROP=%u", body)

@@ -121,6 +121,13 @@ struct ReplayManager
 
     i32 frameId;
     ReplayFile *data;
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    // Whole raw-file identity captured before replay deobfuscation mutates and
+    // releases the input buffer. The stage Enemy manifest is valid only for
+    // the byte-identical audited replay.
+    u64 rawFileFnv1a;
+    u32 rawFileBytes;
+#endif
     i32 stageReplayDataSize[7];
     i32 stageEndDataSize[7];
     void *unused_40;

@@ -246,7 +246,11 @@ struct EnemyManager
 {
     static constexpr i32 kEnemyCapacity =
 #if defined(TH07_PSP_1000)
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        480;
+#else
         64;
+#endif
 #else
         480;
 #endif
@@ -284,14 +288,37 @@ struct EnemyManager
     const char *stgEnm2AnmFilename;
     Enemy enemyTemplate;
 #if defined(TH07_PSP_1000)
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    // The fixed replay keeps the original 480-slot logical ordering while a
+    // stage manifest selects how many leading slots receive backing. All
+    // backing is sliced from one arena reservation before the first calc;
+    // gameplay never allocates or moves an Enemy chunk.
+    static constexpr i32 kEnemyBaseCapacity = 64;
+    static constexpr i32 kEnemyChunkCapacity = 4;
+#else
     // The original inline pool alone occupies about 9.8 MiB and prevents a
     // 32 MiB PSP from loading the module.  ANM source buffers also fragment
     // the heap while a stage is registered, so keep each allocation below
     // 512 KiB instead of requiring one contiguous 1.9 MiB block afterwards.
     static constexpr i32 kEnemyChunkCapacity = 16;
+#endif
     static constexpr i32 kEnemyChunkCount =
         (kEnemyCapacity + kEnemyChunkCapacity - 1) / kEnemyChunkCapacity;
     Enemy *enemyChunks[kEnemyChunkCount];
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    i32 pspEnemyReservedCapacity;
+    i32 pspEnemyManifestStage;
+    u8 pspEnemyManifestInvalid;
+    u8 pspEnemyAbortRequested;
+    static_assert(kEnemyBaseCapacity % kEnemyChunkCapacity == 0,
+                  "PSP-1000 Enemy base must contain complete chunks");
+    static_assert(kEnemyCapacity % kEnemyChunkCapacity == 0,
+                  "PSP-1000 Enemy logical capacity must contain complete chunks");
+    bool PspPrepareEnemyManifest(i32 stage, u32 *arenaExtraBytes);
+    i32 PspEnemySlotLimit() const;
+    Enemy *PspLatchEnemyManifestExhausted(i32 eclSubId);
+    bool PspAbortInvalidReplay();
+#endif
     bool PspEnsureEnemyPool();
     void PspReleaseEnemyPool();
 #else
@@ -301,7 +328,16 @@ struct EnemyManager
     Enemy *EnemyAt(i32 index)
     {
 #if defined(TH07_PSP_1000)
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (index < 0 || index >= this->pspEnemyReservedCapacity)
+        {
+            return nullptr;
+        }
+        Enemy *chunk = this->enemyChunks[index / kEnemyChunkCapacity];
+        return chunk ? chunk + index % kEnemyChunkCapacity : nullptr;
+#else
         return enemyChunks[index / kEnemyChunkCapacity] + index % kEnemyChunkCapacity;
+#endif
 #else
         return &enemies[index];
 #endif
@@ -336,11 +372,23 @@ struct EnemyManager
 
     bool PspIsEnemySlotTracked(i32 index) const
     {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (index < 0 || index >= this->pspEnemyReservedCapacity)
+        {
+            return false;
+        }
+#endif
         return (pspActiveEnemyBits[index >> 5] & (1u << (index & 31))) != 0;
     }
 
     void PspTrackEnemySlot(i32 index)
     {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (index < 0 || index >= this->pspEnemyReservedCapacity)
+        {
+            return;
+        }
+#endif
         pspActiveEnemyBits[index >> 5] |= 1u << (index & 31);
 #if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
         PspMarkEnemyMutation();
@@ -349,6 +397,12 @@ struct EnemyManager
 
     void PspForgetEnemySlot(i32 index)
     {
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+        if (index < 0 || index >= this->pspEnemyReservedCapacity)
+        {
+            return;
+        }
+#endif
         pspActiveEnemyBits[index >> 5] &= ~(1u << (index & 31));
 #if defined(TH07_PSP_ENEMY_P5_WARM_QUEUE)
         PspMarkEnemyMutation();

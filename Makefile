@@ -2,14 +2,27 @@ export PATH := /usr/local/pspdev/bin:$(PATH)
 export PSPDEV := /usr/local/pspdev
 
 TARGET := TH07PSP
-PSP_RELEASE_VERSION := v0.1.7-beta
-PSP_RELEASE_1000_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION)-psp1000.zip
-PSP_RELEASE_2000PLUS_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION)-psp2000plus.zip
+PSP_RELEASE_VERSION := v1.0.0-rc1
+PSP_RELEASE_ZIP := th07-psp-native-$(PSP_RELEASE_VERSION).zip
+PSP_UNIFIED_TITLE := 東方妖々夢 ～ Perfect Cherry Blossom.
+PSP_UNIFIED_BUILD_DIR := build/psp_unified_release
+PSP_UNIFIED_EBOOT := $(PSP_UNIFIED_BUILD_DIR)/EBOOT.PBP
+PSP_UNIFIED_LAUNCHER := psp/unified_launcher/EBOOT.PBP
+PSP_UNIFIED_GE4_COMPANION := release-anchors/psp2000plus-me1-upper-pass-20260903/ge4wrap_texv1.prx
+PSP_UNIFIED_GE4_SHA256 := 3dc5c753497349d6fb0ab5ae2a819b240cc51e8aa412ded10bb52daa540d841d
+PSP_UNIFIED_EBOOT_SHA256 := 822e0a4c43ac84509a25af16d921b0bb9bcb1c4597dcdbb315e9583d5e92fad4
+PSP_RELEASE_1000_ANCHOR := release-anchors/psp1000-unified-demo-pass-20260903/EBOOT.PBP
+PSP_RELEASE_1000_SHA256 := d49f1683f370224e102b13c8a14a1d09d9bead77d55bff449ed26f0b65c08ef6
+PSP_RELEASE_2000PLUS_ANCHOR := release-anchors/psp2000plus-me1-upper-pass-20260903/EBOOT.PBP
+PSP_RELEASE_2000PLUS_SHA256 := 356fbd32ee75dced8b1c9384b31a47613d1848ebd6a2af0b3b21cc92ba8e5a3d
+PSP_RELEASE_FULL_FONT := psp/assets/NotoSansJP-Regular.ttf
+PSP_RELEASE_1000_FONT := psp/assets/msgothic-subset.ttf
 PSP_SHIKIGAMI ?= 0
 PSP_SHIKIGAMI_HOST_IPV4 ?= 192.168.11.3
 PSP_MECC_BGM_384K ?= 0
 PSP_MECC_AUDIO_4M ?= 0
 PSP_SLIMPLUS_ME_GATE ?= 0
+PSP_GO_BOOT_JITTER_DIAG ?= 0
 PSP_EASY_MIST_AUDIO ?= 0
 PSP_BULLET_AXIS_FAST ?= 0
 PSP_BULLET_SNAPSHOT_EMITTER ?= 0
@@ -25,8 +38,12 @@ PSP_ASCII_POPUP_BATCH ?= 0
 PSP_GUI_TILE_BATCH ?= 0
 PSP_USAGE_METER ?= 0
 PSP_USAGE_METER_TOGGLE ?= 0
+PSP_ME_BUSY_METER ?= 0
+PSP_ME_FORMAL_RELEASE ?= 0
 PSP_FONT_MAIN_RAM ?= 0
 PSP_LOCAL_FONT_SUBSET ?= 0
+PSP_FONT_HEAP_DIAG ?= 0
+PSP_1000_ENEMY_MANIFEST ?= 0
 PSP_TITLE_ARCHIVE_WORKSPACE ?= 0
 PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT ?= 0
 PSP_TITLE_FONT_HOLE_SWAP ?= 0
@@ -76,7 +93,7 @@ MECC_DIR := psp/third_party/me-custom-core
 MECC_BUILD_DIR := $(MECC_DIR)/build
 MECC_LIB := $(MECC_BUILD_DIR)/libme-core.a
 MECC_PROFILE_STAMP := $(MECC_BUILD_DIR)/.th07-render-worker-$(PSP_ME_RENDER_WORKER)
-GE4_PROVEN_PRX_SOURCE := ../TH07_GE4_ME4_V6_SIMULTANEOUS_CANARY_20260826/deps/ge-wrapper/ge4wrap_texv1.prx
+GE4_PROVEN_PRX_SOURCE := deps/ge4wrap_texv1.prx
 GE4_PROVEN_PRX := ge4wrap_texv1.prx
 GE4_PROVEN_PRX_SIZE := 2150
 GE4_PROVEN_PRX_SHA256 := 411e71b3ffb31bd91024cc0221481a787e693276c0899e05da08c3cd91dc1ab8
@@ -138,7 +155,7 @@ endif
 ifeq ($(PSP_SHIKIGAMI),1)
 SRCS += psp/shikigami_th07.c
 endif
-ifeq ($(PSP_USAGE_METER),1)
+ifneq ($(filter 1,$(PSP_USAGE_METER) $(PSP_ME_BUSY_METER)),)
 SRCS += psp/usage_meter.c
 endif
 ifeq ($(PSP_TITLE_FONT_HOLE_SWAP),1)
@@ -147,7 +164,7 @@ endif
 OBJS := $(patsubst %.cpp,%.o,$(SRCS))
 OBJS := $(patsubst %.c,%.o,$(OBJS))
 
-PSP_EBOOT_TITLE := Touhou 7 PSP-2000+ Beta
+PSP_EBOOT_TITLE := Touhou 7 PSP
 PSP_FW_VERSION := 660
 BUILD_PRX := 0
 EXTRA_TARGETS := EBOOT.PBP
@@ -190,7 +207,7 @@ PSP_EBOOT_TITLE := Touhou 7 PSP SHIKIGAMI
 endif
 ifeq ($(PSP_1000),1)
 CXXFLAGS += -DTH07_PSP_1000
-PSP_EBOOT_TITLE := Touhou 7 PSP-1000 Beta
+PSP_EBOOT_TITLE := Touhou 7 PSP
 endif
 ifeq ($(PSP_BULLET_AXIS_FAST),1)
 CXXFLAGS += -DTH07_PSP_BULLET_AXIS_FAST
@@ -418,12 +435,28 @@ endif
 CXXFLAGS += -DTH07_PSP_FONT_MAIN_RAM
 endif
 ifeq ($(PSP_LOCAL_FONT_SUBSET),1)
-ifneq ($(PSP_1000),0)
-$(error PSP_LOCAL_FONT_SUBSET is PSP-2000+ only)
-endif
 CXXFLAGS += -DTH07_PSP_LOCAL_FONT_SUBSET
 else ifneq ($(PSP_LOCAL_FONT_SUBSET),0)
 $(error PSP_LOCAL_FONT_SUBSET must be 0 or 1)
+endif
+ifeq ($(PSP_FONT_HEAP_DIAG),1)
+ifneq ($(PSP_1000),1)
+$(error PSP_FONT_HEAP_DIAG is PSP-1000 diagnostic-only)
+endif
+CXXFLAGS += -DTH07_PSP_FONT_HEAP_DIAG
+else ifneq ($(PSP_FONT_HEAP_DIAG),0)
+$(error PSP_FONT_HEAP_DIAG must be 0 or 1)
+endif
+ifeq ($(PSP_1000_ENEMY_MANIFEST),1)
+ifneq ($(PSP_1000),1)
+$(error PSP_1000_ENEMY_MANIFEST is PSP-1000 only)
+endif
+ifneq ($(PSP_LOCAL_FONT_SUBSET),1)
+$(error PSP_1000_ENEMY_MANIFEST requires PSP_LOCAL_FONT_SUBSET=1)
+endif
+CXXFLAGS += -DTH07_PSP_1000_ENEMY_MANIFEST
+else ifneq ($(PSP_1000_ENEMY_MANIFEST),0)
+$(error PSP_1000_ENEMY_MANIFEST must be 0 or 1)
 endif
 ifeq ($(PSP_TITLE_ARCHIVE_WORKSPACE),1)
 ifneq ($(PSP_1000),0)
@@ -482,11 +515,13 @@ ifeq ($(PSP_TEXT_BLIT_FAST),1)
 ifneq ($(PSP_1000),0)
 $(error PSP_TEXT_BLIT_FAST is a PSP-2000+ validation profile only)
 endif
+ifneq ($(PSP_ME_FORMAL_RELEASE),1)
 ifneq ($(PSP_PERF_DIAG),1)
 $(error PSP_TEXT_BLIT_FAST requires PSP_PERF_DIAG=1)
 endif
 ifneq ($(PSP_TEXT_PREWARM_PROFILE),1)
 $(error PSP_TEXT_BLIT_FAST requires PSP_TEXT_PREWARM_PROFILE=1)
+endif
 endif
 CXXFLAGS += -DTH07_PSP_TEXT_BLIT_FAST
 endif
@@ -509,8 +544,10 @@ ifeq ($(PSP_MECC_AUDIO_4M),1)
 ifneq ($(PSP_1000),0)
 $(error PSP_MECC_AUDIO_4M is not valid for PSP-1000)
 endif
+ifneq ($(PSP_ME_FORMAL_RELEASE),1)
 ifneq ($(PSP_SHIKIGAMI),1)
 $(error PSP_MECC_AUDIO_4M requires PSP_SHIKIGAMI=1 for real-hardware ownership telemetry)
+endif
 endif
 ifneq ($(PSP_MECC_BGM_384K),0)
 $(error PSP_MECC_AUDIO_4M and PSP_MECC_BGM_384K are mutually exclusive)
@@ -530,8 +567,10 @@ ifeq ($(PSP_SLIMPLUS_ME_GATE),1)
 ifneq ($(PSP_1000),0)
 $(error PSP_SLIMPLUS_ME_GATE is not valid for PSP-1000)
 endif
+ifneq ($(PSP_ME_FORMAL_RELEASE),1)
 ifneq ($(PSP_SHIKIGAMI),1)
 $(error PSP_SLIMPLUS_ME_GATE requires the dormant-capable SHIKIGAMI profile)
+endif
 endif
 ifneq ($(PSP_MECC_AUDIO_4M),1)
 $(error PSP_SLIMPLUS_ME_GATE requires the AUDIO4M custom-core profile)
@@ -540,6 +579,23 @@ CXXFLAGS += -DTH07_PSP_SLIMPLUS_ME_GATE
 CFLAGS += -DTH07_PSP_SLIMPLUS_ME_GATE
 else ifneq ($(PSP_SLIMPLUS_ME_GATE),0)
 $(error PSP_SLIMPLUS_ME_GATE must be 0 or 1)
+endif
+ifeq ($(PSP_GO_BOOT_JITTER_DIAG),1)
+ifneq ($(PSP_1000),0)
+$(error PSP_GO_BOOT_JITTER_DIAG is PSP Go/Slim+ only)
+endif
+ifneq ($(PSP_SLIMPLUS_ME_GATE),1)
+$(error PSP_GO_BOOT_JITTER_DIAG requires PSP_SLIMPLUS_ME_GATE=1)
+endif
+ifneq ($(PSP_MECC_AUDIO_4M),1)
+$(error PSP_GO_BOOT_JITTER_DIAG requires the GO-ME1 AUDIO4M contract)
+endif
+ifneq ($(PSP_LOCAL_FONT_SUBSET),1)
+$(error PSP_GO_BOOT_JITTER_DIAG requires PSP_LOCAL_FONT_SUBSET=1)
+endif
+CXXFLAGS += -DTH07_PSP_GO_BOOT_JITTER_DIAG
+else ifneq ($(PSP_GO_BOOT_JITTER_DIAG),0)
+$(error PSP_GO_BOOT_JITTER_DIAG must be 0 or 1)
 endif
 ifeq ($(PSP_DIRECT_GAME),1)
 CXXFLAGS += -DTH07_PSP_DIRECT_GAME -DTH07_PSP_DIRECT_STAGE=$(PSP_DIRECT_STAGE)
@@ -816,20 +872,22 @@ else ifneq ($(PSP_SFX_DIV1_FAST),0)
 $(error PSP_SFX_DIV1_FAST must be 0 or 1)
 endif
 
-# M-ME0 is a PSP-3000-only diagnostic.  It starts the custom ME core, runs
-# the boot microbench and submits shadow render jobs, but never consumes ME
-# output for drawing.  Keep it tied to the exact accepted DENSE stack so a
-# hardware run cannot silently compare different renderer configurations.
+# M-ME0 started as a PSP-3000 diagnostic.  Research builds remain tied to the
+# exact PERF_ACCEPT/DENSE observer; the explicit formal-release profile uses
+# the same accepted worker without compiling the observer or network client.
 ifeq ($(PSP_ME_RENDER_WORKER),1)
 ifneq ($(PSP_1000),0)
 $(error PSP_ME_RENDER_WORKER is PSP-3000-only and is not valid for PSP-1000)
 endif
+ifneq ($(PSP_ME_FORMAL_RELEASE),1)
 ifneq ($(PSP_SHIKIGAMI),1)
 $(error PSP_ME_RENDER_WORKER requires PSP_SHIKIGAMI=1 for RAM-log telemetry)
+endif
 endif
 ifneq ($(PSP_MECC_AUDIO_4M),1)
 $(error PSP_ME_RENDER_WORKER requires the model-3 AUDIO4M/custom-core profile)
 endif
+ifneq ($(PSP_ME_FORMAL_RELEASE),1)
 ifneq ($(PSP_PERF_DIAG),1)
 $(error PSP_ME_RENDER_WORKER requires PSP_PERF_DIAG=1)
 endif
@@ -838,6 +896,7 @@ $(error PSP_ME_RENDER_WORKER requires PSP_PERF_PROFILE=PERF_ACCEPT)
 endif
 ifneq ($(PSP_PERF_DENSE_SLICE),1)
 $(error PSP_ME_RENDER_WORKER requires the accepted DENSE attribution profile)
+endif
 endif
 ifneq ($(PSP_BULLET_ROTATED_DIRECT),1)
 $(error PSP_ME_RENDER_WORKER requires accepted ROTATED_DIRECT=1)
@@ -1273,8 +1332,8 @@ endif
 ifneq ($(PSP_ME_RENDER_GE_CONSUME),1)
 $(error PSP_ME_ADAPTIVE_AUX_RENDER requires PSP_ME_RENDER_GE_CONSUME=1)
 endif
-ifneq ($(PSP_USAGE_METER),1)
-$(error PSP_ME_ADAPTIVE_AUX_RENDER requires PSP_USAGE_METER=1)
+ifeq ($(filter 1,$(PSP_USAGE_METER) $(PSP_ME_BUSY_METER)),)
+$(error PSP_ME_ADAPTIVE_AUX_RENDER requires PSP_USAGE_METER=1 or PSP_ME_BUSY_METER=1)
 endif
 ifneq ($(PSP_1000),0)
 $(error PSP_ME_ADAPTIVE_AUX_RENDER is PSP-2000+ only)
@@ -1421,16 +1480,16 @@ LIBS := -L$(MECC_BUILD_DIR) -lme-core \
         -lharfbuzz -lfreetype -lbz2 -lpng16 -ljpeg -lz \
         -lpspvram -lpspaudio -lpspvfpu -lpspgum_vfpu -lpspmath -lpspdisplay -lpspgu -lpspge \
         -lpsphprm -lpspctrl -lpsppower -lpthread -latomic -lm -lstdc++ -lsupc++
-ifeq ($(PSP_SHIKIGAMI),1)
+ifneq ($(filter 1,$(PSP_SHIKIGAMI) $(PSP_MECC_BGM_384K) $(PSP_MECC_AUDIO_4M)),)
 # PSPSDK's GCC specs place psputility/pspnet_inet after libcglue, and
 # build.mak appends pspnet_apctl.  Listing those archives here too can split
 # one module's import stubs and make psp-fixup-imports report them out of
 # order.  The R6 GE bridge uses kubridge plus systemctrl's user export lookup;
 # it deliberately links no import stub for the kernel wrapper itself.
 LIBS += -lpspkubridge
+endif
 ifeq ($(PSP_MECC_AUDIO_4M),1)
 LIBS += -lpspsystemctrl_user
-endif
 endif
 
 PSPSDK := $(shell psp-config --pspsdk-path)
@@ -1442,6 +1501,18 @@ PSP_EBOOT_TITLE := TH07 PSP I-ME7 USAGE METER
 else ifneq ($(PSP_USAGE_METER),0)
 $(error PSP_USAGE_METER must be 0 or 1)
 endif
+ifeq ($(PSP_ME_BUSY_METER),1)
+ifneq ($(PSP_1000),0)
+$(error PSP_ME_BUSY_METER is PSP-2000+ only)
+endif
+ifneq ($(PSP_ME_RENDER_WORKER),1)
+$(error PSP_ME_BUSY_METER requires PSP_ME_RENDER_WORKER=1)
+endif
+CXXFLAGS += -DTH07_PSP_ME_BUSY_METER
+CFLAGS += -DTH07_PSP_ME_BUSY_METER
+else ifneq ($(PSP_ME_BUSY_METER),0)
+$(error PSP_ME_BUSY_METER must be 0 or 1)
+endif
 ifeq ($(PSP_USAGE_METER_TOGGLE),1)
 ifneq ($(PSP_USAGE_METER),1)
 $(error PSP_USAGE_METER_TOGGLE requires PSP_USAGE_METER=1)
@@ -1449,6 +1520,39 @@ endif
 CFLAGS += -DTH07_PSP_USAGE_METER_TOGGLE
 else ifneq ($(PSP_USAGE_METER_TOGGLE),0)
 $(error PSP_USAGE_METER_TOGGLE must be 0 or 1)
+endif
+
+# Explicit shipping profile for the hardware-accepted Slim+/ME render stack.
+# It retains only the one-frame-delayed ME busy value used as an OFF veto;
+# PERF windows, usage graphs, network publication and startup breadcrumbs are
+# forbidden.  Keeping this a Make-time contract prevents a diagnostic EBOOT
+# from being nested into the unified public package by accident.
+ifeq ($(PSP_ME_FORMAL_RELEASE),1)
+ifneq ($(PSP_1000),0)
+$(error PSP_ME_FORMAL_RELEASE is PSP-2000+ only)
+endif
+ifneq ($(PSP_PERF_DIAG),0)
+$(error PSP_ME_FORMAL_RELEASE requires PSP_PERF_DIAG=0)
+endif
+ifneq ($(PSP_SHIKIGAMI),0)
+$(error PSP_ME_FORMAL_RELEASE requires PSP_SHIKIGAMI=0)
+endif
+ifneq ($(PSP_USAGE_METER),0)
+$(error PSP_ME_FORMAL_RELEASE forbids the visible usage meter)
+endif
+ifneq ($(PSP_ME_BUSY_METER),1)
+$(error PSP_ME_FORMAL_RELEASE requires PSP_ME_BUSY_METER=1)
+endif
+ifneq ($(PSP_ME_STARTUP_BREADCRUMBS),0)
+$(error PSP_ME_FORMAL_RELEASE forbids startup breadcrumbs)
+endif
+ifneq ($(PSP_GO_BOOT_JITTER_DIAG),0)
+$(error PSP_ME_FORMAL_RELEASE forbids boot-jitter diagnostics)
+endif
+CXXFLAGS += -DTH07_PSP_ME_FORMAL_RELEASE
+CFLAGS += -DTH07_PSP_ME_FORMAL_RELEASE
+else ifneq ($(PSP_ME_FORMAL_RELEASE),0)
+$(error PSP_ME_FORMAL_RELEASE must be 0 or 1)
 endif
 
 include $(PSPSDK)/lib/build.mak
@@ -1501,13 +1605,15 @@ endif
 # Keep release/debug objects and observer destination addresses from ever
 # being silently mixed.
 SHIKIGAMI_HOST_STAMP := $(subst .,_,$(PSP_SHIKIGAMI_HOST_IPV4))
-PROFILE_STAMP := .build-profile-$(PSP_DIRECT_GAME)-$(PSP_DIRECT_MUSIC)-$(PSP_PERF_DIAG)-$(PSP_PERF_PROFILE)-$(PSP_PERF_ATTRIB_TARGET)-$(PSP_PERF_GPU_ATTRIB)-$(PSP_PERF_EMPTY_TIMERS)-$(PSP_PERF_DENSE_SLICE)-$(PSP_PERF_PLAYER_SHOT)-$(PSP_PERF_A1_SAME)-$(PSP_PERF_SFX_MIX)-$(PSP_SFX_DIV1_FAST)-$(PSP_PERF_AB_COMPARE)-$(PSP_ME_RENDER_WORKER)-$(PSP_ME_RENDER_CORRECTNESS)-$(PSP_ME_RENDER_RETIRE_DIAG)-$(PSP_ME_RENDER_GE_CONSUME)-$(PSP_ME_RENDER_PERFORMANCE)-$(PSP_ME_RENDER_RAW_LIVE)-$(PSP_ME_RENDER_DIRECT_LIST)-$(PSP_ME_BULLET_FAST_UPDATE)-$(PSP_ME_BULLET_COMPACT_UPDATE)-$(PSP_ME_BULLET_TRUSTED_SEED_AUTHORITY)-$(PSP_ME_ITEM_RENDER_STREAM)-$(PSP_ME_ITEM_MOTION_UPDATE)-$(PSP_ME_EFFECT_RENDER_STREAM)-$(PSP_ME_RENDER_UV16)-$(PSP_ME_RENDER_XYZ16)-$(PSP_ME_RENDER_16BIT_GE_EXPERIMENT)-$(PSP_ME_BULLET_OUTPUT_SLIM)-$(PSP_ME_BULLET_SEED_SLIM)-$(PSP_ME_BULLET_SEED_SOA)-$(PSP_BULLET_POSITION_SOA_SHADOW)-$(PSP_BULLET_POSITION_SOA_READ)-$(PSP_ME_ITEM_SEED_SLIM)-$(PSP_ME_ADAPTIVE_AUX_RENDER)-$(PSP_ME_ITEM_PREFIX_SPLIT)-$(PSP_ME_CLOCK_CALIBRATION)-$(PSP_ME_EDRAM_SEED_BENCH)-$(PSP_ME_RENDER_LEAN_CACHE_OWNERSHIP)-$(PSP_ME_STARTUP_BREADCRUMBS)-$(PSP_BULLET_COLLISION_BROADPHASE)-$(PSP_DIRECT_STAGE)-$(PSP_DIRECT_TRANSITION_TEST)-$(PSP_1000)-$(PSP_SHIKIGAMI)-$(PSP_MECC_BGM_384K)-$(PSP_MECC_AUDIO_4M)-$(PSP_SLIMPLUS_ME_GATE)-$(PSP_BULLET_AXIS_FAST)-$(PSP_BULLET_SNAPSHOT_EMITTER)-$(PSP_BULLET_ROTATED_DIRECT)-$(PSP_BULLET_UNIFIED_QUADS)-$(PSP_BULLET_ONEPASS_ROTATED)-$(PSP_BULLET_HOT_PREFETCH)-$(PSP_BULLET_WARM_QUEUE)-$(PSP_BULLET_STATIC_PROXY)-$(PSP_ENEMY_P5_WARM_QUEUE)-$(PSP_BULLET_QUIESCENT_ANM)-$(PSP_ASCII_POPUP_BATCH)-$(PSP_GUI_TILE_BATCH)-$(PSP_FONT_MAIN_RAM)-$(PSP_LOCAL_FONT_SUBSET)-$(PSP_TITLE_ARCHIVE_WORKSPACE)-$(PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT)-$(PSP_TITLE_FONT_HOLE_SWAP)-$(PSP_FONT_TAIL_ARCHIVE)-$(PSP_TEXT_BLIT_FAST)-$(PSP_TEXT_PREWARM_PROFILE)-$(PSP_USAGE_METER)-$(PSP_USAGE_METER_TOGGLE)-$(PSP_AUDIO4M_BUILD_ID)-$(SHIKIGAMI_HOST_STAMP)
+PROFILE_STAMP := .build-profile-$(PSP_DIRECT_GAME)-$(PSP_DIRECT_MUSIC)-$(PSP_PERF_DIAG)-$(PSP_PERF_PROFILE)-$(PSP_PERF_ATTRIB_TARGET)-$(PSP_PERF_GPU_ATTRIB)-$(PSP_PERF_EMPTY_TIMERS)-$(PSP_PERF_DENSE_SLICE)-$(PSP_PERF_PLAYER_SHOT)-$(PSP_PERF_A1_SAME)-$(PSP_PERF_SFX_MIX)-$(PSP_SFX_DIV1_FAST)-$(PSP_PERF_AB_COMPARE)-$(PSP_ME_RENDER_WORKER)-$(PSP_ME_RENDER_CORRECTNESS)-$(PSP_ME_RENDER_RETIRE_DIAG)-$(PSP_ME_RENDER_GE_CONSUME)-$(PSP_ME_RENDER_PERFORMANCE)-$(PSP_ME_RENDER_RAW_LIVE)-$(PSP_ME_RENDER_DIRECT_LIST)-$(PSP_ME_BULLET_FAST_UPDATE)-$(PSP_ME_BULLET_COMPACT_UPDATE)-$(PSP_ME_BULLET_TRUSTED_SEED_AUTHORITY)-$(PSP_ME_ITEM_RENDER_STREAM)-$(PSP_ME_ITEM_MOTION_UPDATE)-$(PSP_ME_EFFECT_RENDER_STREAM)-$(PSP_ME_RENDER_UV16)-$(PSP_ME_RENDER_XYZ16)-$(PSP_ME_RENDER_16BIT_GE_EXPERIMENT)-$(PSP_ME_BULLET_OUTPUT_SLIM)-$(PSP_ME_BULLET_SEED_SLIM)-$(PSP_ME_BULLET_SEED_SOA)-$(PSP_BULLET_POSITION_SOA_SHADOW)-$(PSP_BULLET_POSITION_SOA_READ)-$(PSP_ME_ITEM_SEED_SLIM)-$(PSP_ME_ADAPTIVE_AUX_RENDER)-$(PSP_ME_ITEM_PREFIX_SPLIT)-$(PSP_ME_CLOCK_CALIBRATION)-$(PSP_ME_EDRAM_SEED_BENCH)-$(PSP_ME_RENDER_LEAN_CACHE_OWNERSHIP)-$(PSP_ME_STARTUP_BREADCRUMBS)-$(PSP_BULLET_COLLISION_BROADPHASE)-$(PSP_DIRECT_STAGE)-$(PSP_DIRECT_TRANSITION_TEST)-$(PSP_1000)-$(PSP_SHIKIGAMI)-$(PSP_MECC_BGM_384K)-$(PSP_MECC_AUDIO_4M)-$(PSP_SLIMPLUS_ME_GATE)-$(PSP_GO_BOOT_JITTER_DIAG)-$(PSP_BULLET_AXIS_FAST)-$(PSP_BULLET_SNAPSHOT_EMITTER)-$(PSP_BULLET_ROTATED_DIRECT)-$(PSP_BULLET_UNIFIED_QUADS)-$(PSP_BULLET_ONEPASS_ROTATED)-$(PSP_BULLET_HOT_PREFETCH)-$(PSP_BULLET_WARM_QUEUE)-$(PSP_BULLET_STATIC_PROXY)-$(PSP_ENEMY_P5_WARM_QUEUE)-$(PSP_BULLET_QUIESCENT_ANM)-$(PSP_ASCII_POPUP_BATCH)-$(PSP_GUI_TILE_BATCH)-$(PSP_FONT_MAIN_RAM)-$(PSP_LOCAL_FONT_SUBSET)-$(PSP_FONT_HEAP_DIAG)-$(PSP_1000_ENEMY_MANIFEST)-$(PSP_TITLE_ARCHIVE_WORKSPACE)-$(PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT)-$(PSP_TITLE_FONT_HOLE_SWAP)-$(PSP_FONT_TAIL_ARCHIVE)-$(PSP_TEXT_BLIT_FAST)-$(PSP_TEXT_PREWARM_PROFILE)-$(PSP_USAGE_METER)-$(PSP_USAGE_METER_TOGGLE)-$(PSP_ME_BUSY_METER)-$(PSP_ME_FORMAL_RELEASE)-$(PSP_AUDIO4M_BUILD_ID)-$(SHIKIGAMI_HOST_STAMP)
 .PHONY: FORCE_PROFILE
 $(PROFILE_STAMP): FORCE_PROFILE
 	@if [ ! -f "$@" ]; then rm -f .build-profile-*; touch "$@"; fi
 $(OBJS): $(PROFILE_STAMP)
 
-.PHONY: psp1000-build psp2000plus-build psp2000plus-shikigami-build \
+.PHONY: psp1000-build psp1000-font-heap-control-build \
+	psp1000-font-heap-subset-build psp1000-udluna-enemy-manifest-build \
+	psp2000plus-build psp2000plus-shikigami-build \
 	psp3000-mecc-bgm384k-build psp3000-mecc-audio4m-build psp3000-me-render-m0-build \
 	psp3000-me-render-i1-build \
 	psp3000-me-render-i1-retire-diag-build \
@@ -1538,7 +1644,9 @@ $(OBJS): $(PROFILE_STAMP)
 	psp3000-a7-a5-sfx-measure-build \
 	psp3000-a7-a5-scalar-control-build \
 	psp3000-a7-a5-scalar-build \
+	psp2000plus-me1-formal-build \
 	pspgo-me1-slimplus-build \
+	pspgo-me1-boot-jitter-diag-build \
 	pspgo-me2-clock-calibration-build \
 	psp3000-a6v4w-d2a-position-soa-shadow-build \
 	psp3000-a6v4w-d2b-position-soa-read-build \
@@ -1547,16 +1655,37 @@ $(OBJS): $(PROFILE_STAMP)
 	psp3000-c1-xyz16-m0-build psp3000-c1-uvxyz16-m0-build \
 	c2a_output_slim c2b_bullet_seed_slim c2c_item_seed_slim \
 	c2abc_all_slim psp3000-c2-slim-build psp3000-player-shot-perf-build \
-	release-build release-psp1000 \
-	release-psp2000plus release release-audit
+		psp-unified-launcher-build psp-unified-build \
+		psp-release-font-build psp-release-font-audit \
+		release-build release release-audit
 psp1000-build:
 	$(MAKE) clean
 	rm -f .build-profile-*
 	$(MAKE) PSP_1000=1 PSP_DIRECT_GAME=0 PSP_DIRECT_MUSIC=0 PSP_PERF_DIAG=0 \
 		PSP_PERF_PROFILE=RELEASE PSP_PERF_GPU_ATTRIB=0 PSP_PERF_EMPTY_TIMERS=0 PSP_PERF_DENSE_SLICE=0 PSP_ME_RENDER_WORKER=0 \
 		PSP_DIRECT_TRANSITION_TEST=0 PSP_SHIKIGAMI=0 PSP_MECC_BGM_384K=0 \
-		PSP_MECC_AUDIO_4M=0 PSP_BULLET_AXIS_FAST=0 PSP_BULLET_SNAPSHOT_EMITTER=0 PSP_BULLET_ROTATED_DIRECT=0 PSP_BULLET_UNIFIED_QUADS=0 PSP_BULLET_ONEPASS_ROTATED=0 PSP_BULLET_HOT_PREFETCH=0 PSP_BULLET_WARM_QUEUE=0 PSP_BULLET_STATIC_PROXY=0 PSP_ENEMY_P5_WARM_QUEUE=0 PSP_BULLET_QUIESCENT_ANM=0 PSP_ASCII_POPUP_BATCH=0 PSP_FONT_MAIN_RAM=0 PSP_TEXT_BLIT_FAST=0 PSP_TEXT_PREWARM_PROFILE=0 \
+		PSP_MECC_AUDIO_4M=0 PSP_BULLET_AXIS_FAST=0 PSP_BULLET_SNAPSHOT_EMITTER=0 PSP_BULLET_ROTATED_DIRECT=0 PSP_BULLET_UNIFIED_QUADS=0 PSP_BULLET_ONEPASS_ROTATED=0 PSP_BULLET_HOT_PREFETCH=0 PSP_BULLET_WARM_QUEUE=0 PSP_BULLET_STATIC_PROXY=0 PSP_ENEMY_P5_WARM_QUEUE=0 PSP_BULLET_QUIESCENT_ANM=0 PSP_ASCII_POPUP_BATCH=0 PSP_FONT_MAIN_RAM=0 PSP_LOCAL_FONT_SUBSET=$(PSP_LOCAL_FONT_SUBSET) PSP_FONT_HEAP_DIAG=$(PSP_FONT_HEAP_DIAG) PSP_1000_ENEMY_MANIFEST=$(PSP_1000_ENEMY_MANIFEST) PSP_TEXT_BLIT_FAST=0 PSP_TEXT_PREWARM_PROFILE=0 \
 		PSP_EASY_MIST_AUDIO=0 all
+
+# PC/PPSSPP-only A/B pair. Both builds keep the PSP-1000 gameplay pools and
+# file-backed SDL_ttf path unchanged; the candidate adds only the audited local
+# 1,190-codepoint font selector. Heap notes bracket font open and prewarm so the
+# resident saving is measured rather than inferred from the files' sizes.
+psp1000-font-heap-control-build:
+	$(MAKE) PSP_1000=1 PSP_LOCAL_FONT_SUBSET=0 PSP_FONT_HEAP_DIAG=1 \
+		PSP_EBOOT_TITLE='TH07 PSP1000 FONT CTRL' psp1000-build
+
+psp1000-font-heap-subset-build:
+	$(MAKE) PSP_1000=1 PSP_LOCAL_FONT_SUBSET=1 PSP_FONT_HEAP_DIAG=1 \
+		PSP_EBOOT_TITLE='TH07 PSP1000 FONT SUBSET' psp1000-build
+
+# Fixed-replay synchronization candidate. The local subset font remains a
+# user-supplied, non-redistributable runtime asset; the executable contains no
+# font bytes. Enemy backing is reserved once after all stage ANMs are compacted.
+psp1000-udluna-enemy-manifest-build:
+	$(MAKE) PSP_1000=1 PSP_LOCAL_FONT_SUBSET=1 PSP_FONT_HEAP_DIAG=0 \
+		PSP_1000_ENEMY_MANIFEST=1 \
+		PSP_EBOOT_TITLE='TH07 PSP1000 UDLUNA E480' psp1000-build
 
 psp2000plus-build:
 	$(MAKE) clean
@@ -1791,55 +1920,58 @@ psp3000-me-render-i8r3-cache-safe-build:
 		PSP_AUDIO4M_BUILD_ID=0x2608311bu PSP_EBOOT_TITLE='TH07 PSP ME I-ME8R3 CACHE-SAFE' \
 		PSP_EASY_MIST_AUDIO=0 all
 
-release-audit:
-	./tools/release_audit.sh
+psp-release-font-build:
+	python3 tools/build_release_noto_subset.py
 
-release-build: psp2000plus-build
+psp-release-font-audit:
+	python3 tools/build_release_noto_subset.py --check
 
-release-psp2000plus: psp/assets/NotoSansJP-Regular.ttf
-	$(MAKE) psp2000plus-build
-	@eboot_hash=$$(sha256sum EBOOT.PBP | awk '{print $$1}'); \
+release-audit: psp-unified-build psp-release-font-audit
+	sh ./tools/release_audit.sh
+
+psp-unified-launcher-build:
+	$(MAKE) -C psp/unified_launcher clean all
+
+psp-unified-build: psp-unified-launcher-build $(PSP_RELEASE_1000_ANCHOR) $(PSP_RELEASE_2000PLUS_ANCHOR) $(PSP_UNIFIED_GE4_COMPANION)
+	@printf '%s  %s\n%s  %s\n%s  %s\n' \
+		'$(PSP_RELEASE_1000_SHA256)' '$(PSP_RELEASE_1000_ANCHOR)' \
+		'$(PSP_RELEASE_2000PLUS_SHA256)' '$(PSP_RELEASE_2000PLUS_ANCHOR)' \
+		'$(PSP_UNIFIED_GE4_SHA256)' '$(PSP_UNIFIED_GE4_COMPANION)' | sha256sum -c -
+	mkdir -p "$(PSP_UNIFIED_BUILD_DIR)"
+	python3 tools/pack_unified_pbp.py \
+		--launcher "$(PSP_UNIFIED_LAUNCHER)" \
+		--psp1000 "$(PSP_RELEASE_1000_ANCHOR)" \
+		--psp2000plus "$(PSP_RELEASE_2000PLUS_ANCHOR)" \
+		--ge4wrap "$(PSP_UNIFIED_GE4_COMPANION)" \
+		--output "$(PSP_UNIFIED_EBOOT)" \
+		--title '$(PSP_UNIFIED_TITLE)'
+	@printf '%s  %s\n' '$(PSP_UNIFIED_EBOOT_SHA256)' '$(PSP_UNIFIED_EBOOT)' | sha256sum -c -
+	python3 tools/audit_unified_pbp.py "$(PSP_UNIFIED_EBOOT)" \
+		--title '$(PSP_UNIFIED_TITLE)' \
+		--psp1000-sha256 "$(PSP_RELEASE_1000_SHA256)" \
+		--psp2000plus-sha256 "$(PSP_RELEASE_2000PLUS_SHA256)"
+	python3 tools/check_no_original_assets.py "$(PSP_UNIFIED_EBOOT)"
+
+release-build: psp-unified-build psp-release-font-audit
+
+release: psp-unified-build psp-release-font-audit
+	@set -eu; \
 	stage_root=$$(mktemp -d); \
 	stage="$$stage_root/TH07PSP"; \
 	mkdir -p "$$stage/docs" "$$stage/licenses/NotoSansJP" "$$stage/licenses/MECC" dist; \
-	cp EBOOT.PBP psp/assets/NotoSansJP-Regular.ttf README.md README_EN.md CREDITS.md CHANGELOG.md LICENSE "$$stage/"; \
+	cp "$(PSP_UNIFIED_EBOOT)" "$$stage/EBOOT.PBP"; \
+	cp "$(PSP_RELEASE_FULL_FONT)" "$(PSP_RELEASE_1000_FONT)" README.md README_EN.md CREDITS.md CHANGELOG.md LICENSE "$$stage/"; \
 	cp ark/ARK5_HIGHMEM_SNIPPET.txt "$$stage/"; \
-	cp docs/KNOWN_ISSUES.md docs/ARK5_HIGH_MEMORY.md "$$stage/docs/"; \
-	cp licenses/NotoSansJP/OFL.txt "$$stage/licenses/NotoSansJP/"; \
+	cp docs/KNOWN_ISSUES.md docs/ARK5_HIGH_MEMORY.md docs/PSP_RELEASE_FONTS.md "$$stage/docs/"; \
+	cp licenses/NotoSansJP/OFL.txt licenses/NotoSansJP/FONTLOG-TH07PSP.txt "$$stage/licenses/NotoSansJP/"; \
 	cp psp/third_party/me-custom-core/LICENSE.md "$$stage/licenses/MECC/"; \
 	stage_win=$$(wslpath -w "$$stage"); \
-	zip_win=$$(wslpath -w "$$stage_root/$(PSP_RELEASE_2000PLUS_ZIP)"); \
+	zip_win=$$(wslpath -w "$$stage_root/$(PSP_RELEASE_ZIP)"); \
 	powershell.exe -NoProfile -Command "Compress-Archive -LiteralPath '$$stage_win' -DestinationPath '$$zip_win' -Force"; \
-	mv "$$stage_root/$(PSP_RELEASE_2000PLUS_ZIP)" "dist/$(PSP_RELEASE_2000PLUS_ZIP)"; \
-	printf '%s  %s\n' "$$eboot_hash" EBOOT.PBP > "dist/$(PSP_RELEASE_2000PLUS_ZIP).EBOOT.sha256"
-	./tools/release_audit.sh
-
-release-psp1000: psp/assets/NotoSansJP-Regular.ttf
-	$(MAKE) psp1000-build
-	@eboot_hash=$$(sha256sum EBOOT.PBP | awk '{print $$1}'); \
-	stage_root=$$(mktemp -d); \
-	stage="$$stage_root/TH07PSP"; \
-	mkdir -p "$$stage/docs" "$$stage/licenses/NotoSansJP" "$$stage/licenses/MECC" dist; \
-	cp EBOOT.PBP psp/assets/NotoSansJP-Regular.ttf README.md README_EN.md CREDITS.md CHANGELOG.md LICENSE "$$stage/"; \
-	cp docs/KNOWN_ISSUES.md "$$stage/docs/"; \
-	cp licenses/NotoSansJP/OFL.txt "$$stage/licenses/NotoSansJP/"; \
-	cp psp/third_party/me-custom-core/LICENSE.md "$$stage/licenses/MECC/"; \
-	stage_win=$$(wslpath -w "$$stage"); \
-	zip_win=$$(wslpath -w "$$stage_root/$(PSP_RELEASE_1000_ZIP)"); \
-	powershell.exe -NoProfile -Command "Compress-Archive -LiteralPath '$$stage_win' -DestinationPath '$$zip_win' -Force"; \
-	mv "$$stage_root/$(PSP_RELEASE_1000_ZIP)" "dist/$(PSP_RELEASE_1000_ZIP)"; \
-	printf '%s  %s\n' "$$eboot_hash" EBOOT.PBP > "dist/$(PSP_RELEASE_1000_ZIP).EBOOT.sha256"
-	./tools/release_audit.sh
-
-release:
-	rm -f "dist/$(PSP_RELEASE_1000_ZIP)" "dist/$(PSP_RELEASE_2000PLUS_ZIP)" \
-		"dist/$(PSP_RELEASE_1000_ZIP).EBOOT.sha256" \
-		"dist/$(PSP_RELEASE_2000PLUS_ZIP).EBOOT.sha256"
-	$(MAKE) release-psp2000plus
-	$(MAKE) release-psp1000
-	test -f "dist/$(PSP_RELEASE_1000_ZIP)"
-	test -f "dist/$(PSP_RELEASE_2000PLUS_ZIP)"
-	./tools/release_audit.sh
+	mv -f "$$stage_root/$(PSP_RELEASE_ZIP)" "dist/$(PSP_RELEASE_ZIP)"; \
+	eboot_hash=$$(sha256sum "$(PSP_UNIFIED_EBOOT)" | awk '{print $$1}'); \
+	printf '%s  %s\n' "$$eboot_hash" EBOOT.PBP > "dist/$(PSP_RELEASE_ZIP).EBOOT.sha256"
+	sh ./tools/release_audit.sh
 
 # build.mak does not otherwise notice title-only changes.  The profile stamp is
 # required too: switching from a perf/direct build to release must regenerate
@@ -2329,12 +2461,83 @@ psp3000-a7-a5-scalar-build:
 		psp3000-a6v4w-stage6-font-tail-fix-build
 
 # GO-ME1 is the current Go v0.2.1 runtime contract plus only the Slim+
+# Public 64-MiB runtime: the hardware-accepted GO-ME1/A7 gameplay stack with
+# all PERF windows, network observation, startup breadcrumbs and the visible
+# usage graph removed.  PSP_ME_BUSY_METER retains only the lagging ME>=85%
+# admission veto; it has no vertices, history buffer or draw call.
+psp2000plus-me1-formal-build:
+	$(MAKE) clean
+	rm -f .build-profile-*
+	$(MAKE) PSP_ME_FORMAL_RELEASE=1 PSP_ME_BUSY_METER=1 \
+		PSP_1000=0 PSP_SHIKIGAMI=0 PSP_MECC_AUDIO_4M=1 \
+		PSP_SLIMPLUS_ME_GATE=1 PSP_GO_BOOT_JITTER_DIAG=0 \
+		PSP_DIRECT_GAME=0 PSP_DIRECT_MUSIC=0 PSP_DIRECT_STAGE=3 \
+		PSP_DIRECT_TRANSITION_TEST=0 PSP_PERF_DIAG=0 \
+		PSP_PERF_PROFILE=RELEASE PSP_PERF_AB_COMPARE=0 \
+		PSP_PERF_GPU_ATTRIB=0 PSP_PERF_EMPTY_TIMERS=0 \
+		PSP_PERF_DENSE_SLICE=0 PSP_PERF_PLAYER_SHOT=0 \
+		PSP_PERF_A1_SAME=0 PSP_PERF_SFX_MIX=0 PSP_SFX_DIV1_FAST=0 \
+		PSP_ME_RENDER_WORKER=1 PSP_ME_RENDER_CORRECTNESS=1 \
+		PSP_ME_RENDER_RETIRE_DIAG=0 PSP_ME_RENDER_GE_CONSUME=1 \
+		PSP_ME_RENDER_PERFORMANCE=1 PSP_ME_RENDER_RAW_LIVE=1 \
+		PSP_ME_RENDER_DIRECT_LIST=1 PSP_ME_BULLET_FAST_UPDATE=0 \
+		PSP_ME_BULLET_COMPACT_UPDATE=1 \
+		PSP_ME_BULLET_TRUSTED_SEED_AUTHORITY=0 \
+		PSP_ME_ITEM_RENDER_STREAM=1 PSP_ME_ITEM_MOTION_UPDATE=1 \
+		PSP_ME_EFFECT_RENDER_STREAM=0 PSP_ME_ADAPTIVE_AUX_RENDER=1 \
+		PSP_ME_ITEM_PREFIX_SPLIT=1 PSP_ME_CLOCK_CALIBRATION=0 \
+		PSP_ME_EDRAM_SEED_BENCH=0 PSP_ME_RENDER_LEAN_CACHE_OWNERSHIP=0 \
+		PSP_ME_STARTUP_BREADCRUMBS=0 PSP_BULLET_COLLISION_BROADPHASE=1 \
+		PSP_ME_RENDER_UV16=0 PSP_ME_RENDER_XYZ16=0 \
+		PSP_ME_RENDER_16BIT_GE_EXPERIMENT=0 PSP_ME_BULLET_OUTPUT_SLIM=0 \
+		PSP_ME_BULLET_SEED_SLIM=0 PSP_ME_BULLET_SEED_SOA=0 \
+		PSP_BULLET_POSITION_SOA_SHADOW=0 PSP_BULLET_POSITION_SOA_READ=0 \
+		PSP_ME_ITEM_SEED_SLIM=0 PSP_BULLET_AXIS_FAST=0 \
+		PSP_BULLET_SNAPSHOT_EMITTER=0 PSP_BULLET_ROTATED_DIRECT=1 \
+		PSP_BULLET_UNIFIED_QUADS=1 PSP_BULLET_ONEPASS_ROTATED=1 \
+		PSP_BULLET_HOT_PREFETCH=0 PSP_BULLET_WARM_QUEUE=0 \
+		PSP_BULLET_STATIC_PROXY=0 PSP_ENEMY_P5_WARM_QUEUE=0 \
+		PSP_BULLET_QUIESCENT_ANM=0 PSP_ASCII_POPUP_BATCH=1 \
+		PSP_GUI_TILE_BATCH=0 PSP_FONT_MAIN_RAM=1 PSP_LOCAL_FONT_SUBSET=1 \
+		PSP_FONT_HEAP_DIAG=0 PSP_1000_ENEMY_MANIFEST=0 \
+		PSP_TITLE_ARCHIVE_WORKSPACE=1 PSP_TITLE_ARCHIVE_WORKSPACE_TRANSIENT=0 \
+		PSP_TITLE_FONT_HOLE_SWAP=1 PSP_FONT_TAIL_ARCHIVE=1 \
+		PSP_TEXT_BLIT_FAST=1 PSP_TEXT_PREWARM_PROFILE=0 \
+		PSP_USAGE_METER=0 PSP_USAGE_METER_TOGGLE=0 \
+		PSP_AUDIO4M_BUILD_ID=0x26090301u PSP_EASY_MIST_AUDIO=0 \
+		PSP_EBOOT_TITLE='Touhou 7 PSP' \
+		PSP_EBOOT_ICON=NULL PSP_EBOOT_ICON1=NULL PSP_EBOOT_PIC0=NULL \
+		PSP_EBOOT_PIC1=NULL PSP_EBOOT_SND0=NULL all
+
 # MECC/MERW/GE4 model-gate relaxation.  Keep SHIKIGAMI compiled with an empty
-# host (dormant), preserve the accepted A7 feature/build-id set, and retain the
-# deployed v0.2.1 PARAM.SFO title so the candidate has no packaging delta.
+# host (dormant), preserve the accepted A7 feature/build-id set and deployed
+# v0.2.1 PARAM.SFO title.  Its explicit ME icon distinguishes TH07SHIKI from
+# the separately installed SC-only/NOME entry without changing runtime data.
 pspgo-me1-slimplus-build:
 	$(MAKE) PSP_SLIMPLUS_ME_GATE=1 PSP_1000=0 PSP_SHIKIGAMI=1 \
 		PSP_MECC_AUDIO_4M=1 \
+		PSP_RID30_AB_ME_UV16=0 PSP_RID30_AB_ME_XYZ16=0 \
+		PSP_RID30_AB_ME_C1_GE_EXPERIMENT=0 \
+		PSP_RID30_AB_ME_TRUSTED_SEED_AUTHORITY=0 \
+		PSP_RID30_AB_ME_SEED_SOA=0 \
+		PSP_RID30_AB_ME_POSITION_SOA_SHADOW=0 \
+		PSP_RID30_AB_ME_CLOCK_CALIBRATION=0 \
+		PSP_RID30_AB_ME_TITLE_WORKSPACE=1 \
+		PSP_RID30_AB_ME_TITLE_TRANSIENT=0 \
+		PSP_RID30_AB_ME_TITLE_FONT_HOLE_SWAP=1 \
+		PSP_RID30_AB_ME_LOCAL_FONT_SUBSET=1 \
+		PSP_RID30_AB_ME_FONT_TAIL_ARCHIVE=1 \
+		PSP_RID30_AB_ME_BUILD_ID=0x260901adu \
+		PSP_RID30_AB_ME_TITLE='TH07 PSP v0.2.1-beta' \
+		psp3000-rid30-ab-me-build
+
+# One diagnostic delta over GO-ME1.  All timings stay in RAM until the font
+# initialization interval is closed, then one BOOTJIT line is appended.  The
+# standard GO-ME1 target remains byte/feature-contract independent of it.
+pspgo-me1-boot-jitter-diag-build:
+	$(MAKE) PSP_SLIMPLUS_ME_GATE=1 PSP_GO_BOOT_JITTER_DIAG=1 \
+		PSP_1000=0 PSP_SHIKIGAMI=1 PSP_MECC_AUDIO_4M=1 \
+		PSP_LOCAL_FONT_SUBSET=1 \
 		PSP_RID30_AB_ME_UV16=0 PSP_RID30_AB_ME_XYZ16=0 \
 		PSP_RID30_AB_ME_C1_GE_EXPERIMENT=0 \
 		PSP_RID30_AB_ME_TRUSTED_SEED_AUTHORITY=0 \
@@ -2566,20 +2769,3 @@ psp3000-c2-slim-build:
 		PSP_FONT_MAIN_RAM=1 PSP_TEXT_BLIT_FAST=1 PSP_TEXT_PREWARM_PROFILE=1 \
 		PSP_USAGE_METER=1 PSP_USAGE_METER_TOGGLE=0 PSP_AUDIO4M_BUILD_ID=$(PSP_C2_BUILD_ID) \
 		PSP_EBOOT_TITLE='$(PSP_C2_BUILD_TITLE)' PSP_EASY_MIST_AUDIO=0 all
-
-# v0.2.1-beta 配布用: A6v4.1(CP932 wave)+A7 stage6 font-tail fix構成。
-# SHIKIGAMIはホスト未設定で完全休眠
-psp3000-dist-v021-build:
-	$(MAKE) PSP_1000=0 PSP_RID30_AB_ME_UV16=0 PSP_RID30_AB_ME_XYZ16=0 \
-		PSP_RID30_AB_ME_C1_GE_EXPERIMENT=0 \
-		PSP_RID30_AB_ME_TRUSTED_SEED_AUTHORITY=0 \
-		PSP_RID30_AB_ME_SEED_SOA=0 \
-		PSP_RID30_AB_ME_POSITION_SOA_SHADOW=0 \
-		PSP_RID30_AB_ME_TITLE_WORKSPACE=1 \
-		PSP_RID30_AB_ME_TITLE_TRANSIENT=0 \
-		PSP_RID30_AB_ME_TITLE_FONT_HOLE_SWAP=1 \
-		PSP_RID30_AB_ME_LOCAL_FONT_SUBSET=1 \
-		PSP_RID30_AB_ME_FONT_TAIL_ARCHIVE=1 \
-		PSP_SHIKIGAMI_HOST_IPV4= PSP_RID30_AB_ME_BUILD_ID=0x26090141u \
-		PSP_RID30_AB_ME_TITLE='TH07 PSP v0.2.1-beta' \
-		psp3000-rid30-ab-me-build

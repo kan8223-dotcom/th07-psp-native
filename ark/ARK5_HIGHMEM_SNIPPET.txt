@@ -1,6 +1,9 @@
-# TH07 PSP-2000+/3000/Go on ARK-5
+# th07-psp-native unified release on PSP-2000/3000/Go with ARK-5
 #
-# MERGE the one active line below into:
+# ARK-5 is required.  In the ARK-5 UI, set "Use Extra Memory" for
+# the application to "Max".  Do not leave it at Default or Off.
+#
+# Only when manual editing is needed, MERGE the one active line below into:
 #   ms0:/PSP/SAVEDATA/ARK_01234/SETTINGS.TXT
 # or, when ARK_01234 is installed on PSP Go internal storage:
 #   ef0:/PSP/SAVEDATA/ARK_01234/SETTINGS.TXT
@@ -8,8 +11,8 @@
 # Do not replace your complete SETTINGS.TXT with this snippet.
 # Back up SETTINGS.TXT first.  If it already contains
 # "always, highmem, off", remove or replace that conflicting line.
-# Exit and relaunch the game after editing.  If ARK has not reloaded the
-# setting, restart VSH or power-cycle the PSP once.
+# Exit and relaunch the game after editing, then confirm Max in the ARK-5 UI.
+# If ARK has not reloaded the setting, restart VSH or power-cycle the PSP once.
 #
 # Do not use this on PSP-1000; that model has no extra Main RAM.
 homebrew, highmem, on

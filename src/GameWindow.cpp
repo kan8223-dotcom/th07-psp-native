@@ -226,15 +226,19 @@ RenderResult GameWindow::Render()
 #if defined(TH07_PSP_ME_RENDER_WORKER)
     // g_PspDrawNextFrame now describes the next Render() call.  Fixed-30
     // update-only passes deliberately publish no ME work.
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
     const unsigned long long meRenderPostCalcStartUs =
         gTh07PspPerfDenseSliceActive ? sceKernelGetSystemTimeWide() : 0ull;
+#endif
     Th07PspMeRenderAfterCalc(meRenderCalcSerialBefore,
                             !g_PspFixed30Fps || g_PspDrawNextFrame);
+#if defined(TH07_PSP_PERF_DENSE_SLICE)
     if (gTh07PspPerfDenseSliceActive)
     {
         Th07PspPerfAddMerwPostCalcTime(
             sceKernelGetSystemTimeWide() - meRenderPostCalcStartUs);
     }
+#endif
 #endif
 
     if (drawThisFrame)

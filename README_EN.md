@@ -2,73 +2,100 @@
 
 [日本語](README.md) | **English**
 
-An unofficial, work-in-progress native PSP port of *Touhou Youyoumu ~ Perfect Cherry Blossom* 1.00b
-(Touhou 7). It runs ported game code on the PSP; it does not emulate the Windows executable.
+> [!IMPORTANT]
+> **The current `v1.0.0-rc1` build is the final tester/pre-release, not the final stable release.**
+> Download it from [GitHub Releases](https://github.com/kan8223-dotcom/th07-psp-native/releases).
+> One universal EBOOT (initial SHA-256 `822E0A4C43AC84509A25AF16D921B0BB9BCB1C4597DCDBB315E9583D5E92FAD4`) automatically selects the
+> PSP-1000 profile or the PSP-2000/3000/Go profile at startup. ARK-5 is required on every model;
+> PSP-2000/3000/Go also require `Use Extra Memory = Max`.
+>
+> The initial EBOOT has fully transparent XMB icon and background slots. Only after the first launch
+> validates the user's own `th07.dat` and `thbgm.dat` does the PSP generate the icon and background
+> locally. The generated EBOOT contains images derived from the original game and must not be shared
+> or redistributed.
+
+An unofficial native PSP port of *Touhou Youyoumu ~ Perfect Cherry Blossom* 1.00b (Touhou 7).
+It runs ported game code on the PSP; it does not emulate the Windows executable.
 
 > [!WARNING]
-> This repository and its release EBOOTs contain **none of the original Touhou 7 game data**.
-> You must provide the complete installation folder from your own copy of the Windows version of
-> Touhou 7, updated to version 1.00b.
+> This repository and its release package contain none of the original Touhou 7 data or images derived
+> from it. You must provide the complete installation folder from your own copy of Touhou 7 1.00b.
 
-The PSP-1000 memory-saving audio profile uses the **MIST method** from M-cid (m-c/d)'s
-[PSP Media Engine Safe Task](https://github.com/mcidclan/psp-media-engine-safe-task), together with
-the [PSP Media Engine Custom Core mapper](https://github.com/mcidclan/psp-media-engine-custom-core).
-Moving the BGM ring into ME-local eDRAM recovered a net 393,088 bytes (383.875 KiB, approximately
-384 KiB) of Main RAM and prevented the out-of-memory failures seen on PSP-1000. Real-hardware
-validation completed stages 1 through 6, the ending, results, and return to the title.
+## Features
 
-## Before you install
+- Based on [some100/th07's portable branch](https://github.com/some100/th07/tree/portable).
+- One EBOOT detects the PSP model at startup and automatically selects the PSP-1000 32 MiB profile or
+  the PSP-2000/3000/Go 64 MiB profile. There is no model-specific EBOOT to choose.
+- Rendering uses the PSP Graphics Engine through PSPSDK libGU/libGUM, with VFPU-enabled libGUM and
+  PSP-specific numerical paths.
+- Real hardware uses m-c/d's
+  [Media Engine Custom Core](https://github.com/mcidclan/psp-media-engine-custom-core) for PCM mixing,
+  with a safe fallback to the main CPU.
+- The PSP-1000 audio profile uses the MIST method from M-cid (m-c/d)'s
+  [PSP Media Engine Safe Task](https://github.com/mcidclan/psp-media-engine-safe-task). Moving the BGM
+  ring into ME-local eDRAM recovers a net 393,088 bytes (383.875 KiB) of Main RAM.
+- The original 640x480 logical image is displayed at 480x272 in either 4:3-fit or full-stretch mode.
+- Settings, scores, and replays are written beside the EBOOT, never into the copied original folder.
+- The formal ZIP carries both the full Noto font for PSP-2000/3000/Go and a 1,190-codepoint subset
+  derived from the same OFL Noto font for PSP-1000.
 
-The current release is v0.1.7-beta and is intended for testing. There are two separate downloads:
+## Formal unified release status
 
-- **PSP-1000:** use the archive whose name ends in `-psp1000.zip`. This is a special 32 MiB tester
-  build with a reduced enemy limit.
-- **PSP-2000, PSP-3000, and PSP Go:** use the archive whose name ends in `-psp2000plus.zip`.
-  This is the 64 MiB build.
+The final tester/pre-release universal EBOOT is now published through GitHub Releases without Beta or
+tester branding in its XMB title. Promotion to the final stable release will be decided separately from
+physical-device acceptance results. A PC or PPSSPP result alone is not hardware acceptance.
 
-Do not mix files from the two packages. In particular, do not copy an EBOOT intended for a different
-PSP model over the one in your selected package.
+The old statement that PSP-1000 replay synchronization was unverified was superseded by a physical
+hardware acceptance run on 2026-09-03. EBOOT SHA-256
+`18cf0136de1525ef6b0eca4fca5bc2415a0a65875d8c0d88d53a9a509a94c365` played the fixed external
+Lunatic replay `th7_udLUNA.rpy` in sync from stage 1 through stage 6, Yuyuko's defeat, and the return to
+Replay Select on a physical PSP-1000. That boot log records neither the CFW name nor its version, so the
+CFW used for this run remains unconfirmed; future formal support is limited to ARK-5. Exact replay,
+EBOOT, and log hashes are fixed in the
+[changelog](CHANGELOG.md) and [hardware anchor](release-anchors/psp1000-e480-hw-pass-20260903/README.md).
 
-v0.1.7 is an ARK-5 high-memory compatibility packaging update. If the 64 MiB build shuts down or
-returns before game `main()` and does not update `TH07PSP_BOOT.LOG`, follow the
-[ARK-5 high-memory setup](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md).
+This result applies to that fixed replay. It is not a blanket guarantee for every replay, shot type, or
+difficulty. On PSP-1000, a replay that fails the identity or reserved-capacity contract is rejected with
+`REPLAY INVALID` instead of silently omitting enemies and desynchronizing.
 
 > [!IMPORTANT]
-> For more stable play, press **SELECT** after starting the game to enable fixed-30 mode. This reduces
-> rendering load while game logic, input, BGM, and sound effects continue at their normal speed.
-> Press SELECT again to return to the normal 60 fps rendering mode.
+> ARK-5 is the only supported CFW. On PSP-2000, PSP-3000, and PSP Go, set ARK-5
+> `Use Extra Memory` to `Max` before launch. `Default`, `Off`, and an explicit
+> `always, highmem, off` rule are unsupported and may stop the game before startup. PSP-1000 has no
+> extra Main RAM, so the Max setting does not apply to that model, but ARK-5 is still required.
 
-> [!WARNING]
-> The PSP-1000 build does not currently provide reliable replay synchronization. Do not use that build
-> to verify replays, scores, or compatibility with the original game. See
-> [Known limitations](#known-limitations).
-
-## What you need
-
-- A PSP-1000, PSP-2000, PSP-3000, or PSP Go that can run homebrew through CFW.
-- The package for your PSP model from the
-  [Releases page](https://github.com/kan8223-dotcom/th07-psp-native/releases).
-- Your own installed copy of the Windows version of Touhou 7, updated to **1.00b**.
-- A USB connection or card reader with which to copy files to PSP storage.
-
-You do not need to unpack either DAT archive or rename individual Japanese files.
+> [!TIP]
+> For stability in heavy scenes, press SELECT during play to enable fixed-30 mode. Rendering changes to
+> 30 fps while game logic, input, BGM, and sound effects retain their normal speed.
 
 ## Installation
 
-1. Extract the release ZIP on your computer.
-2. Copy the extracted `TH07PSP` folder into `PSP/GAME/` on your Memory Stick or PSP Go storage.
-3. Locate the Touhou 7 installation folder on your computer.
-4. Copy that **whole folder** into the new `PSP/GAME/TH07PSP/` folder.
-5. Rename the copied original-game folder to the ASCII name `th7`.
-6. Safely disconnect the PSP, then start `Touhou 7 PSP-1000 Beta` or
-   `Touhou 7 PSP-2000+ Beta` from the XMB game list.
+You need:
 
-The finished layout should look like this:
+- a PSP-1000, PSP-2000, PSP-3000, or PSP Go that runs homebrew through ARK-5;
+- the universal final tester/pre-release ZIP published on GitHub Releases;
+- your own complete Windows installation of Touhou 7 1.00b; and
+- a USB connection or card reader.
+
+Steps:
+
+Install the current final tester/pre-release universal build as follows.
+
+1. Install ARK-5. On PSP-2000/3000/Go, set `Use Extra Memory` for this application to `Max`.
+2. Extract the release ZIP.
+3. Copy its `TH07PSP` folder into `PSP/GAME/` on the Memory Stick or PSP Go internal storage.
+4. Copy your whole Touhou 7 installation folder into `PSP/GAME/TH07PSP/`.
+5. Rename the copied original folder to the ASCII name `th7`. If `th7` already exists, copy the
+   **contents** of the original folder directly into it, not the enclosing original folder.
+6. Start `東方妖々夢 ～ Perfect Cherry Blossom.` from XMB.
+
+The finished layout is:
 
 ```text
 PSP/GAME/TH07PSP/
 ├── EBOOT.PBP
 ├── NotoSansJP-Regular.ttf
+├── msgothic-subset.ttf
 ├── README.md
 ├── CREDITS.md
 ├── LICENSE
@@ -80,30 +107,73 @@ PSP/GAME/TH07PSP/
     └── other original files
 ```
 
-The EBOOT checks the headers and the expected 1.00b file sizes of `th07.dat` and `thbgm.dat`.
-Missing data or another game version is rejected instead of being partially loaded.
+Both font files are required. The PSP-1000 payload uses the 264,288-byte
+`msgothic-subset.ttf`; the PSP-2000/3000/Go payload uses the 4,491,696-byte
+`NotoSansJP-Regular.ttf`. The former is only a runtime-compatibility filename. Its metadata and
+outlines are derived from OFL-licensed Noto Sans CJK JP 2.004, not Microsoft MS Gothic. Do not replace
+it with or redistribute a private subset made from a Windows font. The generation, hashes, and license
+contract are recorded in the [formal-release font specification](docs/PSP_RELEASE_FONTS.md).
 
-### Alternative location for the original game
+The EBOOT checks the headers and expected 1.00b sizes of `th07.dat` and `thbgm.dat`: 23,829,135 bytes
+and 444,516,656 bytes, respectively. Missing data or a different game version is rejected instead of
+being partially loaded.
 
-The recommended and simplest location is `PSP/GAME/TH07PSP/th7/`. If you do not want the original
-folder inside `TH07PSP`, you may instead place it directly under `ms0:/`, or under `ef0:/` on PSP Go.
-The port checks the device root and folders one level below it for a matching `th07.dat` and
-`thbgm.dat` pair.
+> [!WARNING]
+> Do not put the original game folder itself inside `th7`. A one-level-too-deep layout such as
+> `TH07PSP/th7/東方妖々夢/th07.dat` lets the unified launcher and model-specific runtime start, but the
+> runtime then logs `original TH07 1.00b data not found` and exits. Place `th07.dat` and `thbgm.dat`
+> directly in `TH07PSP/th7/`.
 
-The 32 MiB and 64 MiB builds may coexist in differently named folders such as `TH07PSP` and
-`TH07PSP3000`. Each EBOOT also checks sibling folders under `PSP/GAME/`, so both builds can share one
-`th7` directory instead of duplicating roughly 469 MiB of DAT files. Settings, scores, replays, and the
-PSP-1000 title cache remain separate beside the EBOOT that created them.
+### First XMB appearance and local files
 
-### Files created by the port
+The distributed EBOOT initially contains only tool-generated, fully transparent neutral placeholders
+in ICON0 and PIC1, so XMB shows neither a custom thumbnail nor a background. Only after the first launch validates
+the user's own `th07.dat` and `thbgm.dat` does it generate ICON0 and PIC1 locally on that PSP. The images
+appear the next time the entry is shown in XMB. The release contains the generator, not generated image
+binaries. Safe local update and the next XMB appearance have passed on physical hardware. This is still
+a final tester/pre-release result, not a declaration of the final stable release.
 
-Settings, scores, and new replays are stored beside `EBOOT.PBP`, not in your copied original-game
-folder. These include `th07.cfg`, `score.dat`, and the `replay/` directory.
+After this local transformation, `EBOOT.PBP` contains images derived from the user's original data.
+Never redistribute that EBOOT, the generated images, or the PSP-1000 `title01.psp1000.cache`, and do not
+attach them to a bug report. `TH07RUNTIME.PBP` is the automatically selected model runtime and can be
+deleted; the launcher recreates it when required.
 
-On its first title-screen load, the PSP-1000 build creates an approximately 1.7 MiB file named
-`title01.psp1000.cache` beside the EBOOT. It is a 16-bit cache derived from your `th07.dat` and is used
-when returning to the title. It can be deleted and will be rebuilt on the next launch. Because it is
-derived from the original game, do not redistribute it or attach it to a bug report.
+Settings, scores, and new replays are created beside the EBOOT, including `th07.cfg`, `score.dat`, and
+the `replay/` directory.
+
+### Alternative original-data location
+
+The recommended location is `PSP/GAME/TH07PSP/th7/`. You may instead put the complete original folder
+directly under `ms0:/`, or under `ef0:/` on PSP Go. The launcher and model-specific runtime each search,
+non-recursively, the launch-device root and its immediate child directories, plus `th7` directories in
+sibling applications under `PSP/GAME/`. Every candidate directory must contain the valid `th07.dat`
+and `thbgm.dat` pair **directly**. A further nested original-game directory is not searched. All PSP
+models use the same rules.
+
+### If the game does not start
+
+Check these items in order:
+
+1. The CFW is ARK-5.
+2. On PSP-2000/3000/Go, `Use Extra Memory` is `Max`.
+3. `EBOOT.PBP` is at `PSP/GAME/TH07PSP/EBOOT.PBP`.
+4. Both `NotoSansJP-Regular.ttf` and `msgothic-subset.ttf` are still beside the EBOOT and unmodified.
+5. `PSP/GAME/TH07PSP/th7/th07.dat` and `thbgm.dat` both exist **directly** there, not inside another
+   original-game directory.
+6. The original game is version 1.00b.
+
+If `TH07PSP_BOOT.LOG` says `original TH07 1.00b data not found`, check item 5 first. This layout error
+can terminate only the runtime even after the unified launcher has successfully selected and started it.
+
+ARK-5 settings may be lost after changing a Memory Stick or reinstalling ARK. Recheck `Max` even if the
+same PSP launched the game previously. See the [ARK-5 setup guide](docs/ARK5_HIGH_MEMORY.md) for safely
+removing a conflicting `always, highmem, off` rule. Never overwrite your complete `SETTINGS.TXT` with
+the packaged snippet.
+
+The port writes `TH07PSP_BOOT.LOG` to the root of the launch device. Copy it to a PC before launching
+the game again, because each launch overwrites it. A bug report should include the log, exact PSP model,
+ARK-5 version, game mode/difficulty/stage/action, reproduction steps, and EBOOT SHA-256. Never attach
+original data or locally generated derivatives.
 
 ## Controls
 
@@ -121,119 +191,63 @@ derived from the original game, do not redistribute it or attach it to a bug rep
 The original game's windowed option is treated as `4:3 FIT` (362x272 with pillarboxes). Its fullscreen
 option is treated as `FULL STRETCH` (480x272).
 
-## Known limitations
+## Current limitations
 
-- This is a beta. Save-data and replay compatibility or integrity is not guaranteed. Back up important
-  files before testing a new build.
-- PPSSPP is useful for testing, but a successful PPSSPP run does not prove that the same path works on
-  real PSP hardware. Memory Stick I/O, CFW, Media Engine audio, and memory limits can behave differently.
-- v0.1.6 leaves BGM-only output unmodified and mixes only active sound effects on the main CPU into a
-  32-bit-wide bus before adding them within the BGM samples' remaining headroom. A PSP-1000 hardware
-  test found the opening BGM, enemy-explosion effects, and bomb effects clear, with zero BGM input-ring
-  underruns. Both profiles clean-build, and both the 32 MiB and 64 MiB models pass PPSSPP smoke tests.
-  The 64 MiB build has not received the same real-hardware listening test.
-- The PSP-1000 build now stores all 1,024 original bullet slots after compacting their mutually
-  exclusive spawn-animation VMs, all 1,100 original item slots, and all 400 normal effect slots. The
-  same built-in demo matched the 64 MiB build at all 136 sampled points through frame 8160 in PPSSPP.
-  The reduced enemy limit can still change game state, so replay synchronization remains unverified on
-  real hardware and with external replays. Testers reported desynchronization in the built-in
-  title-screen demos on older builds.
-- The PSP-1000 v0.1.4-beta Normal route has been tested on hardware from stage 1 through stage 6,
-  Yuyuko, the ending, staff roll, and return to the title. Easy, Hard, Lunatic, Extra, and Phantasm
-  clears have not been verified on that build.
-- Heavy bullet/effect scenes and later 3D stages can still slow down. Fixed-30 mode is recommended for
-  normal play.
-- Music Room loading, playback, and return-to-title fixes pass current PPSSPP tests, but the reported
-  slow entry, low frame rate, or return to XMB still needs confirmation on real hardware.
-- The fix for a one-pixel portrait artifact at the top of the PSP display has passed PPSSPP image
-  comparisons but still needs real-hardware confirmation.
-- A tester reported that a Lunatic replay could finish through Yuyuko but fail to return to Replay
-  Select. The affected PSP model and 32/64 MiB package have not yet been identified.
+- PPSSPP success does not prove the same path on hardware. Memory Stick I/O, ARK-5, the Media Engine,
+  and the 32/64 MiB memory models can behave differently.
+- Heavy bullet/effect scenes and later 3D stages can still slow down. This is the original-style
+  slowdown that advances the game more slowly; use fixed-30 mode when preferred.
+- Back up saves and arbitrary external replays before an update. The 2026-09-03 synchronization result
+  is scoped to the fixed Lunatic replay described above.
+- Music Room and a small number of rendering fixes still have paths that need representative-hardware
+  rechecks after PPSSPP acceptance.
+- The bundled Noto-derived `msgothic-subset.ttf` passes the PC audit, but a PSP-1000 stage-4 and fixed
+  stage-1-through-6 Lunatic run using this exact hash remains a gate before promotion to final stable.
 
-More technical status is recorded in the [changelog](CHANGELOG.md) and the
-[detailed known-issues document](docs/KNOWN_ISSUES.md), which are currently written in Japanese.
-
-## If the game does not start
-
-Check these items in order:
-
-1. `EBOOT.PBP` is at `PSP/GAME/TH07PSP/EBOOT.PBP`.
-2. `NotoSansJP-Regular.ttf` is still beside the EBOOT.
-3. `PSP/GAME/TH07PSP/th7/th07.dat` and `thbgm.dat` both exist.
-4. Your original game is version 1.00b.
-5. You installed the package intended for your PSP model.
-
-For the 64 MiB build on PSP-2000/3000/Go with ARK-5, also check for an explicit
-`always, highmem, off` rule when the EBOOT exits without writing any boot log. In the ARK-5 UI, do
-not leave `Use Extra Memory` set to `Off`; select `Default`. Back up the existing
-ARK settings and replace the conflicting rule with `homebrew, highmem, on` (the same result as
-ARK-5 `Default` for this EBOOT).
-Relaunch the game; restart VSH or power-cycle only if the setting was not reloaded. Do not overwrite
-your complete settings file with the packaged snippet. See the
-[ARK-5 high-memory setup](https://github.com/kan8223-dotcom/th07-psp-native/blob/v0.1.7-beta/docs/ARK5_HIGH_MEMORY.md).
-
-If the game still returns to XMB or fails during a stage transition, preserve the boot log before
-launching the game again.
-
-## Logs and bug reports
-
-The port writes `TH07PSP_BOOT.LOG` to the root of the device from which the EBOOT was launched:
-
-- Memory Stick launch: `ms0:/TH07PSP_BOOT.LOG`
-- PSP Go internal-storage launch: `ef0:/TH07PSP_BOOT.LOG`
-
-The log is overwritten on each launch. After reproducing a problem, copy it to your computer **before
-starting the game again**.
-
-When opening an issue, include:
-
-- the boot log;
-- your exact PSP model;
-- your CFW name and version;
-- whether you used the PSP-1000 or PSP-2000+ package;
-- the game mode, difficulty, stage, and exact action after which the problem appeared; and
-- clear reproduction steps, if known.
-
-Report problems through this repository's
-[Issues page](https://github.com/kan8223-dotcom/th07-psp-native/issues). Do not attach original DAT,
-music, executable, image, sound, or derived cache files. Replays are user data and are not part of the
-release package; attach one for diagnosis only when a maintainer requests it.
+See [Known issues](docs/KNOWN_ISSUES.md) and the [changelog](CHANGELOG.md) for detailed status.
 
 ## Not included
 
 Neither the repository nor a release package includes:
 
 - the original Touhou 7 executable, DAT archives, images, music, sound effects, or other game data;
+- generated XMB images or an EBOOT containing those images;
 - original or development replays (`.rpy`);
 - user settings, scores, logs, or save data;
-- Microsoft fonts; or
+- Microsoft fonts (`msgothic-subset.ttf` in the package is an OFL Noto Sans CJK JP derivative despite
+  its compatibility filename); or
 - diagnostic EBOOTs with autoplay, infinite lives, forced MAX power, or similar test features.
 
 ## Unofficial project
 
 This project is not an official product of Team Shanghai Alice or ZUN, and it is not endorsed,
-supported, or guaranteed by them. Please do not contact Team Shanghai Alice, ZUN, some100,
-GensokyoClub, m-c/d, PSPDEV, PPSSPP, or the authors and maintainers of referenced projects for support
-with this port.
+supported, or guaranteed by them. Do not contact Team Shanghai Alice, ZUN, some100, GensokyoClub,
+m-c/d, PSPDEV, PPSSPP, or authors and maintainers of referenced projects for support with this port.
 
 Questions and bug reports about the port belong in this repository's Issues. This project does not
 provide the original game, CFW, or help with obtaining or sharing copyrighted game data.
 
 ## Building from source
 
-For developers, install PSPDEV/PSPSDK at `/usr/local/pspdev` and make CMake available. The bundled MECC
-source is built automatically on the first `make`.
+Install PSPDEV/PSPSDK at `/usr/local/pspdev` and make CMake available. The bundled MECC source is built
+from source. The formal archive's reproducible font audit additionally requires `fontTools==4.62.1`.
 
 ```sh
 make -j"$(nproc)" all
 make psp1000-build
+make psp2000plus-build
 make release
 ```
 
-`make release` clean-builds both hardware profiles and creates
-`dist/th07-psp-native-v0.1.7-beta-psp1000.zip` and
-`dist/th07-psp-native-v0.1.7-beta-psp2000plus.zip`. A direct-stage diagnostic build is available only
-when explicitly requested and must not be distributed:
+`make release` combines the two fixed runtime anchors with a clean-built unified launcher and creates
+one local candidate archive, `dist/th07-psp-native-v1.0.0.zip`. It does not create a GitHub tag or
+Release. The release audit checks that the initial XMB slots exactly match the transparent neutral placeholders, both
+model runtimes have the expected hashes, and no original data, user data, diagnostic EBOOT, or derived
+image entered the archive. It also regenerates and checks both Noto fonts, including the pinned
+source/license/output hashes, exact 1,190-codepoint cmap, and kern-only layout contract. Profile-specific
+targets remain for development and regression checks; no model-specific ZIP is distributed.
+
+A direct-stage diagnostic build is available only when explicitly requested and must not be distributed:
 
 ```sh
 make PSP_DIRECT_GAME=1 PSP_DIRECT_STAGE=5 -j"$(nproc)"
@@ -241,7 +255,7 @@ make PSP_DIRECT_GAME=1 PSP_DIRECT_STAGE=5 -j"$(nproc)"
 
 ## Credits and license
 
-Implementation sources and acknowledgements, including the upstream decompilation, the TH06 PSP port,
+Implementation sources and acknowledgements, including the upstream decompilation, TH06 PSP port,
 MECC, and MIST, are listed in [CREDITS.md](CREDITS.md).
 
 The main project follows the upstream some100/th07 license and is released under CC0 1.0 Universal;

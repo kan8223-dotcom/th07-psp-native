@@ -27,13 +27,17 @@
 extern "C" {
 #endif
 
-#if defined(TH07_PSP_USAGE_METER)
+#if defined(TH07_PSP_USAGE_METER) || defined(TH07_PSP_ME_BUSY_METER)
 void th07_usage_meter_add_me_cycles(unsigned int kernelCycles);
 void th07_usage_meter_frame(unsigned int criticalUs);
 /* Lagging safety signal for optional ME work.  It may veto admission but
  * must never be the positive admission condition. */
 unsigned int th07_usage_meter_last_me_percent(void);
+#if defined(TH07_PSP_USAGE_METER)
 void th07_usage_meter_draw(void);
+#else
+#define th07_usage_meter_draw() ((void)0)
+#endif
 #else
 #define th07_usage_meter_add_me_cycles(kernelCycles) ((void)0)
 #define th07_usage_meter_frame(criticalUs) ((void)0)

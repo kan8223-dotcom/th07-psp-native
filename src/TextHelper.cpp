@@ -125,9 +125,31 @@ TTF_Font *OpenCoverageCheckedFont(const PspDefaultFontCandidate &candidate,
 {
     const char *resolvedPath =
         th07_psp_resolve_path(candidate.filename, fontPath, fontPathBytes);
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const unsigned int candidateIndex = static_cast<unsigned int>(
+        &candidate - &kPspDefaultFontCandidates[0]);
+    const unsigned long long openStartUs = th07_psp_boot_jitter_now();
+    SDL_RWops *fontStream = SDL_RWFromFile(resolvedPath, "rb");
+    const unsigned long long openUs =
+        th07_psp_boot_jitter_now() - openStartUs;
+    unsigned long long readUs = 0u;
+    TTF_Font *font = nullptr;
+    if (fontStream)
+    {
+        const unsigned long long readStartUs = th07_psp_boot_jitter_now();
+        // freesrc=1 preserves TTF_OpenFontIndex's ownership contract: SDL_ttf
+        // retains the live stream as needed and closes it with the font.
+        font = TTF_OpenFontIndexRW(fontStream, 1, 10, candidate.faceIndex);
+        readUs = th07_psp_boot_jitter_now() - readStartUs;
+    }
+#else
     TTF_Font *font = TTF_OpenFontIndex(resolvedPath, 10, candidate.faceIndex);
+#endif
     if (!font)
     {
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_record_font(candidateIndex, 0u, openUs, readUs, 0u);
+#endif
         th07_psp_boot_notef(
             "FONT COVERAGE candidate=%s face=%ld result=open-fail provided=0/%u missing=n/a",
             candidate.logName, candidate.faceIndex,
@@ -137,8 +159,17 @@ TTF_Font *OpenCoverageCheckedFont(const PspDefaultFontCandidate &candidate,
 
     u32 firstMissing = 0;
     std::size_t provided = 0;
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const unsigned long long coverageStartUs = th07_psp_boot_jitter_now();
+#endif
     if (!FontProvidesStockCoverage(font, &firstMissing, &provided))
     {
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        const unsigned long long coverageUs =
+            th07_psp_boot_jitter_now() - coverageStartUs;
+        th07_psp_boot_jitter_record_font(
+            candidateIndex, 1u, openUs, readUs, coverageUs);
+#endif
         th07_psp_boot_notef(
             "FONT COVERAGE candidate=%s face=%ld result=reject provided=%u/%u missing=U+%04X",
             candidate.logName, candidate.faceIndex, static_cast<unsigned int>(provided),
@@ -148,7 +179,15 @@ TTF_Font *OpenCoverageCheckedFont(const PspDefaultFontCandidate &candidate,
         return nullptr;
     }
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    const unsigned long long coverageUs =
+        th07_psp_boot_jitter_now() - coverageStartUs;
+#endif
     g_DefaultFontFaceIndex = candidate.faceIndex;
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_record_font(
+        candidateIndex, 2u, openUs, readUs, coverageUs);
+#endif
     th07_psp_boot_notef(
         "FONT COVERAGE candidate=%s face=%ld result=ok provided=%u/%u missing=none",
         candidate.logName, candidate.faceIndex,
@@ -680,6 +719,20 @@ static TTF_Font *OpenDefaultFont()
 #if defined(TH07_PSP)
     char fontPath[768];
 #if defined(TH07_PSP_LOCAL_FONT_SUBSET)
+#if defined(TH07_PSP_1000_ENEMY_MANIFEST)
+    // The fixed-replay arena retains 5,533,800 bytes for the Stage 4 Enemy
+    // high-water. Its RAM proof depends on the audited 300 KiB subset; opening
+    // a multi-MiB fallback here would silently invalidate that proof before
+    // gameplay. Keep ordinary subset builds' fallback behavior unchanged.
+    TTF_Font *font = OpenCoverageCheckedFont(
+        kPspDefaultFontCandidates[0], fontPath, sizeof(fontPath));
+    if (!font)
+    {
+        th07_psp_boot_note(
+            "REPLAY INVALID enemy manifest requires subset font");
+    }
+    return font;
+#else
     for (const PspDefaultFontCandidate &candidate : kPspDefaultFontCandidates)
     {
         TTF_Font *font =
@@ -694,6 +747,7 @@ static TTF_Font *OpenDefaultFont()
         return font;
     }
     return nullptr;
+#endif
 #else
     // Match the final TH06 PSP port: a locally supplied MS Gothic is the
     // first choice because its hinted strokes survive an 8-9 pixel physical
@@ -1574,22 +1628,43 @@ bool TextHelper::PreRenderTextToCacheBold(i32 xPos, i32 yPos, i32 spriteWidth,
 
 ZunResult TextHelper::CreateTextBuffer()
 {
+#if defined(TH07_PSP_FONT_HEAP_DIAG)
+    th07_psp_heap_note("FONT M0 before TTF init");
+#endif
     if (TTF_Init() < 0)
     {
         g_GameErrorContext.Log("TTF_Init fail : %s\n", TTF_GetError());
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_finish();
+#endif
         return ZUN_ERROR;
     }
 
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_FONT);
+#endif
     g_Font = OpenDefaultFont();
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_advance(TH07_PSP_BOOT_JITTER_TEXT_POST);
+#endif
     if (!g_Font)
     {
         g_GameErrorContext.Log("TTF_OpenFont fail : %s\n", TTF_GetError());
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_finish();
+#endif
         return ZUN_ERROR;
     }
+#if defined(TH07_PSP_FONT_HEAP_DIAG)
+    th07_psp_heap_note("FONT M0 after font open");
+#endif
     TTF_SetFontStyle(g_Font, TTF_STYLE_BOLD);
     if (!g_TextWorkBuffer.AllocateBuffer(1024, 64))
     {
         g_GameErrorContext.Log("text work buffer allocation failed\n");
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+        th07_psp_boot_jitter_finish();
+#endif
         return ZUN_ERROR;
     }
 
@@ -1611,6 +1686,12 @@ ZunResult TextHelper::CreateTextBuffer()
     SDL_Color white = {255, 255, 255, 255};
     SDL_Surface *prewarm = TTF_RenderUTF8_Blended(g_Font, u8"さむ～", white);
     SDL_FreeSurface(prewarm);
+#if defined(TH07_PSP_FONT_HEAP_DIAG)
+    th07_psp_heap_note("FONT M0 after prewarm");
+#endif
+#if defined(TH07_PSP_GO_BOOT_JITTER_DIAG)
+    th07_psp_boot_jitter_finish();
+#endif
     return ZUN_SUCCESS;
 }
 

@@ -5,6 +5,13 @@ is not a release candidate until every item passes without the debug route.
 
 ## Build boundary
 
+- The public artifact is one unified EBOOT and one ZIP.  The outer SFO title is
+  exactly `東方妖々夢 ～ Perfect Cherry Blossom.` and contains no Beta, tester,
+  diagnostic or model-specific branding.
+- Runtime model selection is automatic: model 0 must extract the exact accepted
+  PSP-1000 payload, while supported model 1+ devices must extract the exact
+  conservative PSP-2000+ payload.  An unknown model fails closed to the 32 MiB
+  profile; it must never assume extra RAM.
 - `make` boots the title; it must not jump directly to a stage.
 - No auto-fire, infinite lives or forced MAX power is present.
 - `make PSP_DIRECT_GAME=1` remains a separate diagnostic build.
@@ -12,6 +19,9 @@ is not a release candidate until every item passes without the debug route.
   release build must retain the original clear-count gate and must not alter
   `clrd`, `pscr` or `score.dat` to unlock them.
 - The EBOOT and deployed copy have the same SHA-256 hash.
+- `python3 tools/build_release_noto_subset.py --check` regenerates the formal
+  PSP-1000 font twice with fontTools 4.62.1 and passes all source, authority,
+  option, OFL metadata, exact-cmap, size and output-hash gates.
 
 ## Title, text and transitions
 
@@ -100,6 +110,10 @@ is not a release candidate until every item passes without the debug route.
 
 ## Persistence and installation
 
+- ARK-5 is the only supported CFW.  On PSP-2000/3000/Go, `Use Extra
+  Memory = Max` is a prerequisite, not an optional troubleshooting step.
+  `Default`, `Off`, and `always, highmem, off` must be rejected by the release
+  documentation.  PSP-1000 has no extra Main RAM, so Max is not applicable.
 - Launch with a whole copied original folder named `th7`; do not require the
   user to select or rename Japanese source files one by one.
 - Reject missing or incorrect 1.00b `th07.dat` / `thbgm.dat` before entering
@@ -107,22 +121,47 @@ is not a release candidate until every item passes without the debug route.
 - Save settings and score, quit, relaunch and verify both are loaded.
 - Save a replay, quit, relaunch and play it back far enough to detect timing,
   input, RNG or floating-point divergence.
-- The release archive contains only EBOOT, documentation, license files and a
-  redistributable font.  It must contain no original DAT/BGM, user save or
-  replay data, Microsoft font, or diagnostic EBOOT.
-- The PSP-2000+ archive contains `ARK5_HIGHMEM_SNIPPET.txt` and
+- The single release archive contains only EBOOT, documentation, license files and
+  the two fixed redistributable Noto fonts: `NotoSansJP-Regular.ttf`
+  (`6ab1664d...`, 4,491,696 bytes) and the OFL Noto-derived
+  `msgothic-subset.ttf` (`c456df98...`, 264,288 bytes). It must contain no original DAT/BGM, user save or
+  replay data, Microsoft font, diagnostic EBOOT, generated XMB image, locally
+  transformed EBOOT, `TH07RUNTIME.PBP`, or boot log.
+- `msgothic-subset.ttf` is accepted only at that exact path and hash. Reject
+  every other `msgothic*.ttc/.ttf/.otf`; in particular, never substitute or
+  package the private output of `tools/build_local_msgothic_subset.py`.
+- The archive includes `docs/PSP_RELEASE_FONTS.md`, the applicable current upstream
+  `licenses/NotoSansJP/OFL.txt`, and
+  `licenses/NotoSansJP/FONTLOG-TH07PSP.txt` beside both font payloads.
+- The archive contains `ARK5_HIGHMEM_SNIPPET.txt` and
   `docs/ARK5_HIGH_MEMORY.md`.  The snippet must contain exactly one active
   `homebrew, highmem, on` rule, must tell users to merge rather than overwrite,
-  and must never be packaged as a complete ARK `SETTINGS.TXT`.
+  must require `Use Extra Memory = Max`, and must never be packaged as a
+  complete ARK `SETTINGS.TXT`.
+- Initial ICON0 and PIC1 are the exact tool-generated, fully transparent neutral
+  placeholders; ICON1, PIC0, and SND0 are empty. XMB must show no custom thumbnail
+  or background. Only after exact user-owned `th07.dat` and `thbgm.dat` validation
+  may the PSP overwrite the fixed ICON0/PIC1 slots locally. The PBP offset table,
+  DATA.PSP and DATA.PSAR must remain byte-identical, a second launch must be
+  idempotent, and no failure or power-loss point may leave the canonical EBOOT
+  name missing or permanently block a clean retry.
 
 ## Hardware gates inherited from TH06 PSP
 
 - PPSSPP is only the first gate.  Repeat boot, audio overlap, stage transition,
   save/reload, suspend/resume, ending and title return on a PSP-3000-class real
-  device and at least one independent CFW/Memory Stick setup.
-- PSP-1000 has only the 32 MiB memory model and uses its own tester EBOOT.
-  Verify stage transitions, bosses, Result and ending independently; a
-  PSP-2000/3000 success is not evidence that the PSP-1000 profile is safe.
+  device and an independent ARK-5/Memory Stick setup.  Other CFWs are not a
+  substitute for the supported ARK-5 gate.
+- PSP-1000 has only the 32 MiB memory model and must select its profile through
+  the same unified outer EBOOT.  Re-run the fixed `th7_udLUNA.rpy` acceptance
+  path through stages 1-6, Yuyuko, and return to Replay Select.  Verify the
+  selected runtime SHA and zero `REPLAY INVALID`/fatal/allocation failures.
+  A PSP-2000/3000 success is not evidence that the PSP-1000 profile is safe.
+- That PSP-1000 run must use the exact formal Noto subset SHA-256
+  `c456df98197c895c2919a690c737ab3c4a2924799bb4d92fa3a53849c6b56dec`,
+  log `provided=1190/1190`, display normal Japanese text, and explicitly cover
+  the memory-heavy stage 4 path. A run with a local Microsoft-derived subset
+  or a different Noto experiment does not close the release gate.
 - Record CPU work, GE wait, VBlank wait, audio fallback and I/O duration when a
   scene drops from 60 to 30 fps.  Merely using GU/GUM or enabling a VFPU thread
   flag does not prove the hot path uses VFPU or meets the frame deadline.
