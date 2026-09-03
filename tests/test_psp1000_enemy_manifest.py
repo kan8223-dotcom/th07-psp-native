@@ -269,6 +269,81 @@ class Psp1000EnemyManifestSourceContract(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, prepare)
 
+    def test_unmeasured_play_uses_the_existing_maximum_arena_envelope(self) -> None:
+        unmeasured_capacity = cpp_integer(
+            self.enemy, "kUnmeasuredEnemyReservation"
+        )
+        base_capacity = cpp_integer(self.enemy_h, "kEnemyBaseCapacity")
+        maximum_extra = cpp_integer(self.arena, "kManifestMaxEnemyExtraBytes")
+
+        self.assertEqual(unmeasured_capacity, 108)
+        self.assertEqual(unmeasured_capacity % 4, 0)
+        self.assertEqual(
+            (unmeasured_capacity - base_capacity) * 20296, maximum_extra
+        )
+        self.assertEqual(maximum_extra, 893024)
+        self.assertEqual(4640776 + maximum_extra, 5533800)
+        self.assertEqual(
+            unmeasured_capacity,
+            max(cpp_integer_array(self.enemy, "kUdLunaEnemyReservation")),
+        )
+
+        prepare = function_body(
+            self.enemy, "bool EnemyManager::PspPrepareEnemyManifest"
+        )
+        unmeasured_at = prepare.index(
+            "reservation = kUnmeasuredEnemyReservation"
+        )
+        live_log = prepare.index("enemy manifest live bounded")
+        live_branch = prepare[unmeasured_at : live_log + 180]
+        self.assertIn("reservation = kUnmeasuredEnemyReservation", live_branch)
+        self.assertNotIn("malloc", live_branch)
+        self.assertNotIn("realloc", live_branch)
+
+    def test_unmeasured_growth_preserves_udluna_demo_and_fail_loud_policy(self) -> None:
+        prepare = function_body(
+            self.enemy, "bool EnemyManager::PspPrepareEnemyManifest"
+        )
+        external_at = prepare.index(
+            "const bool externalReplay = g_GameManager.replay && !g_GameManager.demo"
+        )
+        udluna = braced_block(
+            prepare,
+            "if (externalReplay && PspReplayMatchesUdLuna())",
+            external_at,
+        )
+        demo_at = prepare.index("else if (g_GameManager.demo)", external_at)
+        demo = braced_block(prepare, "else if (g_GameManager.demo)", external_at)
+        live_log = prepare.index("enemy manifest live bounded", demo_at)
+
+        self.assertLess(external_at, demo_at)
+        self.assertLess(demo_at, live_log)
+        self.assertIn("i32 reservation = kEnemyBaseCapacity", prepare)
+        self.assertIn(
+            "externalReplay && (!g_ReplayManager || !g_ReplayManager->data)",
+            prepare,
+        )
+        self.assertRegex(prepare, r"REPLAY INVALID.*missing replay state")
+        self.assertIn("kUdLunaEnemyReservation[stage]", udluna)
+        self.assertNotIn("kUnmeasuredEnemyReservation", udluna)
+        self.assertNotIn("kUnmeasuredEnemyReservation", demo)
+        self.assertNotIn("reservation =", demo)
+        self.assertIn("enemy manifest built-in demo S%d cap%d fail-loud", demo)
+
+        fallback = prepare[demo_at + len(demo) :]
+        self.assertIn("reservation = kUnmeasuredEnemyReservation", fallback)
+        self.assertIn("if (externalReplay)", fallback)
+        self.assertIn("enemy manifest replay bounded", fallback)
+        self.assertIn("enemy manifest live bounded", fallback)
+        self.assertNotRegex(fallback, r"REPLAY INVALID.*unknown replay")
+
+        abort = function_body(
+            self.enemy, "bool EnemyManager::PspAbortInvalidReplay"
+        )
+        self.assertIn(
+            "g_GameManager.replay && !g_GameManager.demo ? 7 : 1", abort
+        )
+
     def test_base_pool_budget_matches_all_pinned_payloads_and_alignment(self) -> None:
         pinned = (
             (self.bullet_h, "Bullet", 2276),
@@ -433,12 +508,13 @@ class Psp1000EnemyManifestSourceContract(unittest.TestCase):
             self.assertNotEqual(guarded, -1)
             self.assertLess(write - guarded, 120)
 
-    def test_unknown_replay_and_reservation_failure_are_replay_invalid(self) -> None:
+    def test_unknown_replay_is_bounded_and_reservation_failure_is_invalid(self) -> None:
         prepare = function_body(
             self.enemy, "bool EnemyManager::PspPrepareEnemyManifest"
         )
         self.assertIn("PspReplayMatchesUdLuna()", prepare)
-        self.assertRegex(prepare, r'(?is)REPLAY INVALID.*unknown replay')
+        self.assertRegex(prepare, r'(?is)replay bounded.*fail-loud')
+        self.assertNotRegex(prepare, r'(?is)REPLAY INVALID.*unknown replay')
         self.assertIn(
             "g_GameManager.replay && !g_GameManager.demo", prepare
         )

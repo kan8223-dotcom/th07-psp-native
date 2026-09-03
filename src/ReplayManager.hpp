@@ -123,8 +123,9 @@ struct ReplayManager
     ReplayFile *data;
 #if defined(TH07_PSP_1000_ENEMY_MANIFEST)
     // Whole raw-file identity captured before replay deobfuscation mutates and
-    // releases the input buffer. The stage Enemy manifest is valid only for
-    // the byte-identical audited replay.
+    // releases the input buffer. It selects the measured per-stage Enemy
+    // manifest for the byte-identical audited replay; other validated replays
+    // use the maximum bounded reservation.
     u64 rawFileFnv1a;
     u32 rawFileBytes;
 #endif

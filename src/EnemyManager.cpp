@@ -134,6 +134,11 @@ constexpr u32 kUdLunaStageEndOffsets[7] = {
 // reservation rounds the highest occupied prefix to four-Enemy chunks.
 constexpr i32 kUdLunaEnemyHighWater[7] = {0, 69, 37, 24, 105, 17, 25};
 constexpr i32 kUdLunaEnemyReservation[7] = {0, 72, 64, 64, 108, 64, 64};
+// Interactive play and validated but unmeasured replays have no exact
+// per-stage capacity proof. Back both with the largest Enemy slab that already
+// fits the retained PSP-1000 arena. This remains a bounded envelope, so the
+// existing fail-loud path must still stop a run that ever needs a 109th slot.
+constexpr i32 kUnmeasuredEnemyReservation = 108;
 
 bool PspReplayMatchesUdLuna()
 {
@@ -476,6 +481,11 @@ static_assert(sizeof(Enemy) * 8u == 162368u,
               "udLUNA stage 1 Enemy reservation drifted");
 static_assert(sizeof(Enemy) * 44u == 893024u,
               "udLUNA stage 4 Enemy reservation drifted");
+static_assert(sizeof(Enemy) *
+                      (kUnmeasuredEnemyReservation -
+                       EnemyManager::kEnemyBaseCapacity) ==
+                  893024u,
+              "PSP-1000 unmeasured Enemy reservation exceeds retained arena");
 
 bool EnemyManager::PspPrepareEnemyManifest(i32 stage, u32 *arenaExtraBytes)
 {
@@ -499,23 +509,20 @@ bool EnemyManager::PspPrepareEnemyManifest(i32 stage, u32 *arenaExtraBytes)
     // The three stock title demos use the ordinary proven 64-slot PSP-1000
     // footprint. They set both replay and demo; treating every replay bit as
     // an external replay made the fixed-udLUNA identity gate reject them
-    // before their first frame. Keep unknown user replays fail-loud while
-    // allowing the built-in demo path to run under the same bounded pool as
-    // interactive play.
+    // before their first frame. Keep the built-in demo on its proven 64-slot
+    // base pool. Validated but unmeasured user replays and interactive play
+    // use the larger bounded reservation below and still fail loud if it is
+    // exhausted.
     const bool externalReplay = g_GameManager.replay && !g_GameManager.demo;
-    if (externalReplay)
+    if (externalReplay && (!g_ReplayManager || !g_ReplayManager->data))
     {
-        if (!PspReplayMatchesUdLuna())
-        {
-            this->pspEnemyManifestInvalid = 1;
-            const u32 rawBytes = g_ReplayManager ? g_ReplayManager->rawFileBytes : 0u;
-            const u64 rawFnv = g_ReplayManager ? g_ReplayManager->rawFileFnv1a : 0u;
-            th07_psp_boot_notef(
-                "REPLAY INVALID enemy manifest unknown replay S%d B%u F%08X%08X",
-                stage, rawBytes, static_cast<unsigned int>(rawFnv >> 32u),
-                static_cast<unsigned int>(rawFnv));
-            return false;
-        }
+        this->pspEnemyManifestInvalid = 1;
+        th07_psp_boot_notef(
+            "REPLAY INVALID enemy manifest missing replay state S%d", stage);
+        return false;
+    }
+    if (externalReplay && PspReplayMatchesUdLuna())
+    {
         reservation = kUdLunaEnemyReservation[stage];
         th07_psp_boot_notef(
             "enemy manifest udLUNA S%d high%d cap%d overflow%d bytes%u",
@@ -531,11 +538,26 @@ bool EnemyManager::PspPrepareEnemyManifest(i32 stage, u32 *arenaExtraBytes)
     }
     else
     {
-        // Interactive play is not covered by the fixed-replay high-water
-        // proof. Preserve the established 64-slot footprint, but retain the
-        // same fail-loud exhaustion path instead of silently corrupting a slot.
-        th07_psp_boot_notef("enemy manifest live unproven S%d cap%d fail-loud",
-                            stage, reservation);
+        // Reserve the maximum retained slab at the stage boundary. No
+        // mid-stage allocation occurs, and exhaustion remains fail-loud.
+        reservation = kUnmeasuredEnemyReservation;
+        if (externalReplay)
+        {
+            const u32 rawBytes =
+                g_ReplayManager ? g_ReplayManager->rawFileBytes : 0u;
+            const u64 rawFnv =
+                g_ReplayManager ? g_ReplayManager->rawFileFnv1a : 0u;
+            th07_psp_boot_notef(
+                "enemy manifest replay bounded S%d cap%d B%u F%08X%08X fail-loud",
+                stage, reservation, rawBytes,
+                static_cast<unsigned int>(rawFnv >> 32u),
+                static_cast<unsigned int>(rawFnv));
+        }
+        else
+        {
+            th07_psp_boot_notef("enemy manifest live bounded S%d cap%d fail-loud",
+                                stage, reservation);
+        }
     }
 
     if (reservation < kEnemyBaseCapacity || reservation > kEnemyCapacity ||
