@@ -2,14 +2,10 @@
 
 **日本語** | [English](README_EN.md)
 
-> [!CAUTION]
-> **`v1.0.0-rc1`はPSP-1000で、1面レティ戦の途中に突然タイトルへ戻る実機不具合を確認しています。**
-> 現在調査中です。PSP-1000では本版を完走目的に使用しないでください。
-
 > [!IMPORTANT]
 > **現在の配布版`v1.0.0-rc1`は最終テスター版（正式stable公開前のプレリリース）です。**
 > 入手先は[GitHub Releases](https://github.com/kan8223-dotcom/th07-psp-native/releases)です。
-> 全機種共通の単一EBOOT（初期SHA-256 `822E0A4C43AC84509A25AF16D921B0BB9BCB1C4597DCDBB315E9583D5E92FAD4`）が起動時に
+> 全機種共通の単一EBOOT（初期SHA-256 `8A9225EC02BF12500420856D39815AF03351FE2FD58DA2A93029C2ABD4300A87`）が起動時に
 > PSP-1000用profileとPSP-2000/3000/Go用profileを自動選択します。対応CFWはARK-5のみで、
 > PSP-2000/3000/Goでは`Use Extra Memory = Max`が必須です。
 >
@@ -58,9 +54,10 @@ EBOOT SHA-256
 今後の正式サポート条件はARK-5へ限定します。固定リプレイ、EBOOT、実機ログのhashは[更新履歴](CHANGELOG.md)と
 [受入anchor](release-anchors/psp1000-e480-hw-pass-20260903/README.md)に固定しています。
 
-この合格は上記の固定リプレイに対するものです。任意の外部リプレイ、全難易度、全機体を一括して
-保証するものではありません。identityまたは予約容量の契約を満たさないPSP-1000リプレイは、敵を
-黙って欠落させず`REPLAY INVALID`を記録して中止します。
+上記の全編合格は、その固定リプレイと当時のEBOOTに対する履歴です。現行版は、固定リプレイと
+一致しないことだけを理由に、正しく読み込めた外部リプレイを拒否しません。Enemy予約容量を超えた場合は
+敵を黙って欠落させず、明示ログを残して中止します。今回の回帰修正はPSP-1000実機で確認済みですが、
+PSP-1000でエンディングは未確認です。
 
 > [!IMPORTANT]
 > 対応CFWはARK-5のみです。PSP-2000、PSP-3000、PSP Goでは、ARK-5の
@@ -199,8 +196,8 @@ storageを交換した後は`Max`を再確認してください。`always, highm
 - セーブデータと任意の外部リプレイは、更新前にbackupしてください。2026-09-03の同期受入範囲は
   上記の固定Lunaticリプレイです。
 - Music Roomと一部の表示修正には、PPSSPP合格後も代表実機で再確認が必要な経路があります。
-- 同梱するNoto由来`msgothic-subset.ttf`のPC監査は合格していますが、このexact hashを使う
-  PSP-1000実機の4面および固定Lunatic 1～6面runは正式stable昇格前のgateとして残っています。
+- 同梱するNoto由来`msgothic-subset.ttf`のPC監査は合格しています。今回の回帰修正は
+  PSP-1000実機で確認済みですが、PSP-1000でエンディングは未確認です。
 
 詳細は[既知の不具合](docs/KNOWN_ISSUES.md)と[更新履歴](CHANGELOG.md)を参照してください。
 

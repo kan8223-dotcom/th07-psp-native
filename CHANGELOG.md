@@ -4,6 +4,15 @@
 
 ## 2026-09-03 — v1.0.0-rc1 最終テスター／プレリリース（実機受入）
 
+- PSP-1000の通常playと未計測main-route外部replayに、既存5,533,800-byte arena内でEnemy 108体を
+  面開始時に一括予約するbounded hotfixを適用しました。固定udLUNAの面別予約とbuilt-in demoの64体予約は
+  変更せず、109体目が必要な場合は従来どおりfail-loudで中止します。実機で直接回帰が再発しないことを
+  確認しましたが、PSP-1000でエンディングは未確認です。
+- hotfixのPSP-1000 runtimeは6,037,824 bytes、SHA-256
+  `5DAEE9FE5DEF74FED879A17712EC2654E5F7B0DDD6190EA2A1F70E3EDC9AD842`。全機種共通のneutral EBOOTは
+  13,670,124 bytes、SHA-256 `8A9225EC02BF12500420856D39815AF03351FE2FD58DA2A93029C2ABD4300A87`です。
+  PSP-2000/3000/Go runtimeとGE4 companionは直前版からbyte-identicalです。原作data、生成済みXMB画像、
+  user replayは配布物へ含めません。
 - **同期保証へ切り替えた根拠:** EBOOT SHA-256
   `18CF0136DE1525EF6B0ECA4FCA5BC2415A0A65875D8C0D88D53A9A509A94C365`を、物理
   PSP-1000で使用し（CFW名・versionは当該boot logに未記録のため未確定）、固定

@@ -44,7 +44,8 @@ class FormalReleaseContractTests(unittest.TestCase):
 
     def test_unified_build_uses_exact_accepted_anchors(self) -> None:
         for expected in (
-            "d49f1683f370224e102b13c8a14a1d09d9bead77d55bff449ed26f0b65c08ef6",
+            "8a9225ec02bf12500420856d39815af03351fe2fd58da2a93029c2abd4300a87",
+            "5daee9fe5def74fed879a17712ec2654e5f7b0ddd6190ea2a1f70e3edc9ad842",
             "356fbd32ee75dced8b1c9384b31a47613d1848ebd6a2af0b3b21cc92ba8e5a3d",
             "3dc5c753497349d6fb0ab5ae2a819b240cc51e8aa412ded10bb52daa540d841d",
             "--ge4wrap",
@@ -78,6 +79,10 @@ class FormalReleaseContractTests(unittest.TestCase):
             self.assertNotIn(text, self.readme)
         for text in stale_en:
             self.assertNotIn(text, self.readme_en)
+        self.assertNotIn("1面レティ戦の途中に突然タイトルへ戻る", self.readme)
+        self.assertNotIn("stage-1 Letty fight", self.readme_en)
+        self.assertIn("PSP-1000でエンディングは未確認", self.readme)
+        self.assertIn("the Ending has not yet been verified on PSP-1000", self.readme_en)
 
     def test_ark5_and_max_are_prerequisites_in_both_languages(self) -> None:
         self.assertIn("対応CFWはARK-5のみ", self.readme)

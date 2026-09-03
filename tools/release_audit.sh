@@ -3,9 +3,9 @@ set -eu
 
 fail=0
 formal_title='東方妖々夢 ～ Perfect Cherry Blossom.'
-psp1000_sha='d49f1683f370224e102b13c8a14a1d09d9bead77d55bff449ed26f0b65c08ef6'
+psp1000_sha='5daee9fe5def74fed879a17712ec2654e5f7b0ddd6190ea2a1f70e3edc9ad842'
 psp2000plus_sha='356fbd32ee75dced8b1c9384b31a47613d1848ebd6a2af0b3b21cc92ba8e5a3d'
-unified_sha='822e0a4c43ac84509a25af16d921b0bb9bcb1c4597dcdbb315e9583d5e92fad4'
+unified_sha='8a9225ec02bf12500420856d39815af03351fe2fd58da2a93029c2abd4300a87'
 forbidden_pattern='(^|/)(th07\.dat|thbgm\.dat|music_bg\.rgb565|title01\.psp1000\.(cache|tmp)|score\.dat|th07\.cfg|TH07PSP_BOOT\.LOG|TH07UNIFIED\.LOG|TH07RUNTIME\.PBP|SETTINGS\.TXT|ICON0\.PNG|ICON1\.PMF|PIC0\.PNG|PIC1\.PNG|SND0\.AT3|\.TH07XMB\.(TMP|BAK))$|\.rpy$'
 msgothic_font_pattern='(^|/)msgothic[^/]*\.(ttc|ttf|otf)$'
 approved_tracked_subset='psp/assets/msgothic-subset.ttf'

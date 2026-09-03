@@ -2,14 +2,10 @@
 
 [日本語](README.md) | **English**
 
-> [!CAUTION]
-> **On PSP-1000, `v1.0.0-rc1` can unexpectedly return to the title screen during the stage-1 Letty fight.**
-> This hardware issue is under investigation. Do not rely on this build for a complete PSP-1000 run.
-
 > [!IMPORTANT]
 > **The current `v1.0.0-rc1` build is the final tester/pre-release, not the final stable release.**
 > Download it from [GitHub Releases](https://github.com/kan8223-dotcom/th07-psp-native/releases).
-> One universal EBOOT (initial SHA-256 `822E0A4C43AC84509A25AF16D921B0BB9BCB1C4597DCDBB315E9583D5E92FAD4`) automatically selects the
+> One universal EBOOT (initial SHA-256 `8A9225EC02BF12500420856D39815AF03351FE2FD58DA2A93029C2ABD4300A87`) automatically selects the
 > PSP-1000 profile or the PSP-2000/3000/Go profile at startup. ARK-5 is required on every model;
 > PSP-2000/3000/Go also require `Use Extra Memory = Max`.
 >
@@ -58,9 +54,10 @@ CFW used for this run remains unconfirmed; future formal support is limited to A
 EBOOT, and log hashes are fixed in the
 [changelog](CHANGELOG.md) and [hardware anchor](release-anchors/psp1000-e480-hw-pass-20260903/README.md).
 
-This result applies to that fixed replay. It is not a blanket guarantee for every replay, shot type, or
-difficulty. On PSP-1000, a replay that fails the identity or reserved-capacity contract is rejected with
-`REPLAY INVALID` instead of silently omitting enemies and desynchronizing.
+That full-run result remains scoped to that fixed replay and historical EBOOT. The current build does
+not reject an otherwise valid external replay solely because its identity differs from the fixed replay.
+If the bounded Enemy reservation is exhausted, it stops with an explicit log instead of silently dropping
+enemies. The regression fix was checked on PSP-1000 hardware, but the Ending has not yet been verified on PSP-1000.
 
 > [!IMPORTANT]
 > ARK-5 is the only supported CFW. On PSP-2000, PSP-3000, and PSP Go, set ARK-5
@@ -205,8 +202,8 @@ option is treated as `FULL STRETCH` (480x272).
   is scoped to the fixed Lunatic replay described above.
 - Music Room and a small number of rendering fixes still have paths that need representative-hardware
   rechecks after PPSSPP acceptance.
-- The bundled Noto-derived `msgothic-subset.ttf` passes the PC audit, but a PSP-1000 stage-4 and fixed
-  stage-1-through-6 Lunatic run using this exact hash remains a gate before promotion to final stable.
+- The bundled Noto-derived `msgothic-subset.ttf` passes its PC audit. The regression fix was checked on
+  PSP-1000 hardware, but the Ending has not yet been verified on PSP-1000.
 
 See [Known issues](docs/KNOWN_ISSUES.md) and the [changelog](CHANGELOG.md) for detailed status.
 

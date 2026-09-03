@@ -3,17 +3,17 @@
 この文書は現在の正式統合版候補だけを扱います。v0.1.x Beta当時の修正履歴、旧機種別EBOOT、
 古いtester報告は[CHANGELOG.md](../CHANGELOG.md)を参照してください。
 
-## 公開前の実機gate
+## 正式stable昇格前の実機gate
 
 - 正式統合版は、1つの外側EBOOTが起動時にPSP modelを判定し、PSP-1000用32MB runtimeまたは
-  PSP-2000/3000/Go用64MB runtimeを選びます。model 0はPSP-1000の実機受入済みE480 runtime、
+  PSP-2000/3000/Go用64MB runtimeを選びます。model 0はE480経路を基にしたbounded hotfix runtime、
   model 1以上は保守的なPSP-2000+ runtimeを使用します。
-- 内側runtimeの個別実機実績はありますが、統合した外側EBOOT自体はPSP-1000と代表PSP-2000+の
-  両方でboot、model選択、全run、終了復帰を再確認するまで公開合格ではありません。
+- 統合した外側EBOOTのbootとmodel選択はPSP-1000/3000で実機確認済みです。正式stable昇格には
+  model profileごとの全runと終了復帰を引き続き確認します。
 - 初期配布EBOOTのICON0/PIC1は、XMB上で画像を表示しない完全透明な中立placeholderです。
   原作data検証後のlocal XMB画像生成と固定slot更新は、PBP headerと実行payloadを一切変更せず、
-  実行中PBPを安全に更新できること、失敗・電源断後に中立EBOOTから再起動できることまで確認して
-  初めてrelease gate合格とします。生成後EBOOTは原作由来画像を含むため再配布禁止です。
+  実行中PBPを安全に更新して次回XMBへ反映できることを実機確認済みです。生成後EBOOTは
+  原作由来画像を含むため再配布禁止です。
 
 ## CFWとMain RAM
 
@@ -38,9 +38,10 @@
 - 旧版で報告された「PSP-1000のほぼ全replayが同期しない」「upstreamとのbuild条件差を調査中」
   「幽々子後にReplay選択へ戻れない」は、この固定replayに関する現在の状態ではありません。
   現行READMEの警告からは削除し、保証へ切り替えた根拠をCHANGELOGに残しました。
-- 合格範囲は上記固定replayです。任意replay、内蔵demo、全難易度、全機体を一括保証するものでは
-  ありません。PSP-1000ではreplay identityと面別Enemy予約量を検証し、契約外なら敵を黙って
-  欠落させず`REPLAY INVALID`を記録して中止します。
+- 上記の全編合格は、その固定replayと当時のEBOOTに対する履歴です。現行版は、固定identityと
+  異なることだけを理由に正しく読み込めた外部replayを拒否しません。bounded Enemy予約容量を超えた場合は、
+  敵を黙って欠落させず明示logを残して中止します。任意replay、全難易度、全機体の一括保証ではありません。
+- 今回の回帰修正はPSP-1000実機で確認済みですが、PSP-1000でエンディングは未確認です。
 - save dataと任意replayはupdate前にbackupしてください。不具合報告には作成元version、難易度、
   機体、replay SHA-256、使用EBOOT SHA-256を添えてください。
 
