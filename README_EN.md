@@ -2,6 +2,10 @@
 
 [日本語](README.md) | **English**
 
+> [!CAUTION]
+> **On PSP-1000, `v1.0.0-rc1` can unexpectedly return to the title screen during the stage-1 Letty fight.**
+> This hardware issue is under investigation. Do not rely on this build for a complete PSP-1000 run.
+
 > [!IMPORTANT]
 > **The current `v1.0.0-rc1` build is the final tester/pre-release, not the final stable release.**
 > Download it from [GitHub Releases](https://github.com/kan8223-dotcom/th07-psp-native/releases).

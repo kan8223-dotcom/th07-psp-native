@@ -2,6 +2,10 @@
 
 **日本語** | [English](README_EN.md)
 
+> [!CAUTION]
+> **`v1.0.0-rc1`はPSP-1000で、1面レティ戦の途中に突然タイトルへ戻る実機不具合を確認しています。**
+> 現在調査中です。PSP-1000では本版を完走目的に使用しないでください。
+
 > [!IMPORTANT]
 > **現在の配布版`v1.0.0-rc1`は最終テスター版（正式stable公開前のプレリリース）です。**
 > 入手先は[GitHub Releases](https://github.com/kan8223-dotcom/th07-psp-native/releases)です。
